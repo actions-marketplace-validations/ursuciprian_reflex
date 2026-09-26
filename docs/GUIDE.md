@@ -1,4 +1,4 @@
-# Guide
+# Reflex guide: how the command gate, prompt injection guard and autonomous agent profile work
 
 ## Contents
 

@@ -1,4 +1,4 @@
-# Contributing
+# Contributing to Reflex
 
 Changes land through a pull request against `main`; nothing is pushed to `main` directly.
 

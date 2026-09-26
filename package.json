@@ -1,7 +1,7 @@
 {
   "name": "@ursuciprian/reflex",
   "version": "0.9.0",
-  "description": "Pre-execution risk gate and prompt injection guard for AI coding agents (Claude Code, Codex, opencode, pi, Hermes): deterministic rules, TypeSafe Jev judgments, an editable policy, System 2 escalation and a human approval queue",
+  "description": "Open-source pre-execution risk gate and prompt injection guard for AI coding agents (Claude Code, Codex CLI, opencode, pi, oh-my-pi, Hermes): local rules, optional TypeSafe Jev (System One) or local Laya judgments, an editable policy, System 2 escalation and a human approval queue",
   "keywords": [
     "ai-coding-agents",
     "coding-agents",
@@ -27,9 +27,21 @@
     "hooks",
     "policy",
     "shell",
-    "security"
+    "security",
+    "claude-code-security",
+    "codex-guardrails",
+    "coding-agent-guardrails",
+    "ai-agent-security",
+    "tool-call-gating",
+    "permission-prompts",
+    "prompt-injection-protection",
+    "pre-tool-use",
+    "pi",
+    "oh-my-pi",
+    "hermes"
   ],
   "license": "MIT",
+  "author": "Ciprian Ursu",
   "homepage": "https://github.com/ursuciprian/reflex#readme",
   "bugs": {
     "url": "https://github.com/ursuciprian/reflex/issues"
@@ -52,7 +64,10 @@
     "routing/",
     "setup/",
     "install.sh",
-    "README.md"
+    "README.md",
+    "llms.txt",
+    "llms-full.txt",
+    "CITATION.cff"
   ],
   "repository": {
     "type": "git",

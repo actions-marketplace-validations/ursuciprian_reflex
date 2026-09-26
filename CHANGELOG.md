@@ -22,6 +22,14 @@ All notable changes to Reflex are documented here. The format follows
   the always-human class, and the denylist, `cd` and script checks apply at run time. An invalid
   file is ignored whole and `reflex doctor` warns. `reflex suggest --write` appends to it after
   showing the lines and asking (or `--yes`); when an agent runs it, the tamper rule asks a human.
+- `docs/FAQ.md`: 20 questions about Reflex with direct answers (Claude Code and Codex CLI
+  guardrails, permission prompts, sandboxes, API keys, Jev and Laya, cost, latency, data, prompt
+  injection, autonomous agents, trying it safely, uninstalling), and a short FAQ in the README.
+- `llms.txt` and `llms-full.txt` (llmstxt.org format) and `CITATION.cff`; the two text files ship in
+  the npm package.
+- README: a one-sentence definition and an "In one minute" summary at the top, feature headings,
+  descriptive image alt text and link text. Docs pages have titles that say what they cover.
+  `package.json`: description, keywords and author match the README.
 
 ### Security
 

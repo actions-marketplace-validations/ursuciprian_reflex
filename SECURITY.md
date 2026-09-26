@@ -1,4 +1,4 @@
-# Security policy
+# Reflex security policy: reporting vulnerabilities and known limits
 
 Report a vulnerability by opening a [private security advisory](https://github.com/ursuciprian/reflex/security/advisories/new).
 Do not open a public issue for an exploitable weakness. You get an acknowledgement within 5 working
