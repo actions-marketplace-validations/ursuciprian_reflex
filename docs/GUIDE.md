@@ -7,6 +7,7 @@
 2. [Testing](#testing)
 3. [Rolling out: shadow, tune, enforce](#rolling-out-shadow-tune-enforce)
    - [Replay and bench](#replay-and-bench)
+   - [Suggest: fewer permission prompts](#suggest-fewer-permission-prompts)
    - [Calibrated allow](#calibrated-allow)
 4. [Changing behaviour](#changing-behaviour)
 5. [Metrics](#metrics)
@@ -392,6 +393,87 @@ p95. It is local unless `--engine jev` or `--engine laya` is given; then it also
 commands the local rules leave open, one call each, from an empty temporary directory (so no file
 of yours is read or sent), and prints latency, input tokens and the cost per 1,000 calls. Both
 take `--json`.
+
+### Suggest: fewer permission prompts
+
+Every command the local rules do not cover is an ask, and in enforce mode an ask is a human in the
+loop. Most of those are commands only a human should approve. Some are the same `make lint` or
+`pnpm typecheck` a hundred times. `reflex suggest` finds the second kind in your own history and
+proposes fast-lane entries for them, so autonomous coding agents stop at fewer permission prompts
+without widening anything else. It complements the Claude Code permissions allowlist and Codex
+approvals: those decide by command prefix in the agent; this runs inside Reflex, after its rules,
+and reads the scripts a command runs.
+
+```sh
+reflex suggest claude --since 30d            # what it would add and the effect; writes nothing
+reflex suggest codex --min 5 --json          # at least 5 runs per suggestion
+reflex suggest all --project ~/work/api
+reflex suggest claude --write                # show the lines, ask, then append to fastlane.json
+reflex suggest claude --write --yes          # the same without a terminal (scripts)
+```
+
+It reads the transcripts `reflex replay` reads (same agents, `--since` default 30d, `--project`,
+`--min` default 3) and runs nothing. It takes the commands the gate left to the engine (not the
+read-only list, the fast lane or a rule), cuts each into its shell segments, and turns each segment
+that kept it out of the fast lane into a template. A template keeps every word literal except a
+number (`\d+`) and, for a test runner, linter or type checker, a repository-relative path:
+
+| Seen | Suggested pattern |
+|---|---|
+| `make lint 2>&1 \| tail -5` | `^make\s+lint$` |
+| `npm run typecheck` | `^npm\s+run\s+typecheck$` |
+| `ruff check src/app.py`, `ruff check tests/test_api.py` | `^ruff\s+check\s+<repository-relative path>$` |
+| `docker compose images` | `^docker\s+compose\s+images$` |
+
+A template is only suggested when all of these hold:
+
+- the tool is a build, test, lint, format or type-check tool, or an npm, pnpm, yarn, bun or make
+  script whose name is not a server, deploy, clean, install or database step (`start`, `dev`,
+  `deploy`, `release`, `clean`, `migrate`, `seed`, `db`, `prod` and the like);
+- no word from the built-in denylist (`DENY` in `fastlane.mjs`): deletes, moves and copies, `push`,
+  `apply`, `delete`, `destroy`, `install`, `publish`, `sudo`, `chmod`, `chown`, network tools
+  (`curl`, `wget`, `ssh`, `scp`, `rsync`), cloud and cluster CLIs, `git`, `gh`, `docker` (other than
+  `docker compose ps|logs|images|top|ls|version`), `npx` and other fetch-and-run launchers, secrets
+  paths and words (`.env`, `.pem`, `.ssh`, `token`, `secret`), and production (`prod`, `live`);
+- no quotes, expansions, globs, redirects, environment assignments, absolute paths, `~` or `..`;
+- every observed run passes with it in the hook's own code: after the rules, the tamper check and the
+  script rules; no `cd`; every local script it runs (package.json script, make recipe, shell file)
+  read in full and free of denied words; not in the always-human class;
+- it rejects a set of probes built from a real run: the run plus `--force`, `-rf /`, `--prod`,
+  `--config=/etc/x`, `; rm -rf ~`, `| sh`, a redirect, `$(curl …)`, `sudo`, an environment prefix,
+  a leading `cd /`, and its last word swapped for `-rf`, `../../x`, `/etc/passwd` and
+  `~/.ssh/id_rsa`.
+
+Each suggestion prints the pattern, the project it is scoped to (the repository root of the runs),
+the count, up to three samples with credentials masked, and why it is safe. Then the effect: the same
+classification rerun with the suggestions added, as asks per 100 commands before and after
+(supervised: what reaches a human in enforce mode; autonomous: what stays with a human). When nothing
+qualifies it says what keeps asking instead, by its first two words and why it was left alone.
+
+`--write` shows the entries it would append to `~/.config/reflex/fastlane.json` (or
+`$XDG_CONFIG_HOME/reflex/fastlane.json`) and asks on the terminal; without one it needs `--yes`. It
+writes only a file that validates, atomically, mode 0600. `--write` changes Reflex's own
+configuration, so the tamper rule asks a human whenever an agent runs `reflex suggest --write`, as it
+does for any edit of `~/.config/reflex`. That is by design: an agent cannot widen its own allow list.
+
+The file can also be edited by hand:
+
+```json
+{"version": 1, "entries": [
+  {"pattern": "^make\\s+lint$", "cwd": "/Users/me/work/api", "note": "reflex suggest 2026-09-26: 14 runs"}
+]}
+```
+
+The hook reads it after the bundled fast lane (`precheck` in `gate.mjs`), so it only ever turns an
+engine decision into a pass. A deny, a secret read, a tamper ask, a rule over a script and the
+always-human class (every rule in `escalation.json`, production contexts included) still decide
+first, and the denylist, the `cd` check and the script check above apply to every command at run
+time, not only when the entry was suggested: a script that later starts sending data stops passing.
+An entry applies in its `cwd` and below. The file is strict: an entry must have an absolute project
+`cwd` (not `/` or your home) and an anchored pattern from `^` to `$` with no `.` wildcard, negated
+class, `\S`, `\W`, `\D`, space in a class, repeated group across words, lookaround or backreference.
+One invalid entry and the whole file is ignored: nothing is widened on a parse error, and
+`reflex doctor` prints a warning that names the problem.
 
 ### Calibrated allow
 

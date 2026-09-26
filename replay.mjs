@@ -265,7 +265,7 @@ async function replay() {
   const src = Object.entries(sources).map(([a, s]) => s.skipped ? `${a}: skipped (${s.skipped})` : `${a}: ${s.commands} commands in ${s.files} files`);
   console.log(`reflex replay · engine ${CONFIG.engine} · since ${result.since.slice(0, 16)}${project ? ` · project ${project}` : ""} · nothing executed`);
   console.log(`  sources      ${src.join("; ")}`);
-  console.log(`  commands     ${n}`);
+  console.log(`  commands     ${t.commands}`);
   console.log(`  pass         ${t.pass_read_only} read-only, ${t.pass_fast_lane} fast lane${t.rule_pass ? `, ${t.rule_pass} by rule` : ""}`);
   console.log(`  rules        ${t.rule_ask} ask, ${t.rule_deny} deny`);
   console.log(`  engine       ${Object.entries(t.engine).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(", ") || "none"} (${CONFIG.engine})`);

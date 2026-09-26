@@ -72,6 +72,7 @@ reflex check "terraform apply -auto-approve" --cwd ~/infra/envs/prod   # judge o
 reflex scan page.html                                                  # check text for prompt injection
 reflex report                                                          # decisions so far
 reflex replay claude --since 7d                                        # what it would have done with past sessions
+reflex suggest claude --since 30d                                      # fewer permission prompts: safe fast-lane entries from past sessions
 reflex doctor                                                          # local checks; no API calls
 reflex status                                                          # configured vs observed hooks
 reflex run "command" --cwd /path/to/work                               # human terminal handoff
@@ -86,6 +87,15 @@ the user policy shown by `reflex status` if needed, then switch to enforce. Dete
 enforce in shadow mode too; everything else is only logged. Settings and policy survive upgrades
 and uninstall. `reflex run` always enforces, asks on its controlling terminal when needed, and
 refuses deterministic denies; it does not grant an agent permission.
+
+To reduce approval prompts, `reflex suggest` reads the same session transcripts as `reflex replay`
+and proposes project-scoped fast-lane entries for the build, test and lint commands your agents keep
+asking about, with the count, a masked sample, why each is safe and the asks per 100 commands before
+and after. It works next to the Claude Code permissions allowlist and Codex approvals, keeps the
+human in the loop for everything else, and never suggests deletes, pushes, deploys, installs,
+network calls, secrets or production. `--write` changes Reflex's own configuration, so when an agent
+runs it the tamper rule asks a human: an agent cannot widen its own allow list. See
+[the guide](docs/GUIDE.md#suggest-fewer-permission-prompts).
 
 ## Features
 

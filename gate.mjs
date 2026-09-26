@@ -976,7 +976,7 @@ function precheckAs(command, cwd, env) {
       // an agent must not answer its own queue item, widen its own envelope or rewind the tree
       /\breflex\s+(setup|install|uninstall)\b/.test(command.replace(/["'\\]/g, "")) ||
       /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints)\b[^\n;&|]*\b(approve|deny|clear|set|restore)\b/.test(command.replace(/["'\\]/g, "")) ||
-      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
+      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     return ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"});
   // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
   if (/\bsuggest\b[^\n;&|]*\s--write\b/.test(command.replace(/["'\\]/g, "")))

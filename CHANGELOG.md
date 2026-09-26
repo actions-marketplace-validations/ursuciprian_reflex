@@ -6,6 +6,23 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `reflex suggest [claude|codex|opencode|pi|all] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]`:
+  fast-lane entries for the build, test and lint commands your agents keep asking about, to reduce
+  approval prompts. Reads the transcripts `reflex replay` reads and runs nothing. Templates keep every
+  argument literal except numbers and, for test runners and linters, repository-relative paths;
+  a template is suggested only when it names no denied word (deletes, pushes, deploys, installs,
+  network tools, cloud CLIs, secrets, production), every observed run passes in the hook's own code
+  with its scripts read in full, it is outside the always-human class and it rejects flag, path and
+  second-command probes. Prints the count, masked samples, why each is safe, and asks per 100
+  commands before and after; when nothing qualifies, what keeps asking.
+- User fast lane, `~/.config/reflex/fastlane.json`: anchored, wildcard-free patterns scoped to a
+  project directory, read after the bundled fast lane. It never overrides a rule, a tamper ask or
+  the always-human class, and the denylist, `cd` and script checks apply at run time. An invalid
+  file is ignored whole and `reflex doctor` warns. `reflex suggest --write` appends to it after
+  showing the lines and asking (or `--yes`); when an agent runs it, the tamper rule asks a human.
+
 ### Security
 
 - `tamper` missed writes to agent or Reflex settings reached through a directory change in the
@@ -51,6 +68,8 @@ All notable changes to Reflex are documented here. The format follows
     a quoted word a file name now ends at the quote.
   - `security find-generic-password … -w >/dev/null 2>&1; echo $?` counted as printing the key.
     A lookup whose output goes to `/dev/null` (and nowhere else) is not `secret-read`.
+- `reflex replay` read newer Codex rollouts' `file://` working directories as relative paths, so
+  local scripts were not found and project filters missed those commands.
 - README: the replay section has numbers for v0.9.0 on a new week, and what the fixes above change.
 
 ## [0.9.0] - 2026-09-26
