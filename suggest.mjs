@@ -10,7 +10,7 @@ import {DENY, FASTLANE_FILE, broad, compilePattern, loadFastLane, parseFastLane,
 
 const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // A repository-relative path: no leading /, ~, - or dot run, so no `..`, no flag, no home.
-const PATH_ARG = String.raw`(?:\./)?[\w@+][\w@+-]*(?:(?:/|\.|::?)[\w@+-]+)*/?`;
+const PATH_ARG = String.raw`(?:\./)?\w[\w@+-]*(?:(?:/|\.|::?)[\w@+-]+)*/?`;
 const isPath = t => new RegExp(`^${PATH_ARG}$`).test(t) && /[/.:]/.test(t) && !/^\d+(\.\d+)*$/.test(t);
 // Test runners, type checkers, linters and formatters: their positional arguments are the files they
 // read. Anything else keeps every argument literal.

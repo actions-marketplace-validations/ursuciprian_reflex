@@ -438,7 +438,11 @@ A template is only suggested when all of these hold:
 - no quotes, expansions, globs, redirects, environment assignments, absolute paths, `~` or `..`;
 - every observed run passes with it in the hook's own code: after the rules, the tamper check and the
   script rules; no `cd`; every local script it runs (package.json script, make recipe, shell file)
-  read in full and free of denied words; not in the always-human class;
+  read in full, free of denied words, and with nothing its text does not show: no `$` expansion
+  (`$VAR`, `$(…)`, `npm_package_config`), no backtick, redirect or `tee`; a Makefile is read whole
+  and must have no `include`, `SHELL`, `export`, `MAKEFLAGS` or `::` rule; a script that runs
+  JavaScript, Python or other interpreter code never qualifies, and neither does a `.npmrc` (in the
+  project or home) that sets `script-shell` or `node-options`; not in the always-human class;
 - it rejects a set of probes built from a real run: the run plus `--force`, `-rf /`, `--prod`,
   `--config=/etc/x`, `; rm -rf ~`, `| sh`, a redirect, `$(curl …)`, `sudo`, an environment prefix,
   a leading `cd /`, and its last word swapped for `-rf`, `../../x`, `/etc/passwd` and
@@ -469,9 +473,11 @@ engine decision into a pass. A deny, a secret read, a tamper ask, a rule over a 
 always-human class (every rule in `escalation.json`, production contexts included) still decide
 first, and the denylist, the `cd` check and the script check above apply to every command at run
 time, not only when the entry was suggested: a script that later starts sending data stops passing.
-An entry applies in its `cwd` and below. The file is strict: an entry must have an absolute project
-`cwd` (not `/` or your home) and an anchored pattern from `^` to `$` with no `.` wildcard, negated
-class, `\S`, `\W`, `\D`, space in a class, repeated group across words, lookaround or backreference.
+An entry applies in its `cwd` and below. Like the bundled fast lane's `pytest` and `go test`, a test
+runner or linter entry trusts the repository's own test code and configuration. The file is strict:
+an entry must have an absolute project `cwd` (not `/` or your home) and an anchored pattern from `^`
+to `$` with no `.` wildcard, negated class, `\S`, `\W`, `\D`, `\x`, `\u`, `\p`, `\c`, space in a
+class, range other than `a-z`, `A-Z` and `0-9`, repeated group across words, lookaround or backreference.
 One invalid entry and the whole file is ignored: nothing is widened on a parse error, and
 `reflex doctor` prints a warning that names the problem.
 

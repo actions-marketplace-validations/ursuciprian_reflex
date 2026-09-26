@@ -63,9 +63,15 @@ export function patternError(p) {
   for (let i = 1; i < p.length - 1; i++) {
     const ch = p[i];
     if (ch === "\\") {
-      if (/[SWDbBk1-9]/.test(p[i + 1] ?? "") || (cls && p[i + 1] === "s")) return `pattern must not use \\${p[i + 1]}${cls ? " in a class" : ""}`;
+      // \x20,  , \p{…}, \c: a space or a quote by another name
+      if (/[SWDbBk0-9xupPc]/.test(p[i + 1] ?? "") || (cls && p[i + 1] === "s")) return `pattern must not use \\${p[i + 1]}${cls ? " in a class" : ""}`;
       i++;
-    } else if (cls) { if (ch === "]") cls = false; else if (/\s/.test(ch)) return "pattern must not put a space in a class"; }
+    } else if (cls) {
+      if (ch === "]") cls = false;
+      else if (/\s/.test(ch)) return "pattern must not put a space in a class";
+      // a range other than a-z, A-Z, 0-9 ([!-~] is every printable character)
+      else if (ch === "-" && p[i - 1] !== "[" && p[i + 1] !== "]" && !/^(a-z|A-Z|0-9)$/.test(p.slice(i - 1, i + 2))) return "pattern may only use the ranges a-z, A-Z and 0-9";
+    }
     else if (ch === "[") { if (p[i + 1] === "^") return "pattern must not use a negated class [^...]"; cls = true; }
     else if (ch === ".") return "pattern must not use . (any character); escape it as \\.";
     else if (ch === "$" || ch === "^") return "pattern must not use ^ or $ inside";
@@ -94,6 +100,31 @@ export function loadFastLane(file = FASTLANE_FILE) {
 }
 
 const inside = (cwd, root) => cwd === root || cwd.startsWith(root + "/");
+
+// A local script the user lane may run: read in full, shell text (a package.json script, a make
+// recipe, a shell file), no denied word, and nothing the text itself does not show: no expansion
+// ($VAR, $(…), `…`, npm_package_config), no redirect or tee. Interpreter code (.js, .py, …) is not
+// read as code, so it never qualifies. A Makefile counts as a whole: make reads variables, includes,
+// $(shell), SHELL, double-colon and repeated rules and deeper prerequisites from anywhere in it.
+const CODE_FILE = /\.([cm]?[jt]sx?|py|rb|pl|php|lua)$/i, MAKEFILE = /(^|\/)(GNUmakefile|makefile|Makefile)$/;
+const opaque = text => /[$`]|\btee\b|npm_package_config/.test(text) ||
+  />/.test(text.replace(/[0-9&]?>{1,2}\s*\/dev\/null\b/g, "").replace(/[0-9]>&[0-9]/g, ""));
+function scriptOk(s) {
+  if (s.unseen || !s.body || CODE_FILE.test(s.path)) return false;
+  let text = s.body;
+  if (MAKEFILE.test(s.path)) {
+    try { text = readFileSync(s.path, "utf8"); } catch { return false; }
+    if (text.length > 256 * 1024 || /^\s*-?include\b|^\s*(export|unexport|override|vpath)\b|\bSHELL\b|\.SHELLFLAGS|\.ONESHELL|MAKEFLAGS|::/m.test(text)) return false;
+  }
+  return !DENY.test(text) && !opaque(text);
+}
+// npm and pnpm run every script through `script-shell`, and `node-options` can preload code: a
+// .npmrc that sets either, in the project or the home directory, runs something nobody read.
+function npmrcRedirects(cwd) {
+  const dirs = [homedir()];
+  for (let d = cwd; d !== dirname(d); d = dirname(d)) dirs.push(d);
+  return dirs.some(d => { try { return /^\s*(script-shell|node-options|shell)\s*=/mi.test(readFileSync(join(d, ".npmrc"), "utf8")); } catch { return false; } });
+}
 /** True when the user fast lane passes the command: every segment read-only, bundled fast lane or a
  *  user pattern for this directory, no DENY word, no `cd`, every local script it runs read in full and
  *  free of DENY words, and nothing in the always-human class. precheck calls it last, after the rules. */
@@ -108,7 +139,8 @@ export function userFastPass(command, cwd, env = {}, entries = loadFastLane().en
   let used = false;
   const user = {test: seg => { const hit = !DENY.test(seg) && mine.some(e => e.re.test(seg)); used ||= hit; return hit; }};
   if (!readOnly(command, [...bundled, user]) || !used) return false;
-  if (localScripts(command, cwd).some(s => s.unseen || !s.body || DENY.test(s.body))) return false;
+  if (localScripts(command, cwd).some(s => !scriptOk(s))) return false;
+  if (npmrcRedirects(cwd)) return false;
   const bare = stripDataHeredocs(command), haystack = [bare, `cwd=${cwd}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].join(" ");
   return !checkRules(haystack, {rules: load("escalation.json").always_human.rules}, bare);
 }
