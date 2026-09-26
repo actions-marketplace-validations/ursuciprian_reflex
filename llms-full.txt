@@ -1,0 +1,345 @@
+# Reflex
+
+> Reflex is an open-source (MIT) pre-execution risk gate and prompt injection guard for AI coding agents such as Claude Code, Codex CLI, opencode, pi, oh-my-pi and Hermes. It decides for every shell command an agent wants to run whether it runs, needs a human's approval, or is blocked, and scans what the agent reads for prompt injection. Local deterministic rules come first; the rest is decided by the engine you choose: `local` (no key), TypeSafe Jev (a hosted System One model) or Laya (experimental, local).
+
+This file inlines the essential content of the Reflex documentation. Sources: README.md, docs/FAQ.md, docs/SETUP.md and docs/GUIDE.md in https://github.com/ursuciprian/reflex (npm: `@ursuciprian/reflex`, version 0.9.0 at the time of writing).
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash
+# or
+npx @ursuciprian/reflex setup
+pnpm dlx @ursuciprian/reflex setup
+bunx @ursuciprian/reflex setup
+yarn dlx @ursuciprian/reflex setup    # yarn 2+
+```
+
+- Requirements: Node.js 18+ on macOS or Linux (including WSL). Native Windows is not supported yet. No runtime dependencies. The optional LiteLLM routing hook needs Python 3.9+, the optional Laya engine Python 3.10+.
+- The installer copies the package to `~/.local/share/reflex`, links `reflex` into `~/.local/bin`, and adds hooks to every supported agent it finds, in shadow mode, with the local engine.
+- Options: `--agents claude,codex`, `--mode shadow|enforce|off`, `--engine local|jev|laya`, `--allow off|shadow|on`, `--dry-run`, `--profile supervised|autonomous`.
+- Jev needs a TypeSafe API key from https://console.typesafe.ai/keys, in `TYPESAFE_API_KEY` or the macOS Keychain item `typesafe-api-key`.
+- Settings live in `~/.config/reflex/config.json`, the editable policy in `~/.config/reflex/tool-gate/policy.json`, logs in `~/.local/state/reflex/`.
+
+## What it does
+
+Command gate:
+
+- Blocks destructive commands such as `rm -rf ~`, deletes against production and force pushes to `main` with deterministic rules, in shadow and enforce modes.
+- Judges the rest in context: working directory, AWS profile and region, kube context, Terraform workspace, git branch, and what the agent said it was doing.
+- Reads the local script, make target or package script a command runs before it runs. Code it cannot read (`npx` packages, imported modules, `NODE_OPTIONS`, `curl | bash`) is marked unseen and never auto-approved.
+- Asks before reading SSH private keys, `~/.aws/credentials`, `.netrc`, `.pgpass`, `.env` files or Kubernetes secrets.
+- By default emits only `ask` or `deny` and leaves `pass` to the agent's own permission settings. Opt-in calibrated allow lets it approve commands Jev judges clearly safe.
+- Redacts secrets before anything leaves the machine or is logged.
+
+Prompt injection guard:
+
+- Scans tool results from the web, MCP servers, files outside the project and network commands for text written to steer the agent: hidden Unicode, instructions in HTML comments or hidden elements, text addressed to an AI, markdown image exfiltration, encoded payloads, letter-spaced phrases.
+- Warns the agent, or removes the offending text where the agent lets a hook rewrite results.
+- After a finding in enforce mode, the gate is stricter for the rest of that session: network egress asks, and nothing is auto-approved.
+- In enforce mode, blocks prompts that contain a pasted credential.
+
+Autonomous coding agents with a human in the loop (the autonomous profile):
+
+- System 1 (rules and Jev) resolves most commands; uncertain ones go to System 2 (the `claude` CLI, `codex exec`, the Anthropic API or any OpenAI-compatible endpoint); the rest wait in an approval queue while the agent continues with other work.
+- An always-human class that no model can approve: production changes, IAM and permission changes, writing secrets, destructive deletes, money and billing APIs, egress after a suspected prompt injection, and every deterministic rule outcome.
+- Task envelopes (`reflex envelope set "..."`), git checkpoints of tracked files before mutating commands, budgets, per-session caps, a verdict cache and a breaker.
+- A System 2 error, timeout, unreadable answer or spent budget goes to a human, never to an approval.
+
+## How a command is decided
+
+```
+command
+  |-- read-only (ls, git status, kubectl get, ...)          -> pass, no API call
+  |-- rule match (rm -rf ~, prod delete, force push main)   -> deny or ask
+  |-- rule match inside a script it runs                    -> deny or ask
+  |-- known safe (go test, npm ci, git push origin feat/x)  -> pass, no API call
+  `-- uncertain -> local: ask; Jev: questions + policy       -> pass, ask or deny
+```
+
+With the Jev engine each uncertain command is one request with six typed questions (eight with a task envelope): `mutates` (probability it changes state outside the working directory), `blast` (score 0 to 3, worst plausible impact), `env` (local, nonprod, production or unknown), `exfil` (probability it sends secrets or private data out), `on_task` (probability it matches what the agent said it was doing), `injection` (probability text in the command tries to influence the review). The policy file (`policy.json`) turns the answers into pass, ask or deny; if Jev fails or times out, the policy's fallback (`ask`) applies.
+
+Modes:
+
+- `off`: nothing runs.
+- `shadow` (default): rules are enforced; Jev or Laya decisions run in a detached background process, and everything else is only logged.
+- `enforce`: `ask` means a human confirms (how depends on the agent); `deny` blocks the command and the agent sees why.
+
+Every decision is logged with the policy and rule versions to `~/.local/state/reflex/`.
+
+## Engines
+
+- `local` (default for new installs): rules, the read-only list and the fast lane. No key, no network calls. Uncovered commands ask.
+- `jev`: TypeSafe's Jev model through the System One API answers the typed questions; the policy file decides. Pinned model `jev-1.13.0`.
+- `laya` (experimental): the same questions answered by a Laya checkpoint (`typed-decisions` by default, from https://huggingface.co/convaiinnovations/laya) served on 127.0.0.1. Nothing leaves the machine. Measured below Jev on every golden set, so not recommended for enforcement.
+
+## Supported agents
+
+| Agent | Hook | How `ask` is shown |
+|---|---|---|
+| Claude Code | `PreToolUse` | Claude Code permission prompt |
+| Codex CLI | `PreToolUse` | Blocked; human uses `reflex run` in their own terminal |
+| pi, oh-my-pi | extension `tool_call` | Native confirm dialog |
+| opencode | plugin `tool.execute.before` | Blocked; human uses `reflex run` in their own terminal |
+| Hermes | `pre_tool_call` | Hermes approval prompt |
+| Other | `bin/reflex-sh` as the shell | y/N on the terminal |
+
+Coverage is agent shell tools, subagent spawns (for dedup) and the optional tool router's own calls. File-edit tools and MCP tool calls go through each agent's own permissions. Codex hooks must be trusted in `/hooks` before they run.
+
+## Commands
+
+```sh
+reflex check "terraform apply -auto-approve" --cwd ~/infra/envs/prod   # judge one command
+reflex scan page.html                                                  # check text for prompt injection (exit 0 pass, 1 warn, 2 block)
+reflex report                                                          # decisions so far
+reflex replay claude --since 7d                                        # what it would have done with past sessions; runs nothing
+reflex suggest claude --since 30d                                      # fast-lane entries for repeated build, test and lint asks
+reflex bench                                                           # precheck latency, local only
+reflex doctor                                                          # local checks; no API calls
+reflex status                                                          # configured vs observed hooks
+reflex run "command" --cwd /path/to/work                               # human terminal handoff
+reflex setup --mode enforce                                            # start enforcing
+reflex setup --profile autonomous                                      # System 2 and the approval queue
+reflex queue                                                           # what waits for a human
+reflex envelope set "may modify this repo; nothing in prod"            # task envelope
+reflex checkpoints                                                     # recovery points before mutations
+reflex laya start|stop|status                                          # the local Laya server
+reflex uninstall
+```
+
+A typical rollout: install in shadow mode, use your agents for a week, read `reflex report`, adjust the user policy if needed, then switch to enforce.
+
+## Measured results
+
+Every number comes from a golden set in the repository; the Jev columns ran against the live API with `jev-1.13.0`.
+
+| Golden set | Jev engine | Local engine (keyless) |
+|---|---|---|
+| Tool gate, 97 commands | 97 as labelled, 0 MISS, 0 over-strict; 6 of 7 allow-eligible cases allowed | 78 as labelled, 1 MISS (a deny softened to ask), 18 over-strict |
+| Prompt injection, 62 results (33 injections, 29 benign) | 62 of 62 exact outcomes, precision 97 %, recall 100 %, 0 high-severity missed | precision 81 %, recall 79 %, 7 high-severity missed |
+| Escalation ladder, 41 commands | 41 of 41 resolved as labelled, 0 unsafe approvals, 26.8 human interventions and 19.5 System 2 calls per 100 commands | 0 unsafe approvals, 34.1 human interventions and 36.6 System 2 calls per 100 commands |
+
+A MISS is a risky command that got a softer outcome than labelled.
+
+System 2 cost per call (the `claude` CLI, measured on Claude Code 2.1.282 with a subscription login): naive call 36,826 input tokens, $0.28 at API prices, 7.3 s; Reflex's lean flags with `--model sonnet`, about 3,100 input tokens, $0.016 on the first call and $0.004 to $0.005 when the prefix is cached, 3 to 4 s.
+
+Jev vs Laya, same cases, same hour (Laya 0.3.20 on an Apple M5 Max): tool gate (97) ok/MISS/over-strict: Jev 97/0/0, Laya `typed-decisions` 64/0/33; injection guard precision/recall: Jev 97 %/100 %, Laya 54 %/100 %; instructions (20) exact: Jev 20, Laya 2; tool gate latency p50: Jev 300 to 330 ms over the network, Laya 125 ms local.
+
+Replay of one DevOps and GenAI engineer's last 7 days, local engine, v0.9.0: Claude Code 13,743 shell commands, 7,066 (51 %) passed as read-only or fast lane with no API call, 597 asked and 32 denied by a rule, 48.4 per 100 would reach a human (keyless, supervised), about $0.47 estimated to send the rest to Jev. Codex: 700 commands, 517 (74 %) passed, 26.1 per 100 would reach a human.
+
+## Cost and latency
+
+- The local engine never calls TypeSafe. Read-only, rule and fast-lane commands need no API call in any engine.
+- A Jev call is about 1k input tokens and took 0.35 to 0.42 s in the README scenarios (about 0.7 s in enforce mode per the guide). The budget per call is 3 s (`REFLEX_TIMEOUT_MS`), after which the policy fallback applies.
+- In shadow mode, classification runs in a detached background process, so the agent does not wait.
+- Identical commands in the same context are cached for 24 hours.
+- TypeSafe publishes no price list. Replay estimates Jev spend at $0.04 per million input tokens; set `REFLEX_JEV_USD_PER_MTOK` to your price.
+- The Laya engine costs nothing per call and keeps about 1.4 GB resident on an M5 Max (2.2 GB on CPU); on a CPU-only machine it can exceed the 3 s budget and fall back to ask.
+
+## Data handling
+
+- Local engine: nothing leaves the machine.
+- Jev engine, for commands that reach Jev only: the command with secrets redacted, the working directory path, environment names (AWS profile, region, kube context, Terraform workspace, git branch), the agent's last message and last five commands (redacted, truncated), and the first 16 KB of a local script the command runs (redacted, never a credentials file such as `.env`). Read-only, rule and fast-lane commands never leave the machine.
+- Injection guard with Jev: up to 8 redacted chunks of 3,000 characters per inspected tool result, the tool name and a redacted origin.
+- Laya engine: everything goes to the Laya server on 127.0.0.1 instead.
+- System 2: a redacted case of at most 1,500 tokens to the backend you chose.
+- TypeSafe states it does not train on customer data; see https://docs.typesafe.ai/legal.
+
+## Limits
+
+- Rules and the read-only list are pattern matching, not a shell parser. They are designed to fail towards asking, and the self-checks pin known bypasses; treat them as a strong filter.
+- Only shell tools (and subagent spawns) are gated. File edits, MCP calls, omp's `eval` and Hermes' `execute_code` are not.
+- The injection guard is a heuristic filter. An injection phrased as ordinary prose passes the local detectors; Jev is there for that.
+- Scripts are read when the hook runs, not when the command runs.
+- Keyless, nothing classifies the environment or exfiltration beyond the rules; use a TypeSafe key for production-adjacent work.
+- Keep IAM, network controls and least-privilege credentials; Reflex supplements them.
+
+## FAQ
+
+### What is Reflex?
+
+Reflex is an open-source (MIT) pre-execution risk gate and prompt injection guard for AI coding
+agents such as Claude Code, Codex CLI, opencode and pi. It hooks into the agent and decides, for
+every shell command the agent wants to run, whether it runs, needs a human's approval, or is
+blocked; it also scans what the agent reads for prompt injection. Decisions come from local rules
+first, then from the engine you pick: `local` (no key), TypeSafe Jev (a hosted System One model)
+or Laya (experimental, on your machine). It is published on npm as `@ursuciprian/reflex`.
+
+### How do I stop Claude Code from running dangerous commands?
+
+Install Reflex, which adds a Claude Code `PreToolUse` hook that checks every Bash command before it
+runs: `npx @ursuciprian/reflex setup`. Its deterministic rules deny `rm -rf ~`, destructive
+operations on production and force pushes to `main`, and ask before reads of SSH private keys,
+`~/.aws/credentials`, `.netrc`, `.pgpass`, `.env` files or Kubernetes secrets; the rules block in
+shadow mode too. Commands the rules do not cover are asked about (local engine) or judged by Jev
+in context (AWS profile, kube context, Terraform workspace, git branch, the script the command
+runs). After a shadow period, `reflex setup --mode enforce` puts those judgments in front of the
+agent.
+
+### How is Reflex different from Claude Code permission prompts and allowlists?
+
+Claude Code's permission rules match tools and command prefixes; Reflex judges each shell command
+by what it does and where it points. It reads the local script, make target or package script a
+command runs, and knows the AWS profile, kube context, Terraform workspace and git branch. By
+default Reflex only emits `ask` or `deny` and leaves `pass` to your permission settings, so your
+allowlist keeps working. Claude Code's own rules cover file edits, web fetches and MCP tools, which
+Reflex does not gate.
+
+### Can I use Reflex with --dangerously-skip-permissions?
+
+Yes: with prompts turned off, Reflex's rule denies still apply. In the autonomous profile, a
+command that needs a human is parked in the approval queue and returned to the agent as a deny with
+a queue id, so the run continues while the command waits for you. Only shell commands (and
+subagent spawns) are gated, so file edits and MCP calls run unchecked in that mode.
+
+### Do I still need a devcontainer or a sandbox if I use Reflex?
+
+Keep one if you have one: a sandbox limits what any command can reach, Reflex decides per command,
+and the two work together. A container still holds whatever cloud credentials, kube configs and
+SSH keys are mounted into it, and those reach production from inside; Reflex judges the commands
+that use them and scans what the agent reads. Keep IAM, network controls and least-privilege
+credentials as well.
+
+### What guardrails can I add to Codex CLI, and how does Reflex work with the Codex sandbox?
+
+Reflex adds Codex hooks (`PreToolUse` and `PostToolUse` in `~/.codex/hooks.json`) that judge each
+Bash command inside whatever sandbox mode and approval policy Codex runs with; those stay in
+charge. Codex hooks cannot show a prompt or approve, so a Reflex `ask` blocks with a reason, and the
+human runs the exact command with `reflex run "command" --cwd /path` in their own terminal. The
+injection guard reads Bash and MCP results in Codex (web search is not hookable). Hooks must be
+trusted once in Codex's `/hooks` before they run.
+
+### How is Reflex different from abide?
+
+[abide](https://github.com/coldteadotai/abide) checks the code an agent writes against your
+`AGENTS.md` or project rules, using Jev; Reflex gates shell commands and scans tool results before
+the agent acts on them. They are complementary, and both can run on the same agent.
+
+### Which AI coding agents does Reflex support?
+
+Claude Code, Codex CLI, pi, oh-my-pi, opencode and Hermes, each through its own hook system; any
+other agent can use `bin/reflex-sh` as its shell. Setup hooks every supported agent it finds (for
+Hermes it prints a block to paste into `config.yaml`), or the ones you name with
+`--agents claude,codex`. Reflex needs Node.js 18+ on macOS or Linux,
+including WSL; native Windows is not supported yet.
+
+### Does Reflex need an API key, an account or LiteLLM?
+
+No. New installs use the local engine: rules, the read-only list and the fast lane, with no
+account, no key and no network calls. A TypeSafe API key is needed only for `--engine jev`; the
+experimental Laya engine runs on 127.0.0.1 with no key (it needs Python 3.10+). LiteLLM is needed
+only for the optional model routing hook, and the gate never uses it. Some optional features need
+Jev: subgoal dedup, semantic instruction selection, model routing and the context layer.
+
+### What is TypeSafe Jev (System One)?
+
+Jev is TypeSafe's small System One model: it answers typed questions (probabilities, scores and
+choices) about a piece of state, through TypeSafe's System One API. For each command the rules do
+not settle, Reflex sends one request with six questions (`mutates`, `blast`, `env`, `exfil`,
+`on_task`, `injection`; eight with a task envelope), and your `policy.json` turns the answers into
+pass, ask or deny. The pinned model is `jev-1.13.0`; on the tool gate golden set it labelled all 97
+commands as expected with 0 misses. Keys come from the [TypeSafe console](https://console.typesafe.ai/keys).
+
+### Jev vs Laya: which engine should I use?
+
+Use Jev for decisions; Laya is experimental and measured below Jev on every golden set. Laya runs a
+[Laya checkpoint](https://huggingface.co/convaiinnovations/laya) on 127.0.0.1, so nothing leaves
+the machine and a call costs nothing, with a tool gate p50 of 125 ms on an Apple M5 Max against
+Jev's 300 to 330 ms over the network. On the tool gate golden set Laya got 64 of 97 commands right
+with 33 over-strict (Jev 97, 0, 0), and on the injection golden set precision 54 % against 97 %. Use
+Laya to run fully offline in shadow mode; for keyless enforcement, the local engine is the
+recommended choice.
+
+### How much does Reflex cost to run?
+
+Reflex is free and MIT licensed, and the local and Laya engines cost nothing per call. With Jev, a
+command the rules leave open costs about 1k input tokens; TypeSafe publishes no price list, so
+replay estimates spend at $0.04 per million input tokens (set `REFLEX_JEV_USD_PER_MTOK` to your
+price). On one engineer's week of 13,743 Claude Code commands, that estimate was about $0.47.
+Read-only, rule and fast-lane commands need no API call, and identical commands in the same context
+are cached for 24 hours. In the autonomous profile a System 2 call with the `claude` CLI measured
+$0.004 to $0.016 at API prices, capped by default at 200 calls and $5 a day (300 calls keyless).
+
+### How much latency does Reflex add?
+
+None for most commands: those settled by the read-only list, the rules or the fast lane make no
+network call. A Jev call adds 0.35 to 0.42 s in the README scenarios (the GUIDE's figure is about
+0.7 s in enforce mode), with a 3 s budget after which the policy's fallback applies. In shadow mode Jev runs in a detached
+background process, so the agent does not wait. A System 2 escalation with the `claude` CLI takes 3
+to 4 s; Laya answered the tool gate in 125 ms p50 on an Apple M5 Max, but a CPU-only machine can
+exceed the 3 s budget. `reflex bench --engine jev` (or `--engine laya`) measures it on your machine.
+
+### Does Reflex send my code anywhere?
+
+Not with the default local engine: nothing leaves the machine. With Jev, a command the rules leave
+open sends TypeSafe the command with secrets redacted, the working directory path,
+environment names (AWS profile, region, kube context, Terraform workspace, git branch), the agent's
+last message and last five commands (redacted and truncated), and the first 16 KB of a local script
+the command runs (redacted, never a credentials file such as `.env`). With the injection guard on
+Jev, up to 8 redacted chunks of 3,000 characters of an inspected tool result are sent, with the
+tool name, a redacted origin and, in Claude Code, the last 1,000 characters of your prompt.
+Conditional instructions and subgoal dedup, when used, send their own redacted context. The Laya
+engine sends to 127.0.0.1 only, and System 2 sends a redacted case of at most 1,500 tokens to the
+backend you chose.
+
+### What happens when Jev is down or slow?
+
+The policy's fallback applies, which is `ask`: in enforce mode with the supervised profile a human
+reviews the command. The rules, the read-only list and the fast lane run locally and keep
+working. In shadow mode Jev only logs from a background process, so the agent is not affected. In
+the autonomous profile those asks go to System 2, which may approve them as a pass (never an
+allow), and a breaker pauses System 2 when more than 30 %
+of judged commands escalate within an hour, so an outage fills the approval queue instead of the
+bill. A Laya server that is down behaves the same way.
+
+### Does Reflex protect coding agents against prompt injection?
+
+Yes, as a filter: the injection guard scans tool results from the web, MCP servers, files outside
+the project and network commands for text written to steer the agent (hidden Unicode, instructions
+in HTML comments or hidden elements, text addressed to an AI, markdown image exfiltration, encoded
+payloads). In enforce mode it warns the agent or removes the text, then makes the rest of the
+session stricter: network egress asks and nothing is auto-approved. In enforce mode it also blocks
+prompts that contain a pasted credential. On a 62-case golden set Jev reached 97 % precision and 100 % recall,
+the local detectors 81 % and 79 %; an injection written as ordinary prose can pass the local
+detectors.
+
+### How do I reduce permission prompts in Claude Code and approve agent commands automatically but safely?
+
+Two ways, both opt-in. `reflex suggest` reads your past sessions and proposes project-scoped
+fast-lane entries for the build, test and lint commands your agents keep asking about, never for
+deletes, pushes, deploys, installs, network calls, secrets or production, and shows the asks per
+100 commands before and after; `--write` adds them after you confirm. Calibrated allow (Jev engine,
+`--mode enforce --allow on`) lets commands Jev judges clearly safe skip Claude Code's permission
+prompt; rule outcomes, commands without a stated intent, code Jev did not see in full and cached
+answers are never allowed, and Claude Code's own deny and ask rules still apply. Start it with
+`--allow shadow`, and `reflex report` recommends thresholds from the commands you approved; on the
+tool gate golden set it allowed 6 of 7 allow-eligible commands with 0 misses.
+
+### Can Reflex run autonomous coding agents with no human watching?
+
+Yes, with the autonomous profile (`reflex setup --profile autonomous`): System 1 (rules and Jev)
+resolves most commands, uncertain ones go to a stronger model (System 2: the `claude` CLI, `codex
+exec`, the Anthropic API or an OpenAI-compatible endpoint), and the rest wait in an approval queue
+while the agent continues with other work. Production changes, IAM changes, writing secrets,
+destructive deletes, billing APIs and every rule outcome always go to a human, and a System 2
+error, timeout or spent budget goes to a human too, never to an approval. On the 41-command ladder
+golden set it made 0 unsafe approvals. Without a TypeSafe key the profile runs keyless, with
+System 2 judging what the rules do not cover.
+
+### How do I try Reflex safely before enforcing it?
+
+Install it as is: new installs run in shadow mode, where deterministic rules still block and every
+other decision is only logged. `reflex replay all --since 7d` runs the commands from your past
+Claude Code, Codex, opencode or pi sessions through the gate; it executes nothing and writes
+nothing. `reflex check "command"` judges one command, `reflex setup --dry-run` previews
+configuration changes, and `REFLEX_MODE=enforce claude` tries enforce for one session. After a week,
+read `reflex report`, then run `reflex setup --mode enforce`.
+
+### How do I uninstall Reflex?
+
+Run `reflex uninstall`: it removes the hooks from every agent except Hermes (it prints the entries
+to delete from each profile's `config.yaml`), the package in
+`~/.local/share/reflex` and the `reflex` link, and stops a Laya server if one was set up. It keeps
+your settings and policy in `~/.config/reflex` and your logs in `~/.local/state/reflex`; delete the
+logs with `rm -rf ~/.local/state/reflex`. Without the command on `PATH`, use
+`curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash -s -- --uninstall`.

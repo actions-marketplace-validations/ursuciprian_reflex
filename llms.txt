@@ -1,0 +1,43 @@
+# Reflex
+
+> Reflex is an open-source (MIT) pre-execution risk gate and prompt injection guard for AI coding agents such as Claude Code, Codex CLI, opencode, pi, oh-my-pi and Hermes. Through each agent's hooks it decides for every shell command whether it runs, needs a human's approval, or is blocked, and it scans tool results (web pages, MCP results, files from other projects, network command output) for prompt injection. Decisions come from local deterministic rules first, then from the engine you choose: `local` (no key, no network), TypeSafe Jev (a hosted System One model answering typed questions, turned into a decision by an editable policy file) or Laya (experimental, on 127.0.0.1). An autonomous profile adds a stronger model (System 2) and an asynchronous human approval queue.
+
+Install with `npx @ursuciprian/reflex setup` (or `curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash`). Requires Node.js 18+ on macOS or Linux, including WSL. New installs use the local engine in shadow mode: deterministic rules block, everything else is logged. Reflex gates shell commands and subagent spawns only; file edits and MCP tool calls go through each agent's own permissions. It supplements a sandbox and least-privilege credentials.
+
+npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/reflex
+
+## Docs
+
+- [README](https://github.com/ursuciprian/reflex#readme): what Reflex is, install, usage, features, measured results and limits
+- [In one minute](https://github.com/ursuciprian/reflex#in-one-minute): a seven-point summary of what Reflex does and does not do
+- [Install](https://github.com/ursuciprian/reflex#install): one-line install with curl, npx, pnpm dlx, bunx or yarn dlx
+- [How a command is decided](https://github.com/ursuciprian/reflex#how-a-command-is-decided): read-only list, rules, fast lane, then the engine and the policy; the six Jev questions
+- [Real-world scenarios, with outputs](https://github.com/ursuciprian/reflex#real-world-scenarios-with-outputs): unedited decisions for terraform apply in prod, kubectl delete, curl piped to bash, a prompt injection in a README
+- [Measured results](https://github.com/ursuciprian/reflex#measured-results): golden-set numbers for the tool gate, the injection guard, the escalation ladder, System 2 cost and Jev vs Laya
+- [Replay on a real week](https://github.com/ursuciprian/reflex#replay-what-it-would-have-done-on-a-real-week): what the gate would have done with 13,743 Claude Code and 700 Codex commands
+- [Compared with other AI coding agent guardrails](https://github.com/ursuciprian/reflex#compared-with-other-ai-coding-agent-guardrails): Claude Code permission rules, --dangerously-skip-permissions, devcontainers, the Codex sandbox, abide, LLM-as-judge hooks
+- [Supported agents](https://github.com/ursuciprian/reflex#supported-agents-claude-code-hooks-codex-hooks-and-more): which hook each agent uses and how an ask is shown
+- [Cost and latency](https://github.com/ursuciprian/reflex#cost-and-latency): token use, timing and price assumptions per engine
+- [Limits](https://github.com/ursuciprian/reflex#limits): what Reflex does not cover
+- [FAQ](https://github.com/ursuciprian/reflex/blob/main/docs/FAQ.md): 20 questions with direct answers, from "how do I stop Claude Code from running dangerous commands" to uninstalling
+- [Setup](https://github.com/ursuciprian/reflex/blob/main/docs/SETUP.md): TypeSafe key, install options, per-agent hooks, enforce mode, calibrated allow, the autonomous profile, configuration variables, uninstall
+- [Guide](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md): design, testing, rollout, data handling, safety properties, injection guard, autonomous agents, Laya
+
+## Key topics
+
+- [Data handling](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#data-handling): exactly what leaves the machine with each engine, and redaction
+- [Safety properties and limits](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#safety-properties-and-limits): fallbacks, failure modes and what is out of scope
+- [Injection guard](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#injection-guard): which tool results are scanned, detectors, what each agent can do with a finding
+- [Autonomous agents](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#autonomous-agents): System 2 backends, the always-human class, the approval queue, task envelopes, checkpoints
+- [Suggest: fewer permission prompts](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#suggest-fewer-permission-prompts): `reflex suggest` proposes project-scoped fast-lane entries for repeated build, test and lint commands
+- [Calibrated allow](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#calibrated-allow): letting clearly safe commands skip the agent's permission prompt
+- [Laya (local System 1)](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#laya-local-system-1): the experimental local engine and how it measured against Jev
+
+## Optional
+
+- [llms-full.txt](https://github.com/ursuciprian/reflex/blob/main/llms-full.txt): the essential content of the docs in one file
+- [Security policy](https://github.com/ursuciprian/reflex/blob/main/SECURITY.md): reporting vulnerabilities, scope, known limits
+- [Contributing](https://github.com/ursuciprian/reflex/blob/main/CONTRIBUTING.md): development, tests, invariants, repository layout
+- [Changelog](https://github.com/ursuciprian/reflex/blob/main/CHANGELOG.md): release notes for every version
+- [TypeSafe docs](https://docs.typesafe.ai): the System One API and the Jev model
+- [Laya on Hugging Face](https://huggingface.co/convaiinnovations/laya): the Laya checkpoints

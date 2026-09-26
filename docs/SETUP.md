@@ -1,4 +1,4 @@
-# Setup
+# Reflex setup: install the hooks for Claude Code, Codex CLI, pi, opencode and Hermes
 
 You need Node 18+ on macOS or Linux (including WSL) and at least one supported agent: Claude Code, Codex CLI,
 pi, oh-my-pi (omp), opencode or Hermes.

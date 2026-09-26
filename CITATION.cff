@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+message: "If you use Reflex in your work, please cite it with the metadata below."
+type: software
+title: "Reflex: a pre-execution risk gate and prompt injection guard for AI coding agents"
+abstract: >-
+  Reflex is an open-source pre-execution risk gate and prompt injection guard for AI coding
+  agents such as Claude Code, Codex CLI, opencode, pi, oh-my-pi and Hermes. Through each agent's
+  hooks it decides for every shell command whether it runs, needs a human's approval, or is
+  blocked, and it scans tool results for prompt injection. Local deterministic rules come first;
+  uncovered commands go to a local engine, to TypeSafe Jev (a hosted System One model) through an
+  editable policy file, or to an experimental local Laya engine. An autonomous profile adds a
+  stronger model (System 2) and an asynchronous human approval queue.
+authors:
+  - given-names: Ciprian
+    family-names: Ursu
+repository-code: "https://github.com/ursuciprian/reflex"
+url: "https://github.com/ursuciprian/reflex"
+repository-artifact: "https://www.npmjs.com/package/@ursuciprian/reflex"
+license: MIT
+version: 0.9.0
+date-released: "2026-09-26"
+keywords:
+  - AI coding agents
+  - Claude Code hooks
+  - Codex CLI
+  - opencode
+  - prompt injection
+  - tool call gating
+  - command approval
+  - human in the loop
+  - autonomous agents
+  - guardrails
+  - TypeSafe
+  - Jev
+  - System One
+  - Laya

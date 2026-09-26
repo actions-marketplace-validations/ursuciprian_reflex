@@ -1,26 +1,54 @@
-<h1 align="center"><img src="assets/wordmark.svg" alt="Reflex" width="320"></h1>
+<h1 align="center"><img src="assets/wordmark.svg" alt="Reflex, a pre-execution risk gate and prompt injection guard for AI coding agents" width="320"></h1>
 
 <p align="center">
-  <a href="https://github.com/ursuciprian/reflex/actions/workflows/ci.yml"><img src="https://github.com/ursuciprian/reflex/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
-  <a href="https://www.npmjs.com/package/@ursuciprian/reflex"><img src="https://img.shields.io/npm/v/@ursuciprian/reflex" alt="npm"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license: MIT"></a>
+  <a href="https://github.com/ursuciprian/reflex/actions/workflows/ci.yml"><img src="https://github.com/ursuciprian/reflex/actions/workflows/ci.yml/badge.svg" alt="CI status of the Reflex offline self-checks"></a>
+  <a href="https://www.npmjs.com/package/@ursuciprian/reflex"><img src="https://img.shields.io/npm/v/@ursuciprian/reflex" alt="Latest version of @ursuciprian/reflex on npm"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-**Reflex is a pre-execution risk gate for AI coding agents.** It hooks into Claude Code, Codex CLI,
-pi, oh-my-pi, opencode and Hermes, and decides for every shell command the agent wants to run
-whether it runs, needs a human's approval, or is blocked. It also scans what the agent reads (web
-pages, MCP results, files from other projects, `curl` output) for prompt injection before the agent
-acts on it.
+**Reflex is an open-source pre-execution risk gate and prompt injection guard for AI coding agents
+such as Claude Code, Codex CLI, opencode and pi.** It hooks into each agent (Claude Code hooks,
+Codex hooks, pi and oh-my-pi extensions, an opencode plugin, Hermes hooks) and decides for every
+shell command the agent wants to run whether it runs, needs a human's approval, or is blocked. It
+also scans what the agent reads (web pages, MCP results, files from other projects, `curl` output)
+for prompt injection before the agent acts on it.
 
 Reflex starts locally with deterministic rules and no account. For commands the rules do not cover,
 it can ask [TypeSafe Jev](https://docs.typesafe.ai), a small System One model that answers typed
 questions in well under a second, and turn the answers into a decision with a policy file you can
-edit. An autonomous profile adds a stronger model (System 2) and an asynchronous human approval
+edit. [Laya](https://huggingface.co/convaiinnovations/laya) is an experimental local alternative to
+Jev. An autonomous profile adds a stronger model (System 2) and an asynchronous human approval
 queue, so autonomous coding agents only stop for the commands that need a person.
 
+### In one minute
+
+- **What it is:** a hook, installed with one command, that gates the shell tool of Claude Code,
+  Codex CLI, pi, oh-my-pi, opencode and Hermes. MIT licensed, Node.js 18+, no runtime dependencies.
+- **How it decides:** a read-only list, deterministic rules and a fast lane settle many commands
+  on the machine with no API call (about half of one engineer's week of Claude Code commands, in
+  the [replay](#replay-what-it-would-have-done-on-a-real-week) below). The rest go to the engine you chose: `local` asks a human, `jev`
+  asks TypeSafe Jev six typed questions and applies your `policy.json`, `laya` does the same on
+  127.0.0.1.
+- **What it blocks:** `rm -rf ~`, destructive operations on production, force pushes to `main`;
+  it asks before reads of SSH keys, `~/.aws/credentials` or `.env` files, and before commands
+  judged risky in context (AWS profile, kube context, Terraform workspace, git branch).
+- **Prompt injection:** tool results from the web, MCP servers, other projects and network
+  commands are scanned; in enforce mode a finding warns the agent or removes the text, and makes
+  the rest of the session stricter.
+- **No key needed to start:** new installs use the local engine in shadow mode. A TypeSafe API key
+  is optional.
+- **Safe to try:** shadow mode only logs (hard rules still block), and `reflex replay` shows what
+  it would have done with your past Claude Code, Codex, opencode and pi sessions without running
+  anything.
+- **Limits:** it gates shell commands, not file edits or MCP calls, and it does not replace a
+  sandbox or least-privilege credentials.
+
+Questions people ask about it are answered in the [Reflex FAQ](#faq) and in
+[docs/FAQ.md](docs/FAQ.md).
+
 - [Install](#install)
-- [Usage](#usage)
-- [Features](#features)
+- [Usage: Reflex commands](#usage-reflex-commands)
+- [Features: command approval, prompt injection guard, autonomous agents](#features-command-approval-prompt-injection-guard-autonomous-agents)
 - [How a command is decided](#how-a-command-is-decided)
 - [Real-world scenarios, with outputs](#real-world-scenarios-with-outputs)
 - [Measured results](#measured-results)
@@ -29,6 +57,7 @@ queue, so autonomous coding agents only stop for the commands that need a person
 - [Supported agents: Claude Code hooks, Codex hooks and more](#supported-agents-claude-code-hooks-codex-hooks-and-more)
 - [Cost and latency](#cost-and-latency)
 - [Limits](#limits)
+- [FAQ](#faq)
 - [Documentation](#documentation)
 
 ## Install
@@ -65,7 +94,7 @@ To use Jev, create a [TypeSafe API key](https://console.typesafe.ai/keys); macOS
 in the Keychain. See [docs/SETUP.md](docs/SETUP.md) for all options, per-agent notes and
 uninstalling.
 
-## Usage
+## Usage: Reflex commands
 
 ```sh
 reflex check "terraform apply -auto-approve" --cwd ~/infra/envs/prod   # judge one command
@@ -95,11 +124,11 @@ and after. It works next to the Claude Code permissions allowlist and Codex appr
 human in the loop for everything else, and never suggests deletes, pushes, deploys, installs,
 network calls, secrets or production. `--write` changes Reflex's own configuration, so when an agent
 runs it the tamper rule asks a human: an agent cannot widen its own allow list. See
-[the guide](docs/GUIDE.md#suggest-fewer-permission-prompts).
+[GUIDE: suggest fewer permission prompts](docs/GUIDE.md#suggest-fewer-permission-prompts).
 
-## Features
+## Features: command approval, prompt injection guard, autonomous agents
 
-**Command gate**
+### Command gate: tool call gating before execution
 
 - Blocks destructive commands such as `rm -rf ~`, deletes against production and force pushes to
   `main` with deterministic rules, in shadow and enforce modes.
@@ -115,7 +144,7 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   commands it judges clearly safe.
 - Redacts secrets before anything leaves the machine or is logged.
 
-**Prompt injection guard**
+### Prompt injection guard for coding agents
 
 - Scans tool results from the web, MCP servers, files outside the project and network commands for
   text written to steer the agent: hidden Unicode, instructions in HTML comments or hidden
@@ -126,7 +155,7 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   egress asks, and nothing is auto-approved.
 - In enforce mode, blocks prompts that contain a pasted credential.
 
-**Autonomous coding agents with a human in the loop**
+### Autonomous coding agents with a human in the loop
 
 - An escalation ladder: System 1 (rules and Jev) resolves most commands, uncertain ones go to a
   stronger model (System 2: the `claude` CLI, `codex exec`, the Anthropic API or any
@@ -140,7 +169,7 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   the index.
 - Budgets, per-session caps, a verdict cache and a breaker that keep System 2 spend small.
 
-**Engines**
+### Engines: local rules, TypeSafe Jev (System One), Laya
 
 - `local` (default for new installs): rules, the read-only list and the fast lane. No key, no
   network calls. Uncovered commands ask.
@@ -149,9 +178,9 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
 - `laya` (experimental): the same questions answered by a
   [Laya](https://huggingface.co/convaiinnovations/laya) checkpoint (`typed-decisions` by default)
   served on 127.0.0.1. Nothing leaves the machine. Measured below Jev on every golden set, so
-  not recommended for enforcement ([GUIDE](docs/GUIDE.md#laya-local-system-1)).
+  not recommended for enforcement ([GUIDE: Laya, local System 1](docs/GUIDE.md#laya-local-system-1)).
 
-**Also included** (optional, most need Jev)
+### Also included (optional, most need Jev)
 
 - Subgoal dedup: denies a subagent spawn that repeats one already launched in the session.
 - [Conditional instructions](docs/GUIDE.md#conditional-instructions): `.reflex/instructions/*.md`
@@ -575,9 +604,9 @@ and System 2 numbers are from the runs recorded in [docs/GUIDE.md](docs/GUIDE.md
 
 | Golden set | Jev engine | Local engine (keyless) | Method |
 |---|---|---|---|
-| Tool gate, 97 commands | 97 as labelled, 0 MISS, 0 over-strict; 6 of 7 allow-eligible cases allowed | 78 as labelled, 1 MISS (a deny softened to ask), 18 over-strict | `npm run eval` ([GUIDE](docs/GUIDE.md#3-golden-set-on-every-change-to-questions-policy-or-rules)) |
-| Prompt injection, 62 results (33 injections, 29 benign) | 62 of 62 exact outcomes, precision 97 %, recall 100 %, 0 high-severity missed | precision 81 %, recall 79 %, 7 high-severity missed | `npm run eval-injection` ([GUIDE](docs/GUIDE.md#injection-guard)) |
-| Escalation ladder, 41 commands | 41 of 41 resolved as labelled, 0 unsafe approvals, 26.8 human interventions and 19.5 System 2 calls per 100 commands | 0 unsafe approvals, 34.1 human interventions and 36.6 System 2 calls per 100 commands | `npm run eval-ladder` ([GUIDE](docs/GUIDE.md#metrics-1)) |
+| Tool gate, 97 commands | 97 as labelled, 0 MISS, 0 over-strict; 6 of 7 allow-eligible cases allowed | 78 as labelled, 1 MISS (a deny softened to ask), 18 over-strict | `npm run eval` ([GUIDE: golden set](docs/GUIDE.md#3-golden-set-on-every-change-to-questions-policy-or-rules)) |
+| Prompt injection, 62 results (33 injections, 29 benign) | 62 of 62 exact outcomes, precision 97 %, recall 100 %, 0 high-severity missed | precision 81 %, recall 79 %, 7 high-severity missed | `npm run eval-injection` ([GUIDE: injection guard](docs/GUIDE.md#injection-guard)) |
+| Escalation ladder, 41 commands | 41 of 41 resolved as labelled, 0 unsafe approvals, 26.8 human interventions and 19.5 System 2 calls per 100 commands | 0 unsafe approvals, 34.1 human interventions and 36.6 System 2 calls per 100 commands | `npm run eval-ladder` ([GUIDE: ladder metrics](docs/GUIDE.md#metrics-1)) |
 
 A MISS is a risky command that got a softer outcome than labelled. The ladder eval uses a System 2
 stub that approves everything, so only the rules, System 1 and the always-human class stand between
@@ -666,7 +695,7 @@ points; a sandbox limits what any command can reach. The two work together.
 | Container or devcontainer sandbox | Isolates the filesystem, processes and optionally the network | Hard OS-level containment of local damage, whatever the command | Mounted cloud credentials, kube configs and SSH keys still reach production from inside a container. Reflex judges those commands, and scans what the agent reads. |
 | Codex sandbox modes (`read-only`, `workspace-write`, `danger-full-access`) and approval policies | OS sandbox for the commands Codex runs, with network off by default in `workspace-write` | Enforced by the OS; no pattern can be bypassed by an unusual shell construct | Context-aware blocking inside `workspace-write` or `danger-full-access` (cloud profile, kube context, the scripts a command runs). It cannot approve anything: Codex's approval policy still decides. Codex hooks cannot show a prompt, so a Reflex `ask` blocks and the human runs the command with `reflex run`. |
 | [abide](https://github.com/coldteadotai/abide) | Enforces your `AGENTS.md` / project rules on each edit and on the turn's diff, using Jev | Checks code the agent writes against your conventions, which Reflex does not do | Complementary: abide checks edits after they happen; Reflex gates shell commands and tool results before execution. Both can run on the same agent. |
-| Generic LLM-as-judge hooks | Send each command to a general LLM for a verdict | Any model, free-form reasoning, simple to write | Rules, the read-only list and the fast lane settle about a third of commands (on one heavy DevOps history) with no API call; the rest cost one typed Jev request (about 1k tokens); a stronger model is asked only on escalation, with budgets, caps and a cache; a policy file makes decisions replayable and tunable. |
+| Generic LLM-as-judge hooks | Send each command to a general LLM for a verdict | Any model, free-form reasoning, simple to write | Rules, the read-only list and the fast lane settle about half of commands (51 % on one engineer's week of Claude Code in the replay above) with no API call; the rest cost one typed Jev request (about 1k tokens); a stronger model is asked only on escalation, with budgets, caps and a cache; a policy file makes decisions replayable and tunable. |
 
 Keep IAM, network controls and least-privilege credentials, and use Reflex for the decisions a
 sandbox cannot make.
@@ -729,13 +758,112 @@ trust or verify a native approval dialog; run a harmless command in a fresh agen
 The full list: [GUIDE: safety properties and limits](docs/GUIDE.md#safety-properties-and-limits),
 [SECURITY.md](SECURITY.md).
 
+## FAQ
+
+Short answers; the full list of 20 questions is in [docs/FAQ.md](docs/FAQ.md).
+
+### How do I stop Claude Code from running dangerous commands?
+
+Install Reflex (`npx @ursuciprian/reflex setup`), which adds a Claude Code `PreToolUse` hook that
+checks every Bash command before it runs. Its rules deny `rm -rf ~`, destructive operations on
+production and force pushes to `main`, and ask before reads of private keys and credential files,
+in shadow mode too. After a shadow period, `reflex setup --mode enforce` also puts the engine's
+judgments in front of the agent. See the [real-world scenarios](#real-world-scenarios-with-outputs).
+
+### How is Reflex different from Claude Code permission prompts and allowlists?
+
+Claude Code's permission rules match tools and command prefixes; Reflex judges each shell command
+by what it does, the scripts it runs and where it points (AWS profile, kube context, Terraform
+workspace, git branch). By default it only adds `ask` or `deny`, so your allowlist keeps working.
+Claude Code's rules also cover file edits, web fetches and MCP tools, which Reflex does not gate.
+See the [comparison with other guardrails](#compared-with-other-ai-coding-agent-guardrails).
+
+### What guardrails can I add to Codex CLI?
+
+Reflex installs Codex hooks that judge each Bash command inside the sandbox mode and approval
+policy Codex already uses, and scan Bash and MCP results for prompt injection. Codex hooks cannot
+show a prompt, so a Reflex `ask` blocks and the human runs the command with `reflex run` in their
+own terminal. Trust the hooks once in Codex's `/hooks`. See
+[supported agents](#supported-agents-claude-code-hooks-codex-hooks-and-more).
+
+### Does Reflex need an API key, an account or LiteLLM?
+
+No. New installs use the local engine, with no account, no key and no network calls. A TypeSafe API
+key is only for the optional Jev engine, Laya runs on 127.0.0.1 with no key, and LiteLLM is only
+for the optional model routing hook. See
+[docs/SETUP.md: start locally](docs/SETUP.md#1-start-locally-or-enable-hosted-classification).
+
+### What is TypeSafe Jev, and how does it compare with Laya?
+
+Jev is TypeSafe's small System One model: it answers typed questions (probabilities, scores,
+choices), and Reflex asks it six per uncovered command, then applies your `policy.json`. Laya is an
+experimental local model that answers the same questions on your machine for free, and measured
+below Jev on every golden set; use Jev (or the local engine) for enforcement. See
+[measured results](#measured-results).
+
+### How much does it cost, and how much latency does it add?
+
+Reflex is free (MIT), and the local and Laya engines cost nothing per call. A Jev call is about 1k
+input tokens and took 0.35 to 0.42 s in the scenarios above; replay estimated about $0.47 to send
+Jev the commands the rules left open in a week of 13,743 Claude Code commands. Read-only, rule and
+fast-lane commands make no API call, and in shadow mode Jev runs in the background. See
+[cost and latency](#cost-and-latency).
+
+### Does Reflex send my code anywhere?
+
+Not with the default local engine. With Jev, a command the rules leave open sends TypeSafe the
+redacted command, the working directory, environment names, the agent's last message and last five
+commands, and the first 16 KB of a local script it runs, never a credentials file. The injection
+guard also sends redacted excerpts of inspected tool results, and optional features such as
+conditional instructions send their own redacted context. Details:
+[GUIDE: data handling](docs/GUIDE.md#data-handling).
+
+### What happens when Jev is down?
+
+The policy's fallback applies, which is `ask`: in enforce mode (supervised profile) a human
+reviews the command. Rules, the read-only list and the fast lane keep working locally, and in
+shadow mode the agent is not affected. See
+[GUIDE: safety properties and limits](docs/GUIDE.md#safety-properties-and-limits).
+
+### Does Reflex protect against prompt injection?
+
+Yes, as a filter: it scans web pages, MCP results, files from other projects and network command
+output for text written to steer the agent, and in enforce mode warns, removes the text and makes
+the session stricter. On a 62-case golden set Jev reached 97 % precision and 100 % recall, the
+local detectors 81 % and 79 %. See [GUIDE: injection guard](docs/GUIDE.md#injection-guard).
+
+### Can it approve agent commands automatically but safely?
+
+Yes, in three opt-in ways. `reflex suggest` proposes project-scoped fast-lane entries for the
+build, test and lint commands your agents keep asking about, and calibrated allow (`--allow on`,
+Jev engine, enforce mode) lets commands Jev judges clearly safe skip Claude Code's permission
+prompt; neither touches rule outcomes. The autonomous profile adds System 2 and an approval queue for agents with
+no human watching; on its 41-command golden set it made 0 unsafe approvals. See
+[GUIDE: suggest fewer permission prompts](docs/GUIDE.md#suggest-fewer-permission-prompts),
+[GUIDE: calibrated allow](docs/GUIDE.md#calibrated-allow) and
+[GUIDE: autonomous agents](docs/GUIDE.md#autonomous-agents).
+
+### How do I try it safely?
+
+New installs run in shadow mode: rules still block, everything else is logged. `reflex replay all
+--since 7d` shows what Reflex would have done with your past sessions, and executes and writes
+nothing. See [replay on a real week](#replay-what-it-would-have-done-on-a-real-week).
+
+### How do I uninstall Reflex?
+
+`reflex uninstall` removes the hooks (for Hermes it prints what to delete from `config.yaml`), the
+package and the `reflex` link, and keeps your settings, policy and logs. Delete the logs with
+`rm -rf ~/.local/state/reflex`. See [docs/SETUP.md: uninstall](docs/SETUP.md#uninstall).
+
 ## Documentation
 
+- [docs/FAQ.md](docs/FAQ.md): questions and answers about Reflex, Jev, Laya, cost, data and rollout
 - [docs/SETUP.md](docs/SETUP.md): installation, configuration, per-agent setup, uninstalling
 - [docs/GUIDE.md](docs/GUIDE.md): design, testing, tuning, rollout, metrics, data handling, limits
+- [llms.txt](llms.txt) and [llms-full.txt](llms-full.txt): a summary of this project for language models
 - [SECURITY.md](SECURITY.md): reporting vulnerabilities, known limits
 - [CONTRIBUTING.md](CONTRIBUTING.md): development, tests, repository layout
-- [CHANGELOG.md](CHANGELOG.md)
+- [CHANGELOG.md](CHANGELOG.md): release notes for every version
 
 ## Development
 
@@ -750,4 +878,4 @@ node install.mjs --agent all    # hook this checkout into your agents
 
 ## License
 
-[MIT](LICENSE)
+[MIT License](LICENSE)
