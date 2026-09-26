@@ -143,6 +143,7 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   permission settings. Opt-in [calibrated allow](docs/GUIDE.md#calibrated-allow) lets it approve
   commands it judges clearly safe.
 - Redacts secrets before anything leaves the machine or is logged.
+- Stops runaway agents in real time: loops, a failing command run again and again, denial storms, burn rate and rising risk pause the session with a clear reason ([runaway guard](docs/GUIDE.md#runaway-guard-stop-runaway-ai-agents)).
 
 ### Prompt injection guard for coding agents
 

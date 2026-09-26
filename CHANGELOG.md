@@ -8,6 +8,16 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Added
 
+- Runaway guard: watches each agent session in the hook path and stops it when it loops (the same
+  command 10 times, or the same failing command 5 times, in 5 minutes), storms the gate (8 denies in
+  5 minutes), burns (50 commands a minute, 2000 Jev answers or 150 System 2 calls a session) or climbs
+  in risk (the last 4 commands average blast 2.5 of 3, up by 1). Enforce denies with a reason the
+  agent can act on; shadow logs. Traced (`source: "runaway"`), parked in the queue when it is on,
+  shown in `reflex status`, `reflex report` and `reflex replay`; `reflex runaway [list|reset]`.
+  `runaway` in config.json, `REFLEX_RUNAWAY=off`. Never allows anything, no API calls, a bounded
+  per-session window. Defaults tuned on 30 days of real sessions: 8 of 382 stopped, all spin or
+  polling loops except one Codex session reading secret files. See docs/GUIDE.md.
+
 - `reflex suggest [claude|codex|opencode|pi|all] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]`:
   fast-lane entries for the build, test and lint commands your agents keep asking about, to reduce
   approval prompts. Reads the transcripts `reflex replay` reads and runs nothing. Templates keep every

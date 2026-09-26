@@ -14,13 +14,14 @@
 6. [Data handling](#data-handling)
 7. [Safety properties and limits](#safety-properties-and-limits)
 8. [Injection guard](#injection-guard)
-9. [Autonomous agents](#autonomous-agents)
-10. [Conditional instructions](#conditional-instructions)
-11. [Tool router](#tool-router)
-12. [Model routing](#model-routing)
-13. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
-14. [Laya (local System 1)](#laya-local-system-1)
-15. [Where this goes next](#where-this-goes-next)
+9. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
+10. [Autonomous agents](#autonomous-agents)
+11. [Conditional instructions](#conditional-instructions)
+12. [Tool router](#tool-router)
+13. [Model routing](#model-routing)
+14. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
+15. [Laya (local System 1)](#laya-local-system-1)
+16. [Where this goes next](#where-this-goes-next)
 
 ## Local and hosted operation
 
@@ -859,6 +860,109 @@ oh-my-pi and Hermes (and Hermes starts a new one after compressing the context),
 cross between a parent and its subagents there. Codex fires no PostToolUse for a failed tool or an
 MCP error result, and scans only the last chunk of a long-running command. In Claude Code, `WebFetch`
 hands the hook the fetch model's summary of the page, not the page.
+
+## Runaway guard: stop runaway AI agents
+
+Autonomous coding agents such as Claude Code and Codex sometimes go wrong in ways no single command
+shows: a test that keeps failing and gets run again unchanged, a retry loop hammering an API, a
+`git push` rejected over and over, a burst of attempts to get past a denial, or a slow climb from
+editing files to touching shared infrastructure. The runaway guard watches each agent session in
+real time and pauses the agent when that happens, usually minutes before a human would notice.
+
+It is part of the gate, so it covers every agent Reflex hooks (Claude Code, Codex, opencode, pi,
+oh-my-pi, Hermes). It is on by default and follows the mode: in enforce mode it denies, in shadow
+mode it only logs what it would have stopped. It never allows anything, never lifts a deny and makes
+no API call.
+
+### What it watches
+
+Each command is added to a short sliding window for its session (a Claude Code subagent has its own
+window, so parallel agents do not add up). Before the command runs, these signals are checked:
+
+| Signal | Trips when | Default |
+|---|---|---|
+| Loop | the same command, normalised (PR numbers, hashes, UUIDs and timestamps are slots), ran N times in the window | 10 in 5 minutes |
+| Failing loop | the same command failed N times in the window (Claude Code PostToolUseFailure, Hermes) | 5 in 5 minutes |
+| Denial storm | N commands were denied in the window: by a rule, Jev, System 2, a human in the queue, or the agent's own permission check. An ask counts in Codex, where an ask is a deny. A command parked for a human does not count | 8 in 5 minutes |
+| Burn rate | N commands in the last minute | 50 |
+| Spend | Jev answers, or System 2 calls, in the session | 2000, 150 |
+| Escalation | the mean risk of the last 4 commands reached 2.5 of 3 and rose by at least 1 over the 4 before them. Risk is Jev's blast score; keyless (engine local), a rule deny is 3, a rule ask 2 and the fast lane 1 | 4 steps, 15 minutes |
+
+Loop, burn and spend stop any command, read-only ones included: an agent spinning on `sleep 1` or
+`true` while it waits is the most common runaway there is. Denial storms and escalation stop only
+commands that are not read-only, so the agent can still look around and report.
+
+### What the agent sees
+
+A deny with the reason and what to do next, for example:
+
+```
+reflex (runaway): stopped: the same failing command ran 5 times in 3 minutes; change approach or ask the user, do not retry it as is
+reflex (runaway): stopped: 8 commands were denied in 4 minutes. Do not look for another way around the gate; stop and ask the user how to proceed
+```
+
+A denial storm is treated as a reason to stop, never to relax. The guard's own denials do not count
+towards any signal, so a stop ends by itself once the window has moved on (a loop stop applies to
+that command only). A human can lift it sooner:
+
+- with the approval queue on, the first stop of each episode is parked (`reflex queue list`);
+  `reflex queue approve <id>` lets that exact command past the guard once, and the rest of the gate
+  still judges it;
+- `reflex runaway reset <session id>` (or `--all`) forgets a session's window, and the Jev and
+  System 2 counts with it. An agent running it is a tamper ask, like `reflex queue approve`.
+
+`reflex runaway` lists the stops of the last 24 hours. `reflex status` shows the guard and warns
+about a stop in the last hour; `reflex report` counts stops by signal; every enforced stop is a trace
+row with `source: "runaway"`, and a shadow stop adds `runaway: {signal, dry: true}` to the command's
+row.
+
+### Configuration
+
+In `~/.config/reflex/config.json`; any field left out keeps its default:
+
+```json
+{
+  "runaway": {
+    "enabled": true,
+    "loop": {"repeats": 10, "failures": 5, "window_minutes": 5},
+    "storm": {"denies": 8, "window_minutes": 5},
+    "burn": {"per_minute": 50, "jev_calls": 2000, "system2_calls": 150},
+    "escalation": {"steps": 4, "rise": 1, "at": 2.5, "window_minutes": 15}
+  }
+}
+```
+
+`REFLEX_RUNAWAY=off` (or `on`) overrides it for one session. An invalid value is a configuration
+error, and every command asks, as with any other invalid setting.
+
+### Agent loop detection measured on real sessions
+
+`reflex replay` runs the guard over your own transcripts and prints how many sessions it would have
+stopped and why. On 30 days of the author's sessions (27,731 commands in 382 sessions, Claude Code,
+Codex and pi), the defaults stop 8 sessions:
+
+- 7 subagents of one long benchmark session, 13 stops, all loops: agents waiting on a remote job by
+  calling `sleep 1`, `true` or `echo ok` hundreds of times (823 `sleep 1` in one of them), and one
+  polling the same remote log 10 times in 4 minutes;
+- 1 Codex session, 2 storm stops, from repeated reads of secret files that Codex would have turned
+  into denies.
+
+No test-fix cycle, build, review or deploy session tripped it. Stricter settings (8 repeats, 4
+failures, 5 denies, 35 a minute) still stopped only the same benchmark session; looser than that
+(6 repeats, 3 denies, 25 a minute) started to stop normal polling and parallel bursts. An escalation
+threshold of 2 stopped 3 normal stretches of work on Reflex itself, where tamper asks are routine;
+2.5 stops none.
+
+### Cost and limits
+
+Each command reads and writes one small file (`<data>/runaway/<hash>.json`, at most 256 events
+inside the longest window), so the cost is bounded and does not grow with the session. There is no
+lock: two parallel hooks of one session can drop an event, which only makes the guard later, never
+stricter. Failures are known only where the agent reports them (Claude Code, Hermes, and Codex
+transcripts in replay); live in Codex, opencode and pi only plain repeats count. In shadow mode
+with Jev, a command's risk and denial reach the window from the background judge, a moment after
+the command. The loop key is the command's shape: the same test with a different file name, or with
+the output piped to a different `tail`, is a different command.
 
 ## Autonomous agents
 
