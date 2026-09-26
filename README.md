@@ -124,7 +124,7 @@ and after. It works next to the Claude Code permissions allowlist and Codex appr
 human in the loop for everything else, and never suggests deletes, pushes, deploys, installs,
 network calls, secrets or production. `--write` changes Reflex's own configuration, so when an agent
 runs it the tamper rule asks a human: an agent cannot widen its own allow list. See
-[the guide](docs/GUIDE.md#suggest-fewer-permission-prompts).
+[GUIDE: suggest fewer permission prompts](docs/GUIDE.md#suggest-fewer-permission-prompts).
 
 ## Features: command approval, prompt injection guard, autonomous agents
 
@@ -834,10 +834,12 @@ local detectors 81 % and 79 %. See [GUIDE: injection guard](docs/GUIDE.md#inject
 
 ### Can it approve agent commands automatically but safely?
 
-Yes, in two ways. Calibrated allow (`--allow on`, Jev engine, enforce mode) lets commands Jev judges
-clearly safe skip Claude Code's permission prompt, which reduces permission prompts without
-touching rule outcomes. The autonomous profile adds System 2 and an approval queue for agents with
+Yes, in three opt-in ways. `reflex suggest` proposes project-scoped fast-lane entries for the
+build, test and lint commands your agents keep asking about, and calibrated allow (`--allow on`,
+Jev engine, enforce mode) lets commands Jev judges clearly safe skip Claude Code's permission
+prompt; neither touches rule outcomes. The autonomous profile adds System 2 and an approval queue for agents with
 no human watching; on its 41-command golden set it made 0 unsafe approvals. See
+[GUIDE: suggest fewer permission prompts](docs/GUIDE.md#suggest-fewer-permission-prompts),
 [GUIDE: calibrated allow](docs/GUIDE.md#calibrated-allow) and
 [GUIDE: autonomous agents](docs/GUIDE.md#autonomous-agents).
 

@@ -212,16 +212,18 @@ See: [GUIDE: injection guard](GUIDE.md#injection-guard); try it with `reflex sca
 
 ## How do I reduce permission prompts in Claude Code and approve agent commands automatically but safely?
 
-Use calibrated allow with the Jev engine: in enforce mode with `--allow on`, commands Jev judges
-clearly safe (low blast radius at high confidence, low mutation, exfiltration and injection scores,
-on task, local environment) skip Claude Code's permission prompt. Rule outcomes, commands without a
-stated intent, code Jev did not see in full, commands run from the home directory or `/`, and
-cached answers are never allowed, and Claude Code's own deny and ask rules still apply. Start with
-`--mode enforce --allow shadow`: after enough approvals, `reflex report` recommends thresholds from
-the commands you approved. On the
+Two ways, both opt-in. `reflex suggest` reads your past sessions and proposes project-scoped
+fast-lane entries for the build, test and lint commands your agents keep asking about, never for
+deletes, pushes, deploys, installs, network calls, secrets or production, and shows the asks per
+100 commands before and after; `--write` adds them after you confirm. Calibrated allow (Jev engine,
+`--mode enforce --allow on`) lets commands Jev judges clearly safe skip Claude Code's permission
+prompt; rule outcomes, commands without a stated intent, code Jev did not see in full and cached
+answers are never allowed, and Claude Code's own deny and ask rules still apply. Start it with
+`--allow shadow`, and `reflex report` recommends thresholds from the commands you approved; on the
 tool gate golden set it allowed 6 of 7 allow-eligible commands with 0 misses.
 
-See: [GUIDE: calibrated allow](GUIDE.md#calibrated-allow),
+See: [GUIDE: suggest fewer permission prompts](GUIDE.md#suggest-fewer-permission-prompts),
+[GUIDE: calibrated allow](GUIDE.md#calibrated-allow),
 [docs/SETUP.md: let clearly safe commands through](SETUP.md#6-optional-let-clearly-safe-commands-through).
 
 ## Can Reflex run autonomous coding agents with no human watching?
