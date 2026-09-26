@@ -676,8 +676,10 @@ and [confidence](https://docs.typesafe.ai/confidence).
   profile inline (`AWS_PROFILE=prod aws …`) is still seen, because the command text is judged; a
   profile changed by a previous command in a persistent shell is not.
 - Jev adds ~0.7 s in enforce mode to each command that reaches it. On one engineer's heavy
-  infrastructure history, about one in five commands never needed the API; the rest are mostly
-  inline scripts and multi-step remote commands.
+  infrastructure history (an earlier measurement), about one in five commands never needed the
+  API; the v0.9.0 replay of a week of Claude Code
+  commands passed 51 % without one (README: replay). The rest are mostly inline scripts and
+  multi-step remote commands.
 
 ## Injection guard
 

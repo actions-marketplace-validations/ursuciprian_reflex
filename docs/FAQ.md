@@ -103,8 +103,9 @@ See: [comparison table](../README.md#compared-with-other-ai-coding-agent-guardra
 ## Which AI coding agents does Reflex support?
 
 Claude Code, Codex CLI, pi, oh-my-pi, opencode and Hermes, each through its own hook system; any
-other agent can use `bin/reflex-sh` as its shell. Setup hooks every supported agent it finds, or
-the ones you name with `--agents claude,codex`. Reflex needs Node.js 18+ on macOS or Linux,
+other agent can use `bin/reflex-sh` as its shell. Setup hooks every supported agent it finds (for
+Hermes it prints a block to paste into `config.yaml`), or the ones you name with
+`--agents claude,codex`. Reflex needs Node.js 18+ on macOS or Linux,
 including WSL; native Windows is not supported yet.
 
 See: [supported agents](../README.md#supported-agents-claude-code-hooks-codex-hooks-and-more),
@@ -159,23 +160,25 @@ See: [cost and latency](../README.md#cost-and-latency), [GUIDE: System 2](GUIDE.
 
 ## How much latency does Reflex add?
 
-Commands settled by the read-only list, the rules or the fast lane make no network call. A Jev call
-took 0.35 to 0.42 s in the README scenarios (the GUIDE's figure is about 0.7 s in enforce mode),
-with a 3 s budget after which the policy's fallback applies. In shadow mode Jev runs in a detached
+None for most commands: those settled by the read-only list, the rules or the fast lane make no
+network call. A Jev call adds 0.35 to 0.42 s in the README scenarios (the GUIDE's figure is about
+0.7 s in enforce mode), with a 3 s budget after which the policy's fallback applies. In shadow mode Jev runs in a detached
 background process, so the agent does not wait. A System 2 escalation with the `claude` CLI takes 3
 to 4 s; Laya answered the tool gate in 125 ms p50 on an Apple M5 Max, but a CPU-only machine can
-exceed the 3 s budget. `reflex bench` measures it on your machine.
+exceed the 3 s budget. `reflex bench --engine jev` (or `--engine laya`) measures it on your machine.
 
 See: [cost and latency](../README.md#cost-and-latency), [GUIDE: replay and bench](GUIDE.md#replay-and-bench).
 
 ## Does Reflex send my code anywhere?
 
-Not with the default local engine: nothing leaves the machine. With Jev, only commands that reach
-Jev send data to TypeSafe: the command with secrets redacted, the working directory path,
+Not with the default local engine: nothing leaves the machine. With Jev, a command the rules leave
+open sends TypeSafe the command with secrets redacted, the working directory path,
 environment names (AWS profile, region, kube context, Terraform workspace, git branch), the agent's
 last message and last five commands (redacted and truncated), and the first 16 KB of a local script
 the command runs (redacted, never a credentials file such as `.env`). With the injection guard on
-Jev, up to 8 redacted chunks of 3,000 characters of an inspected tool result are sent. The Laya
+Jev, up to 8 redacted chunks of 3,000 characters of an inspected tool result are sent, with the
+tool name, a redacted origin and, in Claude Code, the last 1,000 characters of your prompt.
+Conditional instructions and subgoal dedup, when used, send their own redacted context. The Laya
 engine sends to 127.0.0.1 only, and System 2 sends a redacted case of at most 1,500 tokens to the
 backend you chose.
 
@@ -183,10 +186,11 @@ See: [GUIDE: data handling](GUIDE.md#data-handling).
 
 ## What happens when Jev is down or slow?
 
-The policy's fallback applies, which is `ask`: in enforce mode a human reviews the command, and
-nothing is auto-approved. The rules, the read-only list and the fast lane run locally and keep
+The policy's fallback applies, which is `ask`: in enforce mode with the supervised profile a human
+reviews the command. The rules, the read-only list and the fast lane run locally and keep
 working. In shadow mode Jev only logs from a background process, so the agent is not affected. In
-the autonomous profile those asks go to System 2, and a breaker pauses System 2 when more than 30 %
+the autonomous profile those asks go to System 2, which may approve them as a pass (never an
+allow), and a breaker pauses System 2 when more than 30 %
 of judged commands escalate within an hour, so an outage fills the approval queue instead of the
 bill. A Laya server that is down behaves the same way.
 
@@ -213,7 +217,8 @@ clearly safe (low blast radius at high confidence, low mutation, exfiltration an
 on task, local environment) skip Claude Code's permission prompt. Rule outcomes, commands without a
 stated intent, code Jev did not see in full, commands run from the home directory or `/`, and
 cached answers are never allowed, and Claude Code's own deny and ask rules still apply. Start with
-`--allow shadow`: `reflex report` then recommends thresholds from the commands you approved. On the
+`--mode enforce --allow shadow`: after enough approvals, `reflex report` recommends thresholds from
+the commands you approved. On the
 tool gate golden set it allowed 6 of 7 allow-eligible commands with 0 misses.
 
 See: [GUIDE: calibrated allow](GUIDE.md#calibrated-allow),
@@ -236,7 +241,7 @@ See: [GUIDE: autonomous agents](GUIDE.md#autonomous-agents),
 ## How do I try Reflex safely before enforcing it?
 
 Install it as is: new installs run in shadow mode, where deterministic rules still block and every
-other decision is only logged. `reflex replay claude --since 7d` runs the commands from your past
+other decision is only logged. `reflex replay all --since 7d` runs the commands from your past
 Claude Code, Codex, opencode or pi sessions through the gate; it executes nothing and writes
 nothing. `reflex check "command"` judges one command, `reflex setup --dry-run` previews
 configuration changes, and `REFLEX_MODE=enforce claude` tries enforce for one session. After a week,
@@ -247,7 +252,8 @@ See: [replay on a real week](../README.md#replay-what-it-would-have-done-on-a-re
 
 ## How do I uninstall Reflex?
 
-Run `reflex uninstall`: it removes the hooks from every agent, the package in
+Run `reflex uninstall`: it removes the hooks from every agent except Hermes (it prints the entries
+to delete from each profile's `config.yaml`), the package in
 `~/.local/share/reflex` and the `reflex` link, and stops a Laya server if one was set up. It keeps
 your settings and policy in `~/.config/reflex` and your logs in `~/.local/state/reflex`; delete the
 logs with `rm -rf ~/.local/state/reflex`. Without the command on `PATH`, use
