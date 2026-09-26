@@ -8,7 +8,7 @@ import {CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, setupFi
 import {compile} from "./policy.mjs";
 import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
-import {breaker, listItems} from "./autonomy.mjs";
+import {breaker, listItems, runawayTrips} from "./autonomy.mjs";
 import {health as layaHealth} from "./laya.mjs";
 import {FASTLANE_FILE, loadFastLane} from "./fastlane.mjs";
 
@@ -143,8 +143,12 @@ if (!configuration && CONFIG.judge.enabled) {
 const items = listItems(), pending = items.filter(i => i.status === "pending");
 const queue = {enabled: CONFIG.queue.enabled, pending: pending.length, total: items.length, oldest_pending: pending.at(-1)?.created ?? null};
 if (pending.length) warnings.push(`${pending.length} item${pending.length === 1 ? "" : "s"} waiting in the approval queue: reflex queue list.`);
+// The runaway guard: sessions it stopped (or, in shadow, would have) in the last hour.
+const trips = runawayTrips(Date.now() - 36e5);
+const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
+if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, judge, queue, checkpoints: CONFIG.checkpoints, agents, errors, warnings};
+  policy, api_key: key, judge, queue, checkpoints: CONFIG.checkpoints, runaway, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
@@ -153,6 +157,7 @@ else {
     `${judge.reachable ? (cliJudge ? "found" : `reachable (HTTP ${judge.status})`) : judge.reachable === false ? "NOT reachable" : "not checked"}` +
     (judge.budget ? `; budget left today ${judge.budget.calls_left} calls, $${judge.budget.usd_left}` : "") : "off"}`);
   console.log(`Queue: ${queue.enabled ? "on" : "off"}; ${queue.pending} pending of ${queue.total} · checkpoints ${CONFIG.checkpoints ? "on" : "off"}`);
+  console.log(`Runaway guard: ${runaway.enabled ? `on (${CONFIG.mode === "enforce" ? "stops" : CONFIG.mode === "shadow" ? "logs only, shadow" : "off with the mode"}); ${runaway.stops_last_hour} stop${runaway.stops_last_hour === 1 ? "" : "s"} in the last hour` : "off"}`);
   for (const a of agents) console.log(`${a.name}: ${a.configured ? "configured" : "not verified"}${a.guard ? " + guard" : ""}; ${a.mode}/${a.engine}; ${a.hook_observed ? "hook observed" : "awaiting hook event"}; ${a.version ?? "version unknown"}${a.checks.length ? `; probes ${a.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);
   for (const w of warnings) console.log(`Note: ${w}`);
   for (const e of errors) console.error(`Error: ${e}`);
