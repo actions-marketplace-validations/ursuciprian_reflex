@@ -5,13 +5,16 @@
 //   node replay.mjs replay [claude|codex|opencode|pi|all] [--since 7d] [--project path]
 //                          [--engine local|jev|laya] [--yes] [--limit N] [--json]
 //   node replay.mjs bench [--engine local|jev|laya] [--json]
+//   node replay.mjs suggest [agent] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]
+//                          fast-lane entries for what keeps asking (suggest.mjs); --write edits fastlane.json
 //
 // Transcripts: Claude Code ~/.claude/projects/**/*.jsonl (Bash tool_use), Codex $CODEX_HOME/sessions
 // (exec_command / shell calls, or CommandExecution items), opencode's opencode.db (bash tool parts,
 // needs node:sqlite, Node 22.13+), pi ~/.pi/agent/sessions (bash toolCall).
-import {existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync} from "node:fs";
+import {closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeSync} from "node:fs";
 import {homedir, tmpdir} from "node:os";
 import {join, resolve} from "node:path";
+import {fileURLToPath} from "node:url";
 
 const argv = process.argv.slice(2), [cmd] = argv;
 const die = s => { console.error(`reflex: ${s}`); process.exit(2); };
@@ -23,17 +26,17 @@ const opt = (n, d) => {
 };
 const AGENTS = ["claude", "codex", "opencode", "pi"];
 // The agent is the one word that is neither a flag nor a flag's value, wherever it stands.
-const VALUED = ["--since", "--project", "--engine", "--limit"], FLAGS = ["--json", "--yes"];
+const VALUED = ["--since", "--project", "--engine", "--limit", "--min"], FLAGS = ["--json", "--yes", "--write"];
 const words = argv.slice(1).filter((a, i, l) => !VALUED.includes(a) && !FLAGS.includes(a) && !VALUED.includes(l[i - 1]));
-if (words.some(w => w.startsWith("-")) || words.length > (cmd === "replay" ? 1 : 0)) die(`unexpected argument ${words.at(-1)}`);
+if (words.some(w => w.startsWith("-")) || words.length > (["replay", "suggest"].includes(cmd) ? 1 : 0)) die(`unexpected argument ${words.at(-1)}`);
 const agentArg = words[0] ?? "all";
-if (cmd === "replay" && ![...AGENTS, "all"].includes(agentArg)) die(`unknown agent ${agentArg} (claude, codex, opencode, pi or all)`);
+if (["replay", "suggest"].includes(cmd) && ![...AGENTS, "all"].includes(agentArg)) die(`unknown agent ${agentArg} (claude, codex, opencode, pi or all)`);
 // Local unless named: a hosted engine sends data off the machine, so it is never picked implicitly.
 const engine = opt("--engine", "local");
 if (engine !== undefined && !["local", "jev", "laya"].includes(engine)) die("--engine must be local, jev or laya");
 const json = argv.includes("--json");
 const since = (() => {
-  const s = opt("--since", "7d"), m = /^(\d+)([dhm])$/.exec(s);
+  const s = opt("--since", cmd === "suggest" ? "30d" : "7d"), m = /^(\d+)([dhm])$/.exec(s);
   if (!m) die("--since takes a number and d, h or m (7d, 12h, 30m)");
   return Date.now() - Number(m[1]) * {d: 864e5, h: 36e5, m: 6e4}[m[2]];
 })();
@@ -89,6 +92,8 @@ function* lines(file, needle) {
 // ["/bin/zsh", "-lc", "cmd"] is the command cmd; any other argv is joined.
 const unwrap = c => Array.isArray(c) ? (c.length === 3 && /(^|\/)(ba|z|da)?sh$/.test(c[0]) && /^-l?c$/.test(c[1]) ? c[2] : c.join(" ")) : c;
 const tsOf = t => typeof t === "number" ? t : Date.parse(t);
+// Newer Codex items give the directory as a file:// URL.
+const dirOf = d => { try { return typeof d === "string" && d.startsWith("file://") ? fileURLToPath(d) : d; } catch { return undefined; } };
 
 const READERS = {
   claude() {
@@ -111,7 +116,7 @@ const READERS = {
         const p = e.payload ?? {}, ts = tsOf(e.timestamp);
         if (p.cwd && (e.type === "session_meta" || e.type === "turn_context")) cwd = p.cwd;
         if (p.type === "item_completed" && p.item?.type === "CommandExecution")
-          items.push({agent: "codex", id: p.item.id, command: unwrap(p.item.command), cwd: p.item.cwd ?? cwd, ts});
+          items.push({agent: "codex", id: p.item.id, command: unwrap(p.item.command), cwd: dirOf(p.item.cwd) ?? cwd, ts});
         else if (p.type === "function_call" && ["exec_command", "shell", "shell_command"].includes(p.name)) {
           let a; try { a = JSON.parse(p.arguments); } catch { continue; }
           fcalls.push({agent: "codex", id: p.call_id, command: unwrap(a.cmd ?? a.command), cwd: a.workdir ?? cwd, ts});
@@ -185,6 +190,31 @@ async function collect(agents) {
 // The gate over each command, as the hook would see it with no session context: the environment at
 // the time (AWS profile, kube context) is not in a transcript, so it is left empty.
 const LOCAL = {outcome: "ask", source: "local", rule: "not covered by local rules; a human must review it"};
+// Counts per source, asks per 100 commands (supervised and autonomous), top rules and masked samples.
+function tally(judged) {
+  const n = judged.length, per100 = k => n ? +(100 * k / n).toFixed(1) : 0;
+  const t = {commands: n, pass_read_only: 0, pass_fast_lane: 0, rule_ask: 0, rule_deny: 0, rule_pass: 0,
+    engine: {pass: 0, allow: 0, ask: 0, deny: 0, error: 0}, reach_human: 0, reach_system2: 0, autonomous_human: 0};
+  const rules = {}, samples = {deny: [], ask: []};
+  for (const {c, j} of judged) {
+    const src = j.source, out = j.outcome === "would_allow" ? "allow" : j.outcome;
+    if (src === "read-only") t.pass_read_only++;
+    else if (src === "fast-lane") t.pass_fast_lane++;
+    else if (src === "rule") { t[`rule_${out}`] = (t[`rule_${out}`] ?? 0) + 1; const k = j.id ?? j.rule; rules[k] ??= {id: k, rule: redact(j.rule ?? "").replace(/ \(in [^)]*\)$/, ""), count: 0}; rules[k].count++; }
+    else if (src === "fallback" || src === "error") t.engine.error++;
+    else t.engine[out] = (t.engine[out] ?? 0) + 1;
+    // Supervised: every ask is a human's. Autonomous (autonomy.mjs ladder): an ask goes to System 2
+    // unless it is in the always-human class (or no System 2 is configured); a System 1 pass in that
+    // class still needs a human.
+    if (out === "ask") {
+      t.reach_human++;
+      if (!system2 || alwaysHuman(j, c, {})) t.autonomous_human++; else t.reach_system2++;
+    } else if (["pass", "allow"].includes(out) && !["read-only", "fast-lane"].includes(src) && alwaysHuman(j, c, {}, {system1: true})) t.autonomous_human++;
+    if ((out === "deny" || out === "ask") && samples[out].length < 8 && !(out === "ask" && src === "local" && samples.ask.length >= 4))
+      samples[out].push({agent: c.agent, source: src, rule: redact(j.rule ?? "").slice(0, 120), command: mask(c.command).replace(/\s+/g, " ").slice(0, 160)});
+  }
+  return {t, rules, samples, per_100: {reach_human: per100(t.reach_human), reach_system2: per100(t.reach_system2), autonomous_human: per100(t.autonomous_human)}};
+}
 async function replay() {
   const agents = agentArg === "all" ? AGENTS : [agentArg];
   const {sources, calls} = await collect(agents);
@@ -222,30 +252,10 @@ async function replay() {
   }
   for (const x of open) x.j = CONFIG.engine === "local" ? LOCAL : unique.get(`${x.c.cwd ?? ""}\0${x.c.command}`);
 
-  const n = judged.length, per100 = k => n ? +(100 * k / n).toFixed(1) : 0;
-  const t = {commands: n, pass_read_only: 0, pass_fast_lane: 0, rule_ask: 0, rule_deny: 0, rule_pass: 0,
-    engine: {pass: 0, allow: 0, ask: 0, deny: 0, error: 0}, reach_human: 0, reach_system2: 0, autonomous_human: 0};
-  const rules = {}, samples = {deny: [], ask: []};
-  for (const {c, j} of judged) {
-    const src = j.source, out = j.outcome === "would_allow" ? "allow" : j.outcome;
-    if (src === "read-only") t.pass_read_only++;
-    else if (src === "fast-lane") t.pass_fast_lane++;
-    else if (src === "rule") { t[`rule_${out}`] = (t[`rule_${out}`] ?? 0) + 1; const k = j.id ?? j.rule; rules[k] ??= {id: k, rule: redact(j.rule ?? "").replace(/ \(in [^)]*\)$/, ""), count: 0}; rules[k].count++; }
-    else if (src === "fallback" || src === "error") t.engine.error++;
-    else t.engine[out] = (t.engine[out] ?? 0) + 1;
-    // Supervised: every ask is a human's. Autonomous (autonomy.mjs ladder): an ask goes to System 2
-    // unless it is in the always-human class (or no System 2 is configured); a System 1 pass in that
-    // class still needs a human.
-    if (out === "ask") {
-      t.reach_human++;
-      if (!system2 || alwaysHuman(j, c, {})) t.autonomous_human++; else t.reach_system2++;
-    } else if (["pass", "allow"].includes(out) && !["read-only", "fast-lane"].includes(src) && alwaysHuman(j, c, {}, {system1: true})) t.autonomous_human++;
-    if ((out === "deny" || out === "ask") && samples[out].length < 8 && !(out === "ask" && src === "local" && samples.ask.length >= 4))
-      samples[out].push({agent: c.agent, source: src, rule: redact(j.rule ?? "").slice(0, 120), command: mask(c.command).replace(/\s+/g, " ").slice(0, 160)});
-  }
+  const {t, rules, samples, per_100} = tally(judged);
   const tokens = engineRuns.reduce((s, j) => s + (j.usage?.input_tokens ?? 0), 0), lat = engineRuns.map(j => j.latency_s).filter(x => x > 0);
   const result = {engine: CONFIG.engine, since: new Date(since).toISOString(), project: project ?? null, system2_configured: system2, sources, totals: t,
-    per_100: {reach_human: per100(t.reach_human), reach_system2: per100(t.reach_system2), autonomous_human: per100(t.autonomous_human)},
+    per_100,
     top_rules: Object.values(rules).sort((a, b) => b.count - a.count).slice(0, 10), samples,
     cost: CONFIG.engine === "local" ? {jev_estimate: estimate}
       : {calls: engineRuns.length, input_tokens: tokens, usd: CONFIG.engine === "jev" ? usd(tokens) : 0,
@@ -313,6 +323,63 @@ async function bench() {
   } else console.log("  engine       local: no hosted calls (--engine jev or laya to time one)");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Fast-lane suggestions from the same transcripts, judged with the local rules only (suggest.mjs).
+// Writes nothing unless --write, and then only fastlane.json, after showing what it adds.
+async function suggestCmd() {
+  if (engine !== "local") die("suggest judges with the local rules only; drop --engine");
+  const min = Number(opt("--min", "3"));
+  if (!(Number.isInteger(min) && min >= 2)) die("--min must be a whole number of at least 2");
+  const {suggest, mergeSuggestions, writeSuggestions} = await import("./suggest.mjs");
+  const {FASTLANE_FILE, loadFastLane} = await import("./fastlane.mjs");
+  const {sources, calls} = await collect(agentArg === "all" ? AGENTS : [agentArg]);
+  const r = suggest(calls, {judge: precheck, min, mask});
+  const b = tally(r.judged.map(({c, j}) => ({c, j: j ?? LOCAL}))), a = tally(r.after.map(({c, j}) => ({c, j: j ?? LOCAL})));
+  const current = loadFastLane();
+  const result = {since: new Date(since).toISOString(), project: project ?? null, min, sources, fastlane_file: FASTLANE_FILE,
+    ...(current.error && {fastlane_error: `ignored: ${current.error}`}),
+    before: {commands: b.t.commands, fast_lane: b.t.pass_fast_lane, per_100: b.per_100},
+    after: {commands: a.t.commands, fast_lane: a.t.pass_fast_lane, per_100: a.per_100},
+    suggestions: r.suggestions, rejected: r.rejected.slice(0, 20),
+    not_suggestible: Object.fromEntries(Object.entries(r.skipped).sort((x, y) => y[1] - x[1])), top_asking: r.asking};
+  if (json) console.log(JSON.stringify(result, null, 1));
+  else {
+    const src = Object.entries(sources).map(([k, s]) => s.skipped ? `${k}: skipped (${s.skipped})` : `${k}: ${s.commands} commands`);
+    console.log(`reflex suggest · since ${result.since.slice(0, 16)}${project ? ` · project ${project}` : ""} · local rules · nothing executed`);
+    console.log(`  sources      ${src.join("; ")}`);
+    if (current.error) console.log(`  warning      ${FASTLANE_FILE} is ignored: ${current.error}`);
+    console.log(`  before       ${b.per_100.reach_human} per 100 commands reach a human (supervised), ${b.per_100.autonomous_human} autonomous`);
+    console.log(`  after        ${a.per_100.reach_human} per 100 (supervised), ${a.per_100.autonomous_human} autonomous, with the ${r.suggestions.length} suggestions below`);
+    const top = Object.entries(result.not_suggestible).slice(0, 6).map(([k, v]) => `${v} ${k}`).join("; ");
+    if (top) console.log(`  left alone   ${top}`);
+    if (r.asking.length) console.log(`  most asked   ${r.asking.slice(0, 6).map(x => `${x.shape} ${x.count}`).join(", ")} (not suggestible)`);
+    for (const s of r.suggestions) {
+      console.log(`\n  ${s.pattern}\n    in ${s.cwd} · ${s.count} runs (${s.agents.join(", ")}), ${s.passes} would pass`);
+      for (const x of s.samples) console.log(`    e.g. ${x}`);
+      console.log(`    safe because: ${s.why}`);
+    }
+    for (const x of r.rejected.slice(0, 5)) console.log(`\n  not suggested: ${x.pattern} (${x.count} runs): ${x.why}`);
+    if (!r.suggestions.length) console.log(`\n  no suggestions at --min ${min}`);
+  }
+  if (!argv.includes("--write") || !r.suggestions.length) return;
+  const {text, add} = mergeSuggestions(r.suggestions);
+  if (!add.length) return console.error("reflex: fastlane.json already has every suggestion");
+  console.error(`\n--- ${FASTLANE_FILE}\n${add.map(e => `+ ${JSON.stringify(e)}`).join("\n")}`);
+  if (!argv.includes("--yes")) {
+    let answer = "";
+    try {
+      const fd = openSync("/dev/tty", "r+"), buf = Buffer.alloc(1);
+      writeSync(fd, `add ${add.length} entr${add.length === 1 ? "y" : "ies"} to ${FASTLANE_FILE}? [y/N] `);
+      while (readSync(fd, buf, 0, 1, null) === 1 && buf[0] !== 10) answer += buf.toString();
+      closeSync(fd);
+    } catch { die("no terminal to confirm on; rerun with --write --yes to write without asking"); }
+    if (!/^y(es)?$/i.test(answer.trim())) return console.error("reflex: nothing written");
+  }
+  writeSuggestions(text);
+  console.error(`reflex: wrote ${add.length} entr${add.length === 1 ? "y" : "ies"} to ${FASTLANE_FILE}`);
+}
+
 if (cmd === "replay") await replay();
 else if (cmd === "bench") await bench();
-else die("usage: reflex replay [claude|codex|opencode|pi|all] [--since 7d] [--project path] [--engine local|jev|laya] [--yes] [--limit N] [--json] | reflex bench [--engine local|jev|laya] [--json]");
+else if (cmd === "suggest") await suggestCmd();
+else die("usage: reflex replay [claude|codex|opencode|pi|all] [--since 7d] [--project path] [--engine local|jev|laya] [--yes] [--limit N] [--json] | reflex bench [--engine local|jev|laya] [--json] | reflex suggest [agent] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]");

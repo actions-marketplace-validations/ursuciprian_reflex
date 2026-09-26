@@ -338,7 +338,7 @@ switch (cmd) {
     process.exit(r.status ?? 1);
   }
   case "report": process.exit(run("report.mjs", args));
-  case "replay": case "bench": process.exit(run("replay.mjs", [cmd, ...args]));
+  case "replay": case "bench": case "suggest": process.exit(run("replay.mjs", [cmd, ...args]));
   case "queue": case "envelope": case "checkpoints": process.exit(run("autonomy.mjs", [cmd, ...args]));
   case "install": process.exit(run("install.mjs", args.includes("--agent") ? args : ["--agent", "all", ...args]));
   case "eval": process.exit(run("eval.mjs", args));

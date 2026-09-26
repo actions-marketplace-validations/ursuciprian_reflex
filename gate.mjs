@@ -29,6 +29,7 @@ import {dirname, join, posix, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, queueAnswer} from "./autonomy.mjs";
+import {userFastPass} from "./fastlane.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env;
@@ -977,6 +978,9 @@ function precheckAs(command, cwd, env) {
       /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints)\b[^\n;&|]*\b(approve|deny|clear|set|restore)\b/.test(command.replace(/["'\\]/g, "")) ||
       (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     return ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"});
+  // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
+  if (/\bsuggest\b[^\n;&|]*\s--write\b/.test(command.replace(/["'\\]/g, "")))
+    return ruled({outcome: "ask", rule: "widens the fast lane (reflex suggest --write)", id: "tamper"});
   const on = (r, what) => (r.applies_to ?? ["command"]).includes(what);
   // "shell" rules read commands: not the program of an interpreter heredoc that cannot run or write
   // anything, and nothing at all when every pipeline is inert and writes only notes.
@@ -999,6 +1003,7 @@ function precheckAs(command, cwd, env) {
     if (late()) return ruled({outcome: "ask", rule: `script too large to check in time (${s.path})`, id: "script-budget"});
   }
   if (fastPass(command, rules)) return {outcome: "pass", rule: "fast lane", source: "fast-lane", policy_version: rules.version};
+  if (userFastPass(command, cwd, env)) return {outcome: "pass", rule: "fast lane (fastlane.json)", source: "fast-lane", policy_version: rules.version};
   return null;
 }
 

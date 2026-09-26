@@ -10,6 +10,7 @@ import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
 import {breaker, listItems} from "./autonomy.mjs";
 import {health as layaHealth} from "./laya.mjs";
+import {FASTLANE_FILE, loadFastLane} from "./fastlane.mjs";
 
 const doctor = process.argv.includes("--doctor"), json = process.argv.includes("--json");
 const errors = [], warnings = [], agents = [];
@@ -25,6 +26,8 @@ if (CONFIG.mode === "off") warnings.push("Protection is off.");
 // Keyless autonomy: the local engine with System 2 on, so what the rules do not cover goes to System 2, not to a human.
 const keyless = CONFIG.engine === "local" && CONFIG.judge.enabled;
 if (CONFIG.engine === "local") warnings.push(`Local coverage: shell rules and deterministic instructions; ${keyless ? "keyless autonomy: commands they do not cover go to System 2, which allows only small ones" : "uncertain commands ask in enforce mode"}. Hosted features are disabled.`);
+const fastlane = loadFastLane();
+if (fastlane.error) warnings.push(`${FASTLANE_FILE} is ignored: ${fastlane.error}. Fix it or remove it; until then only the bundled fast lane applies.`);
 if (CONFIG.mode === "shadow") warnings.push("Shadow mode enforces deterministic rules. Other decisions are logged without blocking.");
 const policy = setupFile("policy.json");
 try { compile(load("policy.json")); load("rules.json"); load("questions.json"); }
