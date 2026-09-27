@@ -190,7 +190,9 @@ To work on Reflex itself, clone the repo, run `npm test`, and install that check
 ### Publishing a release (maintainers)
 
 Once: add the `NPM_TOKEN` repository secret (an npm access token with publish rights on the
-`@ursuciprian` scope). Then per release: bump `version` in `package.json` and `CHANGELOG.md`, merge,
+`@ursuciprian` scope). Then per release: bump `version` in `package.json`, `.claude-plugin/plugin.json` (`npm test`
+fails when they differ; plugin users receive a release only when this version changes) and
+`CHANGELOG.md`, merge,
 and tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. `.github/workflows/publish.yml` checks the tag
 matches `package.json`, runs the self-checks and runs `npm publish --access public --provenance`.
 npm versions cannot be withdrawn after 72 hours, so tag deliberately.
