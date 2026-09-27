@@ -976,7 +976,7 @@ const DATA_CONSUMER = /(^|\s)(cat|jq|tee|git\s+(commit|tag|notes)\b[^\n]*|gh\s+(
 // the interpreter is the first word (no ssh, docker, env, sudo, flags or assignments in front), a
 // bare name from PATH or one in a system directory or a version manager's shims (never ./x/python,
 // which could be anything), the delimiter is quoted, and nothing comes before or after it.
-// An allowlist, not a keyword list: every line is blank, a comment, or print, puts, echo or
+// An allowlist, not a keyword list: every line is blank, or print, puts, echo or
 // console.log of string and number literals. A single-quoted string never interpolates; a
 // double-quoted one may not hold $ @ # { or a backtick (Ruby #{…}, Perl @{[…]}, PHP {$…}). No
 // import either: `python3 -` imports from the working directory first. Anything else keeps the
@@ -985,8 +985,10 @@ const INTERP_DIR = String.raw`(\/usr(\/local)?\/bin|\/bin|\/opt\/homebrew\/bin|(
 const INTERP_STDIN = new RegExp(String.raw`^\s*(${INTERP_DIR})?(python[\d.]*|node|ruby|perl|php)(\s+-)?\s*$`);
 const PRINT_LITERAL = String.raw`('([^'\\\n]|\\[^\n])*'|"([^"\\\n$@#{\x60]|\\[^\n])*"|-?\d+(\.\d+)?)`;
 const PRINT_ARGS = String.raw`${PRINT_LITERAL}(\s*[,+]\s*${PRINT_LITERAL})*`;
-const PRINT_ONLY = new RegExp(String.raw`^\s*((print|puts|echo|console\.log)(\s*\(\s*(${PRINT_ARGS})?\s*\)|\s+${PRINT_ARGS})\s*;?\s*((#|\/\/)[^\n]*)?|(#|\/\/)[^\n]*|<\?php)?\s*$`);
-const printOnly = body => body.split("\n").every(l => PRINT_ONLY.test(l));
+const PRINT_ONLY = new RegExp(String.raw`^\s*((print|puts|echo|console\.log)(\s*\(\s*(${PRINT_ARGS})?\s*\)|\s+${PRINT_ARGS})\s*;?|<\?php)?\s*$`);
+// No comments at all and ASCII only: a comment can change how the body is read (# coding: utf-7,
+// a #! line perl or ruby follows, ?> ending PHP code), and so can an encoding.
+const printOnly = body => /^[\x09\x0a\x0d\x20-\x7e]*$/.test(body) && body.split("\n").every(l => PRINT_ONLY.test(l));
 // A line scan with each terminator's next line found by a cursor, so a script full of `<<` (even
 // unterminated ones) stays linear.
 export function stripDataHeredocs(cmd, code = false) {
@@ -1262,10 +1264,11 @@ function nestedCheckout(cwd) {
 // changes to a directory this cannot resolve inside root (an expansion, ~, an absolute path elsewhere).
 function staysNested(command, cwd, root) {
   const t = command.replace(/["'\\]/g, "");
-  if (/(^|[\s/=:])\.\.([\s/;&|)]|$)/.test(t) || /\b(OLDPWD|DIRSTACK)\b/.test(t)) return false;
+  // CDPATH changes where a relative cd goes; a symlink made in the command can point anywhere
+  if (/(^|[\s/=:])\.\.([\s/;&|)]|$)/.test(t) || /\b(OLDPWD|DIRSTACK|CDPATH)\b/.test(t) || /\bln\b[^;&|\n]*\s(-[a-zA-Z]*s|--symbolic)\b/.test(t)) return false;
   for (const m of t.matchAll(/(?<![\w.\/-])(cd|pushd|popd|chdir)(?![\w.\/-])((?:\s+-[LPe@]+)*)(?:\s+--)?(?:\s+([^\s;&|<>()]+))?/g)) {
     const d = m[3];
-    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/")) return false;
+    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/")) return false;
   }
   return true;
 }
@@ -1295,15 +1298,38 @@ const SEVERITY = {deny: 2, ask: 1};
  * as the rules know it (ruleSpelling) counts too; the more severe of the two rule outcomes wins. */
 // Over this size a command is not checked but asked about: the rules' work grows with it, and the
 // hook's timeout must not let an unchecked command through.
-const COMMAND_BYTES = 128 * 1024;
-export function precheck(command, cwd, env) {
-  if (command.length > COMMAND_BYTES)
-    return {outcome: "ask", rule: `command too large to check (over ${COMMAND_BYTES / 1024} KB)`, id: "command-size", source: "rule", policy_version: load("rules.json").version};
-  const own = precheckAs(command, cwd, env), alt = ruleSpelling(command.replace(/\\\n/g, ""));
-  const other = alt ? precheck(alt, cwd, env) : null;
-  if (other?.source !== "rule") return own;
-  return own?.source === "rule" && (SEVERITY[own.outcome] ?? 0) >= (SEVERITY[other.outcome] ?? 0) ? own : other;
+// A check that took longer than PRECHECK_MS is not trusted to pass either: it asks (a deny stands).
+const COMMAND_BYTES = 32 * 1024, PRECHECK_MS = 3000;
+export function precheck(command, cwd, env, depth = 0) {
+  const t0 = Date.now(), size = n => ({outcome: "ask", rule: `command too large to check (${n})`, id: "command-size", source: "rule", policy_version: load("rules.json").version});
+  if (command.length > COMMAND_BYTES) return size(`over ${COMMAND_BYTES / 1024} KB`);
+  const c = command.replace(/\\\n/g, ""), own = precheckAs(command, cwd, env);
+  // the other spellings: quoted parts joined and system paths (ruleSpelling), and the words as the
+  // shell passes them (wordSpelling); a rule on any of them counts, the most severe wins
+  let best = own;
+  for (const alt of depth < 2 ? [ruleSpelling(c), wordSpelling(c)] : []) {
+    const other = alt ? precheck(alt, cwd, env, depth + 1) : null;
+    if (other?.source === "rule" && !(best?.source === "rule" && (SEVERITY[best.outcome] ?? 0) >= (SEVERITY[other.outcome] ?? 0))) best = other;
+  }
+  if (depth === 0 && Date.now() - t0 > PRECHECK_MS && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
+  return best;
 }
+// The command with each word the shell reads differently from its text written plainly: escapes
+// and $'…' decoded (`ma\\in`, `$'ma\\x69n'`, `-\\f`, `pu\\sh`), a {a,b} brace list expanded into its
+// words (`m{a,}in` is `main min`). Only words whose value needs no quoting. null when nothing changes.
+const wordSpelling = s => {
+  const words = shellWords(s);
+  if (!words) return null;
+  let out = s;
+  for (const w of [...words].reverse()) {
+    const m = maskQuotes(w.raw, "_"), brace = /^([^{}]*)\{([^{}]*,[^{}]*)\}([^{}]*)$/.exec(w.raw);
+    let v = null;
+    if (brace && m === w.raw && !/[\\$'"`]/.test(w.raw)) v = brace[2].split(",").map(x => brace[1] + x + brace[3]).join(" ");
+    else if (!w.exps.length && /\\|\$'/.test(m) && /^[^\s'"`$;&|<>()\\{}*?[\]#]*$/.test(w.value)) v = w.value;
+    if (v !== null) out = out.slice(0, w.start) + v + out.slice(w.end);
+  }
+  return out !== s ? out : null;
+};
 function precheckAs(command, cwd, env) {
   const rules = load("rules.json");
   // The shell deletes a backslash-newline: `git push --force \⏎ origin main` is one line.
@@ -1334,6 +1360,8 @@ function precheckAs(command, cwd, env) {
       // an agent must not answer its own queue item, widen its own envelope or rewind the tree
       /\breflex\s+(setup|install|uninstall)\b/.test(command.replace(/["'\\]/g, "")) ||
       /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(command.replace(/["'\\]/g, "")) ||
+      // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
+      (inRepo && /\bCDPATH=/.test(command)) ||
       (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
@@ -1346,21 +1374,22 @@ function precheckAs(command, cwd, env) {
   const views = {shell: code === null ? false : [code + ctx, code], writes: [writes + ctx, writes]};
   const hit = checkRules(haystack, {rules: rules.rules.filter(r => !r.before_read_only && on(r, "command"))}, bare, views);
   if (hit) hold(ruled(hit));
-  if (held) return held;
-  // The scripts it runs, before the fast lane: `npm test` is only as safe as the test script.
+  // The scripts it runs, even behind a held ask: a deny in a script still wins, before the fast lane: `npm test` is only as safe as the test script.
   const perLine = {rules: rules.rules.filter(r => on(r, "script") && !r.whole_script)};
   const whole = {rules: rules.rules.filter(r => on(r, "script") && r.whole_script)};
   // A time budget, so a pathological script cannot outrun the hook's timeout (which would let it run).
   const t0 = Date.now(), late = () => Date.now() - t0 > SCAN_MS;
   for (const s of localScripts(command, cwd).filter(s => s.body)) {
     if (s.body.includes(HERE) || s.body.includes(CONFIG.data))
-      return ruled({outcome: "ask", rule: `touches the Reflex gate, its setup or its logs (in ${s.path})`, id: "tamper"});
+      { hold(ruled({outcome: "ask", rule: `touches the Reflex gate, its setup or its logs (in ${s.path})`, id: "tamper"})); continue; }
     const {lines} = scriptLines(s.body), all = lines.join("\n");
     let sh = checkRules(all + ctx, whole, all);
     for (const l of lines) { if (sh || late()) break; sh = checkRules(l + ctx, perLine, l); }
-    if (sh) return ruled({...sh, rule: `${sh.rule} (in ${s.path})`});
-    if (late()) return ruled({outcome: "ask", rule: `script too large to check in time (${s.path})`, id: "script-budget"});
+    if (sh?.outcome === "deny") return ruled({...sh, rule: `${sh.rule} (in ${s.path})`});
+    if (sh) hold(ruled({...sh, rule: `${sh.rule} (in ${s.path})`}));
+    if (late()) { hold(ruled({outcome: "ask", rule: `script too large to check in time (${s.path})`, id: "script-budget"})); break; }
   }
+  if (held) return held;
   if (fastPass(command, rules)) return {outcome: "pass", rule: "fast lane", source: "fast-lane", policy_version: rules.version};
   if (userFastPass(command, cwd, env)) return {outcome: "pass", rule: "fast lane (fastlane.json)", source: "fast-lane", policy_version: rules.version};
   return null;
@@ -2158,7 +2187,7 @@ async function selfcheck() {
   for (const c of ["touch MEMORY.md && echo '- trash, not rm / unlink' >> MEMORY.md", "echo 'never git push --force origin main' >> MEMORY.md",
     "printf '%s\\n' 'kubectl delete ns x --context prod' >> notes.txt", "reflex check 'rm -rf /'", "python3 - <<'EOF'\nprint('rm -rf /')\nEOF",
     "node - <<'EOF'\nconsole.log('git push --force origin main')\nEOF", "/usr/bin/python3 <<'EOF'\nprint('rm -rf ~')\nEOF",
-    "python3 - <<'EOF'\n# a note\nprint(\"delete from t\", 1)\nprint()\nEOF", "ruby - <<'EOF'\nputs 'rm -rf ~'\nEOF", "perl - <<'EOF'\nprint 'rm -rf ~';\nEOF",
+    "python3 - <<'EOF'\nprint(\"delete from t\", 1)\nprint()\nEOF", "ruby - <<'EOF'\nputs 'rm -rf ~'\nEOF", "perl - <<'EOF'\nprint 'rm -rf ~';\nEOF",
     `${homedir()}/.pyenv/shims/python3 <<'EOF'\nprint('rm -rf ~')\nEOF`]) ok(pw(c) === null, `data, not a command: ${c}`);
   for (const [c, id] of [["echo 'rm -rf ~' >> ~/.zshrc", "rm-root"], ["echo 'rm -rf ~' > run.sh && bash run.sh", "rm-root"], ["echo 'rm -rf ~' | sh", "rm-root"],
     ["echo 'rm -rf ~' >> notes.md; rm -rf ~", "rm-root"], ["echo 'rm -rf ~' >> notes.md & rm -rf ~", "rm-root"], ["reflex check x; rm -rf /", "rm-root"],
@@ -2207,8 +2236,8 @@ async function selfcheck() {
   ok(pw("git -C /repo push --mirror") === "push-mirror" && pw("git -P --no-pager push origin --mirror") === "push-mirror", "git global options, push --mirror");
   for (const c of ["git push -f -o merge_request.target=main origin feat/x", "git push -f --push-option=target=main origin feat/x", "git push -f origin feat/x -o ci.skip=main"])
     ok(pw(c) === null, `a push option is not a ref: ${c}`);
-  const big = "git push -f origin " + "main>".repeat(40000), t1 = Date.now();
-  ok(pw(big) === "command-size" && pw("git push " + "main ".repeat(20000)) === null && pw("git push -f origin " + "main>".repeat(25000)) === "force-push-main" && Date.now() - t1 < 1500, "a huge command asks, quickly");
+  const big = "git push -f origin " + "main>".repeat(8000), t1 = Date.now();
+  ok(pw(big) === "command-size" && pw("git push " + "main ".repeat(6000)) === null && pw("git push -f origin " + "main>".repeat(6000)) === "force-push-main" && Date.now() - t1 < 1500, "a huge command asks, quickly");
   for (const c of ["python3 - <<'EOF'\nimport localmod\nprint('rm -rf ~')\nEOF", "/tmp/x/python - <<'EOF'\nprint('rm -rf ~')\nEOF",
     "./python - <<'EOF'\nprint('rm -rf ~')\nEOF", "node - <<'EOF'\nimport('child_' + 'process').then(m => m['ex'+'ecSync']('rm -rf ~'))\nEOF",
     "ruby - <<'EOF'\nKernel.__send__(:sys, 'rm -rf ~')\nEOF", "perl - <<'EOF'\nopen my $f, '-|', 'rm -rf ~';\nEOF", "python3 - <<'EOF'\nlocals()['x']('rm -rf ~')\nEOF",
@@ -2218,6 +2247,30 @@ async function selfcheck() {
   for (const c of ["sed 's/^/x/w/Users/me/.zshrc' notes.txt", "awk --profile=/Users/me/.zshrc '{print}' f", "echo x >> ~/.bashrc", "cp /tmp/p ~/.profile"])
     ok(pw(c) === "shell-startup", `shell startup file: ${c}`);
   for (const c of ["grep alias ~/.zshrc > /tmp/x", "cat ~/.zshrc", "vim ~/.profile.d/x"]) ok(pw(c) !== "shell-startup", `not a shell startup write: ${c}`);
+  // third review of #43: heredoc bodies with a comment or non-ASCII are code; 32 KB; nested checkout
+  // with globs, braces, CDPATH or a symlink; shell-startup on writes only; a script deny behind a held
+  // ask; force-push-main on the words as the shell passes them; redaction around redirects
+  for (const c of ["python3 - <<'EOF'\n# coding: utf-7\nprint('+ACc-);__import__(+ACc-os+ACc-).system(+ACc-rm -rf ~ +ACc-);+ACM-')\nEOF",
+    "php <<'EOF'\n<?php\n// ?><?php system('rm -rf ~'); ?>\nEOF", "ruby - <<'EOF'\n#!ruby -r./x\nputs 'rm -rf ~'\nEOF", "python3 - <<'EOF'\nprint('rm -rf ~ é')\nEOF"])
+    ok(pw(c) === "rm-root", `heredoc body with a comment or non-ASCII is code: ${c}`);
+  ok(!stripDataHeredocs("perl - <<'EOF'\n#!/usr/bin/env -Ssh\\_-c\\_\"touch\\_D1;:\"\nprint 'x';\nEOF", true).includes("<<DATA"), "a perl #! line keeps the body in");
+  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size", "over 32 KB asks");
+  { const t = Date.now(); pw("ssh -o ".repeat(4600)); ok(Date.now() - t < 3500, "32 KB of ssh -o is checked in time"); }
+  for (const c of ["echo x >> ~/.zshrc", "echo x > ~/.bash_aliases", "echo 'use nix' > .envrc", "tee -a ~/.profile < /tmp/p", "sed -i '' s/a/b/ ~/.zprofile",
+    "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
+  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
+    "diff <(sort ~/.zshrc) x"]) ok(pw(c) !== "shell-startup", `not a shell startup write: ${c}`);
+  ok(precheck("bash -n ~/.bashrc", "/w", {})?.source === "fast-lane", "bash -n stays in the fast lane");
+  for (const c of ["git push -f origin ma\\in", "git push -f origin $'ma\\x69n'", "git push -f origin m{a,}in", "git push -f origin \\main", "git pu\\sh -f origin main",
+    "git push -\\f origin main", "git push --\\force origin main", "git push origin --\\delete main", "git push -f origin HEAD:ma\\ster"])
+    ok(pw(c) === "force-push-main", `force push main, the words as the shell passes them: ${c}`);
+  ok(pw("echo 'git push -f origin ma\\in'") !== "force-push-main", "quoted text stays text");
+  for (const [c, v] of [["echo aaaa>/dev/null | sudo -S ls", "aaaa"], ["echo aaaa 2>&1 | sudo -S ls", "aaaa"], ["echo aaaa </dev/null | sudo -S ls", "aaaa"], ["htpasswd -B -C 10 -b f u bbbb", "bbbb"]])
+    ok(!redact(c).includes(v), `redact: ${c}`);
+  { const t = Date.now(); redact("echo " + "2>&1 ".repeat(5000) + "x"); ok(Date.now() - t < 500, "redact: a run of redirects is linear"); }
+  { const T = join(tmpdir(), `reflex-selfcheck-held-${process.pid}`);
+    try { mkdirSync(T, {recursive: true}); writeFileSync(join(T, "deploy.sh"), "rm -rf /\n"); ok(pw("cat .env; bash deploy.sh", T) === "rm-root", "a script's deny wins over a held ask"); }
+    finally { rmSync(T, {recursive: true, force: true}); } }
   // tamper is what a command changes: reading agent settings is not tamper, writing them is
   for (const c of ["jq . ~/.claude/settings.json > /tmp/s.json", "grep -c reflex ~/.claude/settings.json > /tmp/n; echo done",
     "gh api -X POST repos/ursuciprian/reflex/pulls -f title=x", "gh pr create --repo ursuciprian/reflex --title x", "git clone https://github.com/ursuciprian/reflex /tmp/r"])
@@ -2303,6 +2356,9 @@ async function selfcheck() {
       "cd $OLDPWD && sed -i '' s/a/b/ gate.mjs", "popd; sed -i '' s/a/b/ gate.mjs", `cd ${HERE} && sed -i '' s/a/b/ gate.mjs`, "cd ~ && sed -i '' s/a/b/ gate.mjs",
       "cd && sed -i '' s/a/b/ gate.mjs", "pushd +1; sed -i '' s/a/b/ gate.mjs", `sed -i '' s/a/b/ ${join(HERE, "gate.mjs").replace(homedir(), "~")}`])
       ok(pw(c, nested) === "tamper", `nested checkout, the command leaves it: ${c}`);
+    for (const c of ["cd .? && sed -i '' s/a/b/ gate.mjs", "cd .{.,} && sed -i '' s/a/b/ gate.mjs", "cd .[.] && sed -i '' s/a/b/ gate.mjs", "cd * && sed -i '' s/a/b/ gate.mjs",
+      "CDPATH=/x cd setup && sed -i '' s/x/y/ tool-gate/rules.json", `ln -s "\${PWD%/*}" up && cd up && sed -i '' s/a/b/ gate.mjs`, "ln -s /x up; cd up && sed -i '' s/a/b/ gate.mjs",
+      "cd ~root && sed -i '' s/a/b/ gate.mjs"]) ok(pw(c, nested) === "tamper", `nested checkout, a cd the tracker cannot follow: ${c}`);
     for (const c of ["cd sub && sed -i '' s/a/b/ ../gate.mjs"]) ok(pw(c, nested) === "tamper", `nested checkout, climbs out: ${c}`);
     for (const c of ["cd sub && sed -i '' s/a/b/ gate.mjs", "sed -i '' s/a/b/ setup/tool-gate/rules.json"])
       ok(pw(c, nested) !== "tamper", `nested checkout, stays inside: ${c}`);

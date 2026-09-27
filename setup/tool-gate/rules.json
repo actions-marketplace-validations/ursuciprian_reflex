@@ -128,14 +128,13 @@
     {
       "id": "shell-startup",
       "outcome": "ask",
-      "rule": "changes a shell startup file (.zshrc, .bashrc, .profile), which runs in every new shell",
+      "rule": "writes a shell startup file (.zshrc, .bashrc, .profile, .envrc, fish config), which runs in every new shell",
       "context": false,
-      "writes": true,
       "applies_to": [
         "command"
       ],
       "all": [
-        "(^|[\\s/'\"=:>])\\.(zshrc|zshenv|zprofile|zlogin|bashrc|bash_profile|bash_login|profile)(?![\\w.-])"
+        "(>\\|?|&>|\\btee\\b(\\s+-\\S+)*|\\bdd\\b[^;&|\\n]*\\bof=|[=,]|(?<![\\w-])-[a-zA-Z]*o|(?<=['\"/;\\s\\d$}])[wW])\\s*['\"]?(~|\\$HOME|\\$\\{HOME\\}|[^\\s'\";&|<>]*/)?(\\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|envrc)(?![\\w.-])|\\.config/fish/)|\\bsed\\b[^;&|\\n]*\\s(-[a-zA-Z]*[iI]\\S*|--in-place\\S*)\\s[^;&|\\n]*['\"]?(~|\\$HOME|\\$\\{HOME\\}|[^\\s'\";&|<>]*/)?(\\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|envrc)(?![\\w.-])|\\.config/fish/)|\\b(cp|mv|install|rsync|ln)\\b[^;&|\\n]*\\s['\"]?(~|\\$HOME|\\$\\{HOME\\}|[^\\s'\";&|<>]*/)?(\\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|envrc)(?![\\w.-])|\\.config/fish/)[^\\s;&|<>)]*['\"]?\\s*(?=$|[;&|\\n)])"
       ]
     },
     {

@@ -7,7 +7,8 @@
 // --engine local: keyless autonomy (no Jev, offline): what the rules do not cover goes straight to the
 // stub System 2. The `expect` labels are Jev's, so only unsafe approvals are scored there.
 //   REFLEX_DATA_DIR=/tmp/x node eval-ladder.mjs [--engine jev|local|laya] [--golden f] [--only substring] [--judge approve-all|markers]
-import {mkdirSync, readFileSync, writeFileSync} from "node:fs";
+import {mkdirSync, mkdtempSync, readFileSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {CONFIG, decide, judgeSettings, taint} from "./gate.mjs";
 import {setEnvelope} from "./autonomy.mjs";
@@ -27,6 +28,9 @@ if ((engine === "laya") !== (CONFIG.engine === "laya")) throw new Error("--engin
 Object.assign(CONFIG, {mode: "enforce", allow: "on", engine, checkpoints: false,
   judge: {...judgeSettings({backend: "openai-compatible", url: stub.url, model: "stub-approve-all", budget: {calls: 1000, usd: 100}}, undefined, engine), enabled: true},
   queue: {...CONFIG.queue, enabled: true, notify: null}});
+// A data directory of its own unless REFLEX_DATA_DIR names one: the trace, answer cache, taint and
+// runaway state of other runs (a test, an eval, a live session) must not change who resolves a case.
+if (!process.env.REFLEX_DATA_DIR) CONFIG.data = mkdtempSync(join(tmpdir(), "reflex-ladder-"));
 mkdirSync(CONFIG.data, {recursive: true});
 
 const results = [];

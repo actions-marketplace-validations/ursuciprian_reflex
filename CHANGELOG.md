@@ -55,6 +55,19 @@ All notable changes to Reflex are documented here. The format follows
   awk program text read as the shell passes it (`sys''tem`, `$'\x73ystem'`), gawk `-W` long
   options, brace expansion into options (`sort {-o,out}`), zsh `=(…)` and glob qualifiers
   (`*(e:…:)`), and a glob that could match a file named like an option (`sed -n p *`, not after `--`).
+- Third review: an interpreter heredoc skips the shell rules only with no comments and ASCII only
+  (a `# coding:` line, a `#!` line or `?>` in a comment changes what runs). Commands over 32 KB
+  ask, and so does a check that takes over 3 s (a deny stands). In a nested worktree a cd target
+  with a glob, a brace, `~user` or an expansion, `CDPATH`, or an `ln -s` in the command restores
+  the checkout view. force-push-main and the other rules also read the words as the shell passes
+  them (`ma\in`, `$'ma\x69n'`, `m{a,}in`, `-\f`, `pu\sh`). A deny in a script the command runs
+  wins over an ask the command itself got. Redaction of `echo … | sudo -S` allows redirects in the
+  echo, and `htpasswd -C 10 -b` is redacted.
+- `shell-startup` asks only on writes (redirects, tee, `sed -i`, sed w, cp, mv or install onto the
+  file, an option value naming it), not on reads such as `source ~/.zshrc` or `cp ~/.zshrc /tmp/x`;
+  it covers .bash_aliases, .bash_logout, .zlogout, .envrc and fish config too.
+- eval-ladder.mjs uses a data directory of its own unless REFLEX_DATA_DIR is set, so another run's
+  trace, cache or runaway state cannot change who resolves a case.
 - An ask from an early rule or the tamper check no longer hides a deny rule that also matches: the
   more severe outcome wins, as it already did between spellings.
 
