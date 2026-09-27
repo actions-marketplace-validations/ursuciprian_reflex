@@ -23,14 +23,15 @@
   { "pattern": "(\\bsshpass\\s+-p\\s*)\\S+", "flags": "", "replace": "$1<redacted>"},
   { "pattern": "(://[^\\s:@/]+:)\\S+@", "flags": "", "replace": "$1<redacted>@"},
   { "pattern": "(\\b(?:docker|podman|nerdctl|buildah|skopeo|oras|az)\\s+(?:[\\w-]+\\s+)?login\\b[^|;&\\n]*?\\s-p(?:=|\\s+)?)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"},
-  { "pattern": "(\\b(?:echo|printf)(?:\\s+-[neE]+)*\\s+(?:(['\"])%s[^'\"]*\\2\\s+)?)(?!['\"]?\\$)(\"[^\"]*\"|'[^']*'|[^\\s|;&]+)(?=\\s*\\|\\s*[^|;&\\n]*?(?:\\bsudo\\b[^|;&\\n]*\\s-[a-zA-Z]*S\\b|--password-stdin\\b|\\bchpasswd\\b|\\bpasswd\\s+--stdin\\b))", "flags": "", "replace": "$1<redacted>"},
-  { "pattern": "(\\bsudo\\b[^|;&\\n]*\\s-[a-zA-Z]*S\\b[^|;&\\n]*<<<\\s*)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"},
+  { "pattern": "(\\b(?:echo|printf)(?:\\s+-[neE]+)*\\s+(?:(['\"])%s[^'\"]*\\2\\s+)?)(?!['\"]?\\$)((?:\"[^\"]*\"|'[^']*'|[^\\s|;&<>'\"])+(?:[ \\t]+(?:\"[^\"]*\"|'[^']*'|[^\\s|;&<>'\"])+)*)(?=(?:[ \\t]*(?:\\d*>&\\d+|\\d*>>?[ \\t]*[^\\s|;&<>]+|<[ \\t]*[^\\s|;&<>]+))*\\s*\\|\\s*[^|;&\\n]*?(?:\\bsudo\\b[^|;&\\n]*\\s(?:-[a-zA-Z]*S\\b|--stdin\\b)|--password-stdin\\b|\\bchpasswd\\b|\\bpasswd\\s+--stdin\\b))", "flags": "", "replace": "$1<redacted>"},
+  { "pattern": "(\\bsudo\\b[^|;&\\n]*\\s(?:-[a-zA-Z]*S\\b|--stdin\\b)[^|;&\\n]*<<<\\s*)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"},
   { "pattern": "((?:^|\\s)--[\\w-]*-(?:password|passwd|token|secret)[= ]\\s*)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "i", "replace": "$1<redacted>"},
   { "pattern": "(\\b(?:redis-cli\\b[^|;&\\n]*\\s(?:-a|--pass)|mongo\\w*\\b[^|;&\\n]*\\s-p)\\s+)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"},
   { "pattern": "(\\s-pass(?:in|out)?\\s+pass:)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"},
   { "pattern": "(\\s-(?:src|dest)?(?:store|key)pass\\s+)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"},
-  { "pattern": "(\\bhtpasswd\\s+(?:-\\w+\\s+)*-\\w*b\\w*\\s+(?:-\\w+\\s+)*\\S+\\s+\\S+\\s+)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"},
-  { "pattern": "(\\s(?:-U|--user(?:name)?)[=\\s]+[^\\s%'\"]+%)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"}
+  { "pattern": "(\\bhtpasswd(?=(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+-\\w*b)(?:(?=(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+-\\w*n)(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+[^\\s\\-<>;&|]\\S*\\s+|(?!(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+-\\w*n)(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+[^\\s\\-<>;&|]\\S*\\s+[^\\s<>;&|]\\S*\\s+))(\"[^\"]*\"|'[^']*'|[^\\s;&|<>]+)", "flags": "", "replace": "$1<redacted>"},
+  { "pattern": "(\\s(?:-U|--user(?:name)?)[=\\s]+[^\\s%'\"]+%)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)", "flags": "", "replace": "$1<redacted>"},
+  { "pattern": "(\\s(?:-U|--user(?:name)?)[=\\s]+(['\"])[^'\"%]*%)([^'\"]*)(?=\\2)", "flags": "", "replace": "$1<redacted>"}
  ],
  "corpus": [
   {"in": "curl -H 'Authorization: Bearer abc.def' https://u:hunter2@x.io AWS_SECRET_ACCESS_KEY=wJalr/K7 --password s3cr3t AKIAABCDEFGHIJKLMNOP ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "out": "curl -H 'Authorization: Bearer <redacted> https://u:<redacted>@x.io AWS_SECRET_ACCESS_KEY=<redacted> --password <redacted> <redacted> <redacted>"},
@@ -51,6 +52,8 @@
   {"in": "docker login -u me -p pw1 ghcr.io; podman login -u me -p 'p w' quay.io; echo pw3 | sudo -S apt-get update; printf '%s\\n' pw4 | docker login -u me --password-stdin ghcr.io; sudo -S true <<< pw5; wget --ftp-password pw6 ftp://x/f", "out": "docker login -u me -p <redacted> ghcr.io; podman login -u me -p <redacted> quay.io; echo <redacted> | sudo -S apt-get update; printf '%s\\n' <redacted> | docker login -u me --password-stdin ghcr.io; sudo -S true <<< <redacted>; wget --ftp-password <redacted> ftp://x/f"},
   {"in": "redis-cli -a pw7 ping; mongosh mongodb://h -u admin -p pw8; openssl pkcs12 -in k.p12 -passin pass:pw9 -out k.pem; keytool -list -storepass pw10; htpasswd -bc .htpasswd admin pw11; smbclient //h/s -U admin%pw12", "out": "redis-cli -a <redacted> ping; mongosh mongodb://h -u admin -p <redacted>; openssl pkcs12 -in k.p12 -passin pass:<redacted> -out k.pem; keytool -list -storepass <redacted>; htpasswd -bc .htpasswd admin <redacted>; smbclient //h/s -U admin%<redacted>"},
   {"in": "echo $PW | sudo -S true; echo \"$PW\" | docker login --password-stdin -u me ghcr.io; docker run -p 8080:80 nginx; ssh -p 2222 h uptime; echo hello | grep h; psql -U postgres -h db; mysql -u root -p db", "out": "echo $PW | sudo -S true; echo \"$PW\" | docker login --password-stdin -u me ghcr.io; docker run -p 8080:80 nginx; ssh -p 2222 h uptime; echo hello | grep h; psql -U postgres -h db; mysql -u root -p db"},
+  {"in": "htpasswd -nb admin aaaa > f; htpasswd -n -b admin bbbb; smbclient -U 'DOM\\\\u%cccc' //h/s; echo dddd | sudo --stdin ls; echo my eeee words | sudo -S ls; sudo --stdin true <<< ffff", "out": "htpasswd -nb admin <redacted> > f; htpasswd -n -b admin <redacted>; smbclient -U 'DOM\\\\u%<redacted>' //h/s; echo <redacted> | sudo --stdin ls; echo <redacted> | sudo -S ls; sudo --stdin true <<< <redacted>"},
+  {"in": "echo 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' done", "out": "echo 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' 'a' done"},
   {"in": "tool --api-key abc123 -token t0k", "out": "tool --api-key <redacted> -token <redacted>"}
  ]
 }

@@ -6,6 +6,76 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Read-only detection now reads each word the way the shell passes it: backslashes dropped, `$'…'`
+  decoded, quoted parts joined. `sed -\i`, `gh api $'\x2dX' DELETE`, `nvidia-smi -\pm 1` and
+  `journalctl --\rotate` (also over ssh) are the options they spell, not reads.
+- An expansion among the words of a command whose options decide what it does (sed, awk, find,
+  sort, git, gh, docker, journalctl and the rest of the tools with a read-only subcommand list) makes
+  it not read-only, unless the command itself sets that name to literal values none of which starts
+  with `-`: `X=-i; sed $X …`, `sed $(echo -i) …`, `o=--method=DELETE; gh api $o …` ask. `printf -v`
+  is not read-only either (it can set PATH).
+- sed is parsed as sed parses it, GNU and BSD: its options (in place, `-f`, unknown options) and its
+  script, command by command. w, W and e are found with or without a space and after any address
+  (`1w/path`, `$w/path`, `1etouch x`), and so are the s flags w and e (`s/a/b/w/path`).
+- gawk options that write a file or load code are not read-only in any spelling or unique prefix:
+  `--profile`, `--pretty-print`, `--dump-variables`, `--debug`, `-p`, `-o`, `-d`, `-D`, values attached.
+- `docker compose config -o f` and `--output f` write a file again (a regression from narrowing `--output`).
+- `journalctl --cursor=…` is read-only: an exact safe option is not a prefix of `--cursor-file`.
+- An ssh call with a loop variable host is read only when every place its text appears is inside
+  a loop over literal hosts (`for h in a; do ssh $h …; done; ssh $h …` asks).
+- The ssh-local-command rule (ProxyCommand, LocalCommand, Match exec) runs before read-only
+  detection, so it asks whatever readOnly says.
+- In a git worktree nested in the Reflex checkout, the checkout's tamper check applies again when
+  the command leaves the worktree in a way the tracker cannot follow: `cd -`, `$OLDPWD`, `popd`,
+  `pushd ±N`, `cd "$(…)"`, `cd ~`, an absolute directory elsewhere, or `..`. Paths through `~` or
+  `$HOME` name the checkout wherever it was cloned.
+- An interpreter heredoc (`python3 - <<'EOF'`) skips the shell rules only when every line prints
+  string or number literals (print, puts, echo, console.log), with no interpolation and no import
+  (`python3 -` imports from the working directory first). This replaces a keyword denylist that
+  missed indirect execution (dynamic import, `__send__`, `open '-|'`, `locals()`). The interpreter
+  must be a bare name or live in /usr/bin, /usr/local/bin, /bin, /opt/homebrew/bin, or pyenv or nvm
+  shims in the home directory: `/tmp/x/python` is not an interpreter.
+- force-push-main: a ref followed by a redirect, comment, brace or backtick (`main>/tmp/log`) is
+  denied again; a push option naming main (`-o merge_request.target=main`) is not a ref; the check
+  for main next to a push with an expansion is linear (200 KB took 2.6 s, now milliseconds).
+- A command over 128 KB is asked about rather than checked (`command-size`).
+- git global options (`-C`, `-c`, `-P`, `--git-dir`, `--work-tree`, `--no-pager` and the rest,
+  quoted values too) are dropped once for the rules, the tainted rules, the always-human class and
+  script lines, instead of being pasted into every git pattern (rules-v15).
+- Redaction: `htpasswd -nb user pw` (no file), a quoted `smbclient -U 'DOM\user%pw'`,
+  `sudo --stdin`, and `echo a multi word value | sudo -S`.
+- Redaction of `echo … | sudo -S` no longer backtracks exponentially on a run of quoted words, and
+  git options whose value is `$(…)`, `${…}` or a backtick span are dropped too (`git -C $(pwd) push -f
+  origin main` denies again).
+- More read-only gaps found in review: a sed `-e` piece ending in a backslash (BSD ends a\ text
+  there, so the next piece runs as commands), BSD `-l` taking no value, a NUL escape in `$'…'`,
+  bracket expressions in sed regexes (`s/[/]/…`; this also makes `sed 's/[^/]*$//'` a read again),
+  awk program text read as the shell passes it (`sys''tem`, `$'\x73ystem'`), gawk `-W` long
+  options, brace expansion into options (`sort {-o,out}`), zsh `=(…)` and glob qualifiers
+  (`*(e:…:)`), and a glob that could match a file named like an option (`sed -n p *`, not after `--`).
+- Third review: an interpreter heredoc skips the shell rules only with no comments and ASCII only
+  (a `# coding:` line, a `#!` line or `?>` in a comment changes what runs). Commands over 32 KB
+  ask, and so does a check that takes over 3 s (a deny stands). In a nested worktree a cd target
+  with a glob, a brace, `~user` or an expansion, `CDPATH`, or an `ln -s` in the command restores
+  the checkout view. force-push-main and the other rules also read the words as the shell passes
+  them (`ma\in`, `$'ma\x69n'`, `m{a,}in`, `-\f`, `pu\sh`). A deny in a script the command runs
+  wins over an ask the command itself got. Redaction of `echo … | sudo -S` allows redirects in the
+  echo, and `htpasswd -C 10 -b` is redacted.
+- `shell-startup` asks only on writes (redirects, tee, `sed -i`, sed w, cp, mv or install onto the
+  file, an option value naming it), not on reads such as `source ~/.zshrc` or `cp ~/.zshrc /tmp/x`;
+  it covers .bash_aliases, .bash_logout, .zlogout, .envrc and fish config too.
+- eval-ladder.mjs uses a data directory of its own unless REFLEX_DATA_DIR is set, so another run's
+  trace, cache or runaway state cannot change who resolves a case.
+- An ask from an early rule or the tamper check no longer hides a deny rule that also matches: the
+  more severe outcome wins, as it already did between spellings.
+
+### Added
+
+- Rule `shell-startup` (ask): a command that changes .zshrc, .bashrc, .profile or another shell
+  startup file, which runs in every new shell. Reads the writes view, so reading one is not it.
+
 ## [0.10.0] - 2026-09-27
 
 ### Added
