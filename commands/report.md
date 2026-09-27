@@ -5,7 +5,7 @@ allowed-tools: Bash(reflex report)
 ---
 
 Run `reflex report $ARGUMENTS` with the Bash tool (with no arguments, the last 7 days). Pass only
-`--since <days>`, `--list <outcome>`, `--calibration` and `--policy <file>` from the user's arguments.
+`--since <days>`, `--list <outcome>` and `--calibration` from the user's arguments.
 Never pass `--push`, which sends metrics out; drop anything else and say so.
 
 Summarize for the user: how many commands were judged, how many were denied or asked, which rules

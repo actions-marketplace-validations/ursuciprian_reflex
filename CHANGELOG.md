@@ -24,13 +24,17 @@ All notable changes to Reflex are documented here. The format follows
 ### Changed
 
 - Plugin hooks stand down when `reflex setup` hooks are in the Claude Code settings file
-  (`~/.claude/settings.json`, or under `$CLAUDE_CONFIG_DIR`): they exit before reading their input
-  or writing a log line, so a call is never judged or counted twice.
+  (the user settings file Claude Code reads, where `reflex setup` writes them): they exit before
+  reading their input or writing a log line, so a call is never judged or counted twice. A settings
+  hook whose script no longer exists does not count, and `reflex status` reports it as an error.
 - With no saved engine, the gate starts with the local engine, as a fresh `reflex setup` does (Jev
-  when a Keychain item or an earlier install is recorded). It used to default to Jev.
+  when `TYPESAFE_API_KEY` is set, or a Keychain item or an earlier install is recorded). It used to
+  default to Jev.
 - Rules v16: `reflex check '<cmd>'`, `reflex report`, `reflex replay` and `reflex suggest` pass the
   fast lane like `reflex status`, without the flags that send data, write files or pick an engine
-  (`--push`, `--write`, `--engine`).
+  (`--push`, `--write`, `--engine`). The `tamper` rule also asks for `claude plugin disable`,
+  `uninstall` and `marketplace remove`, and for writes under `~/.claude*/plugins/` and any
+  `~/.claude*/settings` file.
 
 ## [0.11.0] - 2026-09-27
 

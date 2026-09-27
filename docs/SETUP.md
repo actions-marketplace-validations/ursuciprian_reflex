@@ -48,20 +48,27 @@ treats that as a non-blocking hook error and the command runs ungated. `reflex d
 environment, or a denied `/reflex:check git push --force origin main`, confirms the gate is live.
 
 **Plugin and `reflex setup` together.** Both install the same hooks. When `reflex setup` (or
-`install.mjs --agent claude`) has written Reflex hooks into `~/.claude/settings.json`
-(`$CLAUDE_CONFIG_DIR/settings.json` when that is set), every plugin hook sees them and exits at once
-without reading its input or writing a log line, so each call is judged and counted once, by the
-settings hooks. `reflex status` and `reflex doctor` print which path is active
+`install.mjs --agent claude`) has written Reflex hooks into `~/.claude/settings.json`, every plugin
+hook sees them and exits at once without reading its input or writing a log line, so each call is
+judged and counted once, by the settings hooks. The plugin checks the user settings file Claude
+Code reads: `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set. `install.mjs` always
+writes `~/.claude/settings.json`, so with `CLAUDE_CONFIG_DIR` set the setup hooks do not run in
+Claude Code and the plugin stays active. A settings hook whose script no longer exists (a deleted
+checkout) does not count: it gates nothing, so the plugin keeps running, and `reflex status` reports
+it as an error. `reflex status` and `reflex doctor` print which path is active
 (`Claude Code hooks: ...`); doctor also probes the plugin's own gate when the plugin is the active
-one. To switch to the plugin only, run `reflex uninstall` (or `node install.mjs --agent claude
---uninstall`); to switch to setup only, `claude plugin uninstall reflex@reflex`.
+one. To switch to the plugin only, remove the Claude Code hooks with the copy that installed them:
+`node ~/.local/share/reflex/lib/node_modules/@ursuciprian/reflex/install.mjs --agent claude --uninstall`
+after `reflex setup`, or `node <checkout>/install.mjs --agent claude --uninstall` for a clone
+(`reflex uninstall` removes the hooks of every agent and the package). To switch to setup only,
+`claude plugin uninstall reflex@reflex`.
 
 What only `reflex setup` does, because a plugin cannot change settings:
 
 - the `permissions.ask` rules that make Claude Code ask before its edit tools change the Reflex
   checkout, its logs, `~/.config/reflex` or `~/.claude/settings*.json`. With the plugin alone, add
-  them yourself if you want them (shell commands that write there are still caught by the gate's
-  `tamper` rule), for example in `~/.claude/settings.json`:
+  them yourself if you want them (shell commands that write there, and `claude plugin disable`,
+  `uninstall` or `marketplace remove`, are still asked by the gate's `tamper` rule), for example in `~/.claude/settings.json`:
   `"permissions": {"ask": ["Edit(~/.config/reflex/**)", "Edit(~/.local/state/reflex/**)", "Edit(~/.claude/plugins/**)", "Edit(~/.claude/settings*.json)"]}`
 - a `PreToolUse` timeout sized to System 2. The plugin's is 10 s, the same as `reflex setup`
   without System 2; with the autonomous profile a slow judge call runs past it and the hook fails
@@ -395,7 +402,7 @@ All optional.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `REFLEX_ENGINE` | saved choice; otherwise `jev` when a Keychain item or an agent install is recorded in `config.json`, else `local` | `local` disables hosted classification; new setup saves `local` |
+| `REFLEX_ENGINE` | saved choice; otherwise `jev` when `TYPESAFE_API_KEY` is set or a Keychain item or an agent install is recorded in `config.json`, else `local` | `local` disables hosted classification; new setup saves `local` |
 | `TYPESAFE_API_KEY` | none | API key (or use the Keychain item) |
 | `REFLEX_MODE` | installed `--mode`, else `shadow` | `off` · `shadow` (rules enforce, Jev logs only) · `enforce` |
 | `REFLEX_ALLOW` | installed `--allow`, else `off` | `off` · `shadow` (log `would_allow`) · `on` (clearly safe commands skip the agent's prompt; enforce mode only) |

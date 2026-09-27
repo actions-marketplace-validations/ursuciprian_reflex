@@ -4,7 +4,7 @@ import {existsSync, mkdtempSync, readFileSync, rmSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
-import {CLAUDE_SETTINGS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooksInstalled, setupFile} from "./gate.mjs";
+import {CLAUDE_SETTINGS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooks, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
 import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
@@ -123,18 +123,23 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
 }
 // The Claude Code plugin (reflex@<marketplace>). Its hooks stand down while `reflex setup` hooks are
 // in the settings file, so exactly one of the two judges each call.
-const settingsHooks = settingsHooksInstalled();
+const found = settingsHooks(), settingsLive = found.live.length > 0;
+for (const s of found.stale) errors.push(`Claude Code: ${CLAUDE_SETTINGS} has a Reflex hook for ${s}, which does not exist; that hook fails and gates nothing. Re-run reflex setup --agents claude, or remove it.`);
 let installs = [], enabled = {};
 try { installs = Object.entries(read(join(dirname(CLAUDE_SETTINGS), "plugins/installed_plugins.json")).plugins ?? {})
   .filter(([id]) => id.startsWith("reflex@")).flatMap(([id, list]) => (Array.isArray(list) ? list : []).map(i => ({id, ...i}))); } catch { /* no plugins */ }
 try { enabled = read(CLAUDE_SETTINGS).enabledPlugins ?? {}; } catch { /* no settings */ }
-const pluginOn = installs.some(i => enabled[i.id] !== false && i.scope !== "project");
-const plugin = {installed: installs.map(i => ({id: i.id, scope: i.scope, version: i.version ?? null, path: i.installPath ?? null})),
-  enabled: pluginOn, active: pluginOn && !settingsHooks, settings_hooks: settingsHooks, checks: []};
-const claudeHooks = settingsHooks ? `reflex setup hooks in ${CLAUDE_SETTINGS}${pluginOn ? " (the plugin stands down)" : ""}`
-  : pluginOn ? `the Claude Code plugin (${installs[0].id})` : "none recorded";
+// Only a user-scope install applies everywhere; a project or local one applies in its own project,
+// which this check does not know, so it is reported and not probed.
+const userInstalls = installs.filter(i => i.scope === "user" && enabled[i.id] !== false);
+const pluginOn = userInstalls.length > 0;
+const plugin = {installed: installs.map(i => ({id: i.id, scope: i.scope, project: i.projectPath ?? null, version: i.version ?? null, path: i.installPath ?? null})),
+  enabled: pluginOn, active: pluginOn && !settingsLive, settings_hooks: settingsLive, stale_settings_hooks: found.stale, checks: []};
+const scoped = installs.filter(i => i.scope !== "user").map(i => `${i.id} (${i.scope}${i.projectPath ? ` ${i.projectPath}` : ""})`);
+const claudeHooks = (settingsLive ? `reflex setup hooks in ${CLAUDE_SETTINGS}${pluginOn || scoped.length ? " (the plugin stands down)" : ""}`
+  : pluginOn ? `the Claude Code plugin (${userInstalls[0].id})` : "none recorded") + (scoped.length ? `; plugin installed for a project: ${scoped.join(", ")}` : "");
 if (plugin.active && CONFIG.judge.enabled) warnings.push("System 2 is on, but the plugin's PreToolUse hook has a 10 s timeout and a longer judge call fails open. Use reflex setup --agents claude, which sizes the timeout to the judge.");
-if (doctor && plugin.active) for (const i of installs) {
+if (doctor && plugin.active) for (const i of userInstalls) {
   const gate = join(i.installPath ?? "", "gate.mjs");
   if (!existsSync(gate)) { errors.push(`plugin ${i.id}: gate is missing at ${gate}. Run claude plugin update ${i.id}.`); continue; }
   const scratch = mkdtempSync(join(tmpdir(), "reflex-doctor-"));

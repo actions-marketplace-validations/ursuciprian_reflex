@@ -81,21 +81,34 @@ export function runawaySettings(saved = {}, env) {
 }
 // Claude Code plugin (hooks/hooks.json passes --plugin). `reflex setup` writes the same hooks into
 // the user's Claude Code settings; when those are there, they win and every plugin hook exits at
-// once, so no call is judged or counted twice. The settings file is the one install.mjs writes.
+// once, so no call is judged or counted twice. This is the user settings file Claude Code reads
+// (install.mjs writes ~/.claude/settings.json, which is that file unless CLAUDE_CONFIG_DIR is set).
+// A hook counts only when the script it names exists: a stale entry from a deleted checkout fails
+// in Claude Code, so the plugin must not stand down for it.
 export const CLAUDE_SETTINGS = join(ENV.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "settings.json");
-export function settingsHooksInstalled(file = CLAUDE_SETTINGS) {
+const REFLEX_HOOK = /(?:"((?:[^"\\]|\\.)*?(?:gate|guard|instructions)\.mjs)"|'([^']*?(?:gate|guard|instructions)\.mjs)'|(\S*(?:gate|guard|instructions)\.mjs))\s+--claude(?:-post|-prompted|-prompt)?(?=\s|$)/;
+/** Reflex hooks in the Claude Code settings file: `live` scripts exist, `stale` ones do not. Plugin hooks are not counted. */
+export function settingsHooks(file = CLAUDE_SETTINGS) {
+  const live = [], stale = [];
   try {
-    const hooks = JSON.parse(readFileSync(file, "utf8")).hooks ?? {};
-    return Object.values(hooks).flat().some(g => (g?.hooks ?? []).some(h =>
-      typeof h?.command === "string" && !h.command.includes("--plugin") && /(gate|guard|instructions)\.mjs"?\s+--claude/.test(h.command)));
-  } catch { return false; }
+    for (const g of Object.values(JSON.parse(readFileSync(file, "utf8")).hooks ?? {}).flat())
+      for (const h of g?.hooks ?? []) {
+        const m = typeof h?.command === "string" && !/\s--plugin(\s|$)/.test(h.command) && h.command.match(REFLEX_HOOK);
+        if (!m) continue;
+        const script = m[1]?.replace(/\\(.)/g, "$1") ?? m[2] ?? m[3];
+        (existsSync(script) ? live : stale).push(script);
+      }
+  } catch { /* no settings file, or not JSON: nothing installed there */ }
+  return {live: [...new Set(live)], stale: [...new Set(stale)]};
 }
+export const settingsHooksInstalled = file => settingsHooks(file).live.length > 0;
 export const PLUGIN = process.argv.includes("--plugin");
 if (PLUGIN && settingsHooksInstalled()) process.exit(0);
 // With no saved engine the gate starts where a fresh `reflex setup` does: local, no key needed, or
-// Jev when a Keychain item or an earlier install is recorded. The plugin relies on this default.
+// Jev when a TypeSafe key is in the environment, or a Keychain item or an earlier install is
+// recorded. The plugin relies on this default.
 const ENGINE = ENV.REFLEX_ENGINE ?? flagValue("--engine", USER_CONFIG.engine ??
-  (USER_CONFIG.keychain || Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
+  (ENV.TYPESAFE_API_KEY?.trim() || USER_CONFIG.keychain || Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
 // engine laya: the same questions and policy as Jev, answered by a Laya checkpoint served on this
 // machine (setup/laya/server.py, `reflex laya start`); nothing leaves it and no key is needed.
 export const LAYA_DEFAULTS = {port: 8421, model: "typed-decisions"};
