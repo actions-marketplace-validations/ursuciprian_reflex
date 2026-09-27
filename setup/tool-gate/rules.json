@@ -1,5 +1,5 @@
 {
-  "version": "rules-v14",
+  "version": "rules-v15",
   "note": "Deterministic and authoritative: checked before Jev, enforced even in shadow mode. Patterns are case-insensitive and run over the command plus its context (cwd=, aws_profile=, kube_context=, tf_workspace=, git_branch=). A rule fires when every pattern in `all` matches. `pass` patterns apply per segment: a command passes the fast lane when every segment is read-only or matches one. `applies_to` says what a rule reads: the command (the default) and/or the local scripts the command runs. Script rules run line by line, with the script's simple VAR=value assignments expanded and whole-line comments dropped; `whole_script` rules see the whole body. `context: false` rules read the command without the cwd=/profile context. `tainted` rules apply only in a session whose agent read a suspected prompt injection (guard.mjs); like Jev decisions, they are enforced in enforce mode only. `shell` rules read shell commands: they skip a command whose every pipeline only reads (or is mkdir, touch, git add, git commit or reflex check) and writes nothing but notes (.md, .txt, .log, .csv, /dev/null), and the program of a bare `python3 - <<'EOF'` (the whole command) when nothing in it could run, load, write or delete anything. `writes` rules read what the command changes: a pipeline that only reads counts by its redirect targets.",
   "rules": [
     {
@@ -66,8 +66,8 @@
         "script"
       ],
       "all": [
-        "\\bgit(\\s+(-[cC]\\s+\\S+|-[pP]|--(git-dir|work-tree|namespace|exec-path)\\s+\\S+|--[\\w-]+(=\\S+)?))*\\s+push\\b[^;&|]*(--force\\b|--force-with-lease\\b|--delete\\b|\\s-[a-zA-Z]*[fd][a-zA-Z]*\\b|\\s['\"]?[+:])",
-        "\\bgit(\\s+(-[cC]\\s+\\S+|-[pP]|--(git-dir|work-tree|namespace|exec-path)\\s+\\S+|--[\\w-]+(=\\S+)?))*\\s+push\\b[^;&|\\n]*?(\\s|[:+'\"=]|\\bheads/)(main|master)(?=$|[\\s:;&|)'\"])|\\bgit_branch=(main|master)(?=\\s|$)|\\bgit(\\s+(-[cC]\\s+\\S+|-[pP]|--(git-dir|work-tree|namespace|exec-path)\\s+\\S+|--[\\w-]+(=\\S+)?))*\\s+push\\b[^;&|\\n]*[$\\x60](?=[\\s\\S]*\\b(main|master)\\b)|\\b(main|master)\\b(?=[\\s\\S]*\\bgit(\\s+(-[cC]\\s+\\S+|-[pP]|--(git-dir|work-tree|namespace|exec-path)\\s+\\S+|--[\\w-]+(=\\S+)?))*\\s+push\\b[^;&|\\n]*[$\\x60])"
+        "\\bgit\\s+push\\b[^;&|]*(--force\\b|--force-with-lease\\b|--delete\\b|\\s-[a-zA-Z]*[fd][a-zA-Z]*\\b|\\s['\"]?[+:])",
+        "\\bgit\\s+push\\b[^;&|\\n]*?(\\s|[:+'\"]|--force-with-lease=|\\bheads/)(main|master)(?=$|[\\s:;&|)'\"<>#}\\x60\\\\])|\\bgit_branch=(main|master)(?=\\s|$)|^(?=[\\s\\S]*?\\bgit\\s+push\\b[^;&|\\n]*[$\\x60])(?=[\\s\\S]*?\\b(main|master)\\b)"
       ]
     },
     {
@@ -80,8 +80,8 @@
         "script"
       ],
       "all": [
-        "\\bgit(\\s+(-[cC]\\s+\\S+|-[pP]|--(git-dir|work-tree|namespace|exec-path)\\s+\\S+|--[\\w-]+(=\\S+)?))*\\s+push\\b[^;&|]*(--force\\b|--force-with-lease\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s['\\\"]?\\+)",
-        "\\bgit(\\s+(-[cC]\\s+\\S+|-[pP]|--(git-dir|work-tree|namespace|exec-path)\\s+\\S+|--[\\w-]+(=\\S+)?))*\\s+push\\b([^;&|\\n]*?(\\s|[+'\\\"])HEAD(?=$|[\\s;&|)'\\\"])|(\\s+-\\S+)*(\\s+[^\\s;&|<>()-]\\S*)?(\\s+-\\S+)*\\s*(?=$|[;&|\\n)]|\\s+cwd=))",
+        "\\bgit\\s+push\\b[^;&|]*(--force\\b|--force-with-lease\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s['\"]?\\+)",
+        "\\bgit\\s+push\\b([^;&|\\n]*?(\\s|[+'\"])HEAD(?=$|[\\s;&|)'\"<>#}\\x60\\\\])|(\\s+-\\S+)*(\\s+[^\\s;&|<>()-]\\S*)?(\\s+-\\S+)*\\s*(?=$|[;&|\\n)<>#}]|\\s+cwd=))",
         "^(?![\\s\\S]*\\bgit_branch=)"
       ]
     },
@@ -95,7 +95,7 @@
         "script"
       ],
       "all": [
-        "\\bgit(\\s+(-[cC]\\s+\\S+|-[pP]|--(git-dir|work-tree|namespace|exec-path)\\s+\\S+|--[\\w-]+(=\\S+)?))*\\s+push\\b[^;&|]*--mirror\\b"
+        "\\bgit\\s+push\\b[^;&|]*--mirror\\b"
       ]
     },
     {
@@ -126,6 +126,19 @@
       ]
     },
     {
+      "id": "shell-startup",
+      "outcome": "ask",
+      "rule": "changes a shell startup file (.zshrc, .bashrc, .profile), which runs in every new shell",
+      "context": false,
+      "writes": true,
+      "applies_to": [
+        "command"
+      ],
+      "all": [
+        "(^|[\\s/'\"=:>])\\.(zshrc|zshenv|zprofile|zlogin|bashrc|bash_profile|bash_login|profile)(?![\\w.-])"
+      ]
+    },
+    {
       "id": "tamper",
       "outcome": "ask",
       "rule": "changes files in an agent settings or hooks directory",
@@ -136,6 +149,7 @@
     {
       "id": "ssh-local-command",
       "outcome": "ask",
+      "before_read_only": true,
       "context": false,
       "rule": "ssh option that runs a local command (ProxyCommand, LocalCommand, Match exec, a jump hop that is an option)",
       "all": [
