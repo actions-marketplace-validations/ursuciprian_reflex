@@ -5,6 +5,7 @@ docs. The short version of this page is the [FAQ section of the README](../READM
 
 - [What is Reflex?](#what-is-reflex)
 - [How do I stop Claude Code from running dangerous commands?](#how-do-i-stop-claude-code-from-running-dangerous-commands)
+- [How do I install Reflex as a Claude Code plugin?](#how-do-i-install-reflex-as-a-claude-code-plugin)
 - [How is Reflex different from Claude Code permission prompts and allowlists?](#how-is-reflex-different-from-claude-code-permission-prompts-and-allowlists)
 - [Can I use Reflex with --dangerously-skip-permissions?](#can-i-use-reflex-with---dangerously-skip-permissions)
 - [Do I still need a devcontainer or a sandbox if I use Reflex?](#do-i-still-need-a-devcontainer-or-a-sandbox-if-i-use-reflex)
@@ -47,6 +48,22 @@ runs). After a shadow period, `reflex setup --mode enforce` puts those judgments
 agent.
 
 See: [docs/SETUP.md](SETUP.md), [real-world scenarios with outputs](../README.md#real-world-scenarios-with-outputs).
+
+## How do I install Reflex as a Claude Code plugin?
+
+Add the marketplace in this repository and install the plugin, inside Claude Code:
+`/plugin marketplace add ursuciprian/reflex`, then `/plugin install reflex@reflex` (or, from a
+shell, `claude plugin marketplace add ursuciprian/reflex` and `claude plugin install reflex@reflex`).
+The plugin wires the same Claude Code hooks as `reflex setup`: the `PreToolUse` command gate on
+Bash and subagent spawns, the post-tool records, conditional instructions and the prompt injection
+guard. It adds read-only commands (`/reflex:status`, `/reflex:check <command>`, `/reflex:report`,
+`/reflex:replay`, `/reflex:queue`, `/reflex:suggest`). It needs Node.js 18+ on the `PATH` and no
+build step, npm install or API key; with no saved settings it runs the local engine in shadow mode.
+If `reflex setup` hooks are also in `~/.claude/settings.json`, the plugin's hooks stand down so
+nothing is judged twice, and `reflex doctor` shows which one is active. Use `reflex setup` for
+other agents, the autonomous profile, or the permission rules that guard Reflex's own files.
+
+See: [README: Claude Code plugin](../README.md#claude-code-plugin), [docs/SETUP.md: Claude Code plugin](SETUP.md#claude-code-plugin).
 
 ## How is Reflex different from Claude Code permission prompts and allowlists?
 

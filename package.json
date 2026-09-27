@@ -55,6 +55,10 @@
   },
   "files": [
     "*.mjs",
+    ".claude-plugin/",
+    "hooks/",
+    "commands/",
+    "skills/",
     "adapters/",
     "bin/",
     "dashboards/",

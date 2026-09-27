@@ -10,7 +10,7 @@ import {fileURLToPath} from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url)), scratch = mkdtempSync(join(tmpdir(), "reflex-test-"));
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("REFLEX_") &&
-  !["TYPESAFE_API_KEY", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"].includes(k)));
+  !["TYPESAFE_API_KEY", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR"].includes(k)));
 const env = {...clean, HOME: scratch, XDG_CONFIG_HOME: join(scratch, "config"), XDG_STATE_HOME: join(scratch, "state"),
   REFLEX_PREFIX: join(scratch, "installed"), REFLEX_ENGINE: "jev", REFLEX_KEYCHAIN_SERVICE: `reflex-test-${process.pid}`,
   REFLEX_API_URL: "http://127.0.0.1:9/v1/systemone"};
@@ -656,5 +656,86 @@ try {
     const ignored = spawnSync(process.execPath, ["gate.mjs", "--check", "npm run typecheck", "--cwd", proj], {cwd: root, encoding: "utf8", env: {...senv, REFLEX_ENGINE: "local"}});
     assert.ok(!/fastlane\.json\)/.test(ignored.stdout), ignored.stdout);
     console.log("suggest and user fast lane checks OK");
+  }
+  {
+    // The Claude Code plugin: manifests in step with package.json, hooks.json in step with install.mjs.
+    const pkg = read(join(root, "package.json")), plugin = read(join(root, ".claude-plugin/plugin.json"));
+    const market = read(join(root, ".claude-plugin/marketplace.json")), hooks = read(join(root, "hooks/hooks.json")).hooks;
+    assert.equal(plugin.name, "reflex");
+    assert.equal(plugin.version, pkg.version, "plugin.json version matches package.json");
+    assert.equal(plugin.license, pkg.license);
+    assert.ok(/^https:\/\//.test(plugin.homepage) && plugin.author?.name && plugin.keywords?.length, "plugin.json metadata");
+    assert.ok(market.name && market.owner?.name, "marketplace.json name and owner");
+    assert.deepEqual(market.plugins.map(p => [p.name, p.source]), [["reflex", "./"]], "marketplace lists the plugin at the repo root");
+    assert.ok(!market.plugins[0].version || market.plugins[0].version === pkg.version, "marketplace entry version, when set, matches");
+    assert.deepEqual(Object.keys(pkg.dependencies ?? {}), [], "no runtime dependencies: the plugin runs from a plain clone");
+    for (const f of [".claude-plugin/", "hooks/", "commands/", "skills/"]) assert.ok(pkg.files.includes(f), `npm files include ${f}`);
+    // What install.mjs writes (no System 2: the default timeouts), reduced to event -> matcher, script, flag, timeout.
+    const home = join(scratch, "plugin-home");
+    mkdirSync(join(home, ".claude"), {recursive: true});
+    const penv = {...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(home, "state")};
+    success(spawnSync(process.execPath, [join(root, "install.mjs"), "--agent", "claude", "--mode", "shadow", "--allow", "off"], {cwd: root, encoding: "utf8", env: penv}));
+    const shape = hs => Object.fromEntries(Object.entries(hs).map(([ev, groups]) => [ev, groups.map(g => [g.matcher ?? null, g.hooks.map(h => {
+      const [, script, flag] = h.command.match(/(gate|guard|instructions)\.mjs"?\s+(--[\w-]+)/) ?? [];
+      return [h.type, script, flag, h.timeout];
+    })])]));
+    const installed = read(join(home, ".claude/settings.json")).hooks;
+    assert.deepEqual(shape(hooks), shape(installed), "hooks.json events, matchers, flags and timeouts match install.mjs");
+    for (const h of Object.values(hooks).flat().flatMap(g => g.hooks)) {
+      assert.match(h.command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/(gate|guard|instructions)\.mjs" --[\w-]+ --plugin$/, h.command);
+      assert.ok(existsSync(join(root, h.command.match(/\}\/(\w+\.mjs)/)[1])));
+    }
+    for (const c of ["status", "report", "replay", "check", "queue", "suggest"]) assert.ok(existsSync(join(root, "commands", `${c}.md`)), `/reflex:${c}`);
+    for (const f of ["commands/suggest.md", "commands/queue.md", "commands/report.md", "commands/replay.md", "commands/status.md"]) {
+      const tools = readFileSync(join(root, f), "utf8").match(/^allowed-tools:(.*)$/m)?.[1] ?? "";
+      assert.ok(!/\*|--write|approve|deny|clear|setup|install/.test(tools), `${f}: only exact read-only commands are pre-approved: ${tools}`);
+    }
+    // The Bash calls the commands make pass the gate; what could send, write or approve does not.
+    const judged = c => JSON.parse(success(spawnSync(process.execPath, [join(root, "gate.mjs"), "--check", c], {cwd: root, encoding: "utf8",
+      env: {...env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: join(scratch, "plugin-check")}}))).decision;
+    for (const c of ["reflex status", "reflex check 'git push --force origin main'", "reflex check 'a'\\''b'", "reflex report", "reflex report --since 30",
+      "reflex replay claude --since 7d", "reflex suggest claude", "reflex suggest claude --since 30d --min 3", "reflex queue list"])
+      assert.equal(judged(c), "pass", c);
+    for (const c of ["reflex report --push http://x.invalid", "reflex replay claude --engine jev", "reflex suggest claude --write --yes",
+      "reflex queue approve abc", "reflex check 'x'; rm -rf /", "reflex check \"$(rm -rf ~)\"",
+      "claude plugin disable reflex@reflex", "claude plugin uninstall reflex@reflex", "claude plugin marketplace remove reflex",
+      "echo '{}' > ~/.claude/plugins/installed_plugins.json"])
+      assert.notEqual(judged(c), "pass", c);
+    // Run the plugin's PreToolUse command as Claude Code would. No saved config: local engine, shadow mode.
+    const pre = hooks.PreToolUse[0].hooks[0].command.replace("${CLAUDE_PLUGIN_ROOT}", root);
+    const canary = JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "git push --force origin main"}, session_id: "p", cwd: home});
+    const hook = h => spawnSync("/bin/sh", ["-c", pre], {encoding: "utf8", input: canary, env: {...clean, HOME: h, XDG_CONFIG_HOME: join(h, ".config"), REFLEX_DATA_DIR: join(h, "data")}});
+    const bare = join(scratch, "plugin-bare");
+    mkdirSync(bare, {recursive: true});
+    let r = hook(bare);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput?.permissionDecision, "deny", "plugin hook denies the canary");
+    assert.deepEqual(((({mode, engine}) => [mode, engine]))(read(join(bare, "data/health/claude-code.json"))), ["shadow", "local"], "no config: local engine, shadow mode");
+    // Double-hook guard: with `reflex setup` hooks in settings.json the plugin hook exits at once, silent and unlogged.
+    r = hook(home);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "", "plugin stands down when settings hooks exist");
+    assert.ok(!existsSync(join(home, "data")), "a standing-down plugin hook records nothing");
+    for (const h of Object.values(hooks).flat().flatMap(g => g.hooks)) {
+      const x = spawnSync("/bin/sh", ["-c", h.command.replace("${CLAUDE_PLUGIN_ROOT}", root)], {encoding: "utf8", input: canary,
+        env: {...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), REFLEX_DATA_DIR: join(home, "data")}});
+      assert.ok(x.status === 0 && x.stdout === "", `stands down: ${h.command}`);
+    }
+    // A stale settings hook (its script is gone) gates nothing, so the plugin keeps running; a path
+    // that merely contains "--plugin" is still a settings hook.
+    const stale = join(scratch, "plugin-stale"), settingsOf = cmd => JSON.stringify({hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: cmd}]}]}});
+    mkdirSync(join(stale, ".claude"), {recursive: true});
+    writeFileSync(join(stale, ".claude/settings.json"), settingsOf(`"/usr/bin/node" "${join(stale, "gone/reflex/gate.mjs")}" --claude --mode shadow --allow off`));
+    assert.equal(JSON.parse(hook(stale).stdout).hookSpecificOutput?.permissionDecision, "deny", "stale settings hook: the plugin still gates");
+    const staleDoc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: {...penv, HOME: stale}}).stdout);
+    assert.ok(staleDoc.errors.some(e => /does not exist/.test(e)), "status flags the stale hook");
+    const odd = join(scratch, "x--plugin");
+    mkdirSync(join(odd, ".claude"), {recursive: true});
+    cpSync(join(root, "gate.mjs"), join(odd, "gate.mjs"));
+    writeFileSync(join(odd, ".claude/settings.json"), settingsOf(`"/usr/bin/node" "${join(odd, "gate.mjs")}" --claude --mode shadow --allow off`));
+    assert.equal(hook(odd).stdout, "", "a checkout path containing --plugin still counts as a settings hook");
+    const doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: penv}).stdout);
+    assert.ok(doc.plugin.settings_hooks && !doc.plugin.active && /reflex setup hooks/.test(doc.claude_hooks), "status names the active path");
+    console.log("claude code plugin checks OK");
   }
 } finally { rmSync(scratch, {recursive: true, force: true}); }

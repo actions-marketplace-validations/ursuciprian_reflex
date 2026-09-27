@@ -3,6 +3,81 @@
 You need Node 18+ on macOS or Linux (including WSL) and at least one supported agent: Claude Code, Codex CLI,
 pi, oh-my-pi (omp), opencode or Hermes.
 
+Claude Code only? The [Claude Code plugin](#claude-code-plugin) is the shortest install. For every
+other agent, or for the autonomous profile, follow the numbered steps.
+
+## Claude Code plugin
+
+This repository is a Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) that lists
+one plugin, `reflex`, at the repository root. Claude Code clones it and runs the hooks from the
+clone with `node`: no build step, no `node_modules`, no npx at hook time.
+
+```text
+/plugin marketplace add ursuciprian/reflex        # inside Claude Code
+/plugin install reflex@reflex
+```
+
+```sh
+claude plugin marketplace add ursuciprian/reflex  # or from your shell
+claude plugin install reflex@reflex
+claude plugin update reflex@reflex                 # later, for a new release
+```
+
+Then restart the session or run `/reload-plugins`. To try it for one session without installing,
+clone the repository and run `claude --plugin-dir /path/to/reflex`.
+
+What the plugin adds:
+
+| Part | What it is |
+|---|---|
+| `hooks/hooks.json` | the same Claude Code events, matchers and timeouts as `install.mjs --agent claude` (see step 3): `PreToolUse` on `Bash\|Task\|Agent` (10 s), `PostToolUse`, `PostToolUseFailure` and `PermissionDenied` records (5 s), `PermissionRequest` (5 s), `UserPromptSubmit` instructions (10 s) and prompt guard (5 s), and the injection guard on `PostToolUse` for `^(WebFetch\|WebSearch\|Read\|Bash)$\|^mcp__` (15 s). Each runs `node "${CLAUDE_PLUGIN_ROOT}/<script>.mjs" <flag> --plugin`; a test keeps the file in step with `install.mjs` |
+| `commands/` | `/reflex:status`, `/reflex:check <command>`, `/reflex:report`, `/reflex:replay`, `/reflex:queue`, `/reflex:suggest`. All read-only: Claude runs the matching `reflex` command with the Bash tool, through the gate like any other command, and never with `--write`, `approve` or `--push` |
+| `skills/reflex` | tells Claude when to use `reflex check` and `reflex replay`, and not to work around a deny |
+| `bin/` | `reflex` and `reflex-sh` are on the Bash `PATH` while the plugin is enabled |
+
+Configuration is the same as for `reflex setup`: `~/.config/reflex/config.json`, the environment
+(`REFLEX_MODE` and the other variables under [Configuration](#configuration)) and, for Jev, the
+`TYPESAFE_API_KEY` variable or the Keychain item. With no saved settings the gate runs the local
+engine in shadow mode, which is also where a fresh `reflex setup` starts. The plugin writes no
+settings: to switch mode or engine, edit `config.json` or run `reflex setup --mode enforce` (which
+also installs the settings hooks; see below). Logs go to `~/.local/state/reflex` as usual.
+
+Hooks run with the `PATH` Claude Code was started with. If `node` is not on it (for example Claude
+Code started from a desktop launcher with a minimal `PATH`), the hook command fails, Claude Code
+treats that as a non-blocking hook error and the command runs ungated. `reflex doctor` from the same
+environment, or a denied `/reflex:check git push --force origin main`, confirms the gate is live.
+
+**Plugin and `reflex setup` together.** Both install the same hooks. When `reflex setup` (or
+`install.mjs --agent claude`) has written Reflex hooks into `~/.claude/settings.json`, every plugin
+hook sees them and exits at once without reading its input or writing a log line, so each call is
+judged and counted once, by the settings hooks. The plugin checks the user settings file Claude
+Code reads: `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set. `install.mjs` always
+writes `~/.claude/settings.json`, so with `CLAUDE_CONFIG_DIR` set the setup hooks do not run in
+Claude Code and the plugin stays active. A settings hook whose script no longer exists (a deleted
+checkout) does not count: it gates nothing, so the plugin keeps running, and `reflex status` reports
+it as an error. `reflex status` and `reflex doctor` print which path is active
+(`Claude Code hooks: ...`); doctor also probes the plugin's own gate when the plugin is the active
+one. To switch to the plugin only, remove the Claude Code hooks with the copy that installed them:
+`node ~/.local/share/reflex/lib/node_modules/@ursuciprian/reflex/install.mjs --agent claude --uninstall`
+after `reflex setup`, or `node <checkout>/install.mjs --agent claude --uninstall` for a clone
+(`reflex uninstall` removes the hooks of every agent and the package). To switch to setup only,
+`claude plugin uninstall reflex@reflex`.
+
+What only `reflex setup` does, because a plugin cannot change settings:
+
+- the `permissions.ask` rules that make Claude Code ask before its edit tools change the Reflex
+  checkout, its logs, `~/.config/reflex` or `~/.claude/settings*.json`. With the plugin alone, add
+  them yourself if you want them (shell commands that write there, and `claude plugin disable`,
+  `uninstall` or `marketplace remove`, are still asked by the gate's `tamper` rule), for example in `~/.claude/settings.json`:
+  `"permissions": {"ask": ["Edit(~/.config/reflex/**)", "Edit(~/.local/state/reflex/**)", "Edit(~/.claude/plugins/**)", "Edit(~/.claude/settings*.json)"]}`
+- a `PreToolUse` timeout sized to System 2. The plugin's is 10 s, the same as `reflex setup`
+  without System 2; with the autonomous profile a slow judge call runs past it and the hook fails
+  open, so use `reflex setup --profile autonomous` there. `reflex status` warns about this.
+
+To remove the plugin: `claude plugin uninstall reflex@reflex`, and
+`claude plugin marketplace remove reflex` for the marketplace. Your settings and logs stay, as with
+`reflex uninstall`.
+
 ## 1. Start locally, or enable hosted classification
 
 New `reflex setup` installations use the local engine: no account, API key, or TypeSafe requests.
@@ -122,7 +197,9 @@ To work on Reflex itself, clone the repo, run `npm test`, and install that check
 ### Publishing a release (maintainers)
 
 Once: add the `NPM_TOKEN` repository secret (an npm access token with publish rights on the
-`@ursuciprian` scope). Then per release: bump `version` in `package.json` and `CHANGELOG.md`, merge,
+`@ursuciprian` scope). Then per release: bump `version` in `package.json`, `.claude-plugin/plugin.json` (`npm test`
+fails when they differ; plugin users receive a release only when this version changes) and
+`CHANGELOG.md`, merge,
 and tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. `.github/workflows/publish.yml` checks the tag
 matches `package.json`, runs the self-checks and runs `npm publish --access public --provenance`.
 npm versions cannot be withdrawn after 72 hours, so tag deliberately.
@@ -325,7 +402,7 @@ All optional.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `REFLEX_ENGINE` | saved choice, otherwise `jev` for legacy direct hooks | `local` disables hosted classification; new setup saves `local` |
+| `REFLEX_ENGINE` | saved choice; otherwise `jev` when `TYPESAFE_API_KEY` is set or a Keychain item or an agent install is recorded in `config.json`, else `local` | `local` disables hosted classification; new setup saves `local` |
 | `TYPESAFE_API_KEY` | none | API key (or use the Keychain item) |
 | `REFLEX_MODE` | installed `--mode`, else `shadow` | `off` · `shadow` (rules enforce, Jev logs only) · `enforce` |
 | `REFLEX_ALLOW` | installed `--allow`, else `off` | `off` · `shadow` (log `would_allow`) · `on` (clearly safe commands skip the agent's prompt; enforce mode only) |

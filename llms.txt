@@ -2,7 +2,7 @@
 
 > Reflex is an open-source (MIT) pre-execution risk gate and prompt injection guard for AI coding agents such as Claude Code, Codex CLI, opencode, pi, oh-my-pi and Hermes. Through each agent's hooks it decides for every shell command whether it runs, needs a human's approval, or is blocked, and it scans tool results (web pages, MCP results, files from other projects, network command output) for prompt injection. Decisions come from local deterministic rules first, then from the engine you choose: `local` (no key, no network), TypeSafe Jev (a hosted System One model answering typed questions, turned into a decision by an editable policy file) or Laya (experimental, on 127.0.0.1). An autonomous profile adds a stronger model (System 2) and an asynchronous human approval queue.
 
-Install with `npx @ursuciprian/reflex setup` (or `curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash`). Requires Node.js 18+ on macOS or Linux, including WSL. New installs use the local engine in shadow mode: deterministic rules block, everything else is logged. Reflex gates shell commands and subagent spawns only; file edits and MCP tool calls go through each agent's own permissions. It supplements a sandbox and least-privilege credentials.
+Install with `npx @ursuciprian/reflex setup` (or `curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash`). In Claude Code it is also a plugin: `/plugin marketplace add ursuciprian/reflex`, then `/plugin install reflex@reflex`. Requires Node.js 18+ on macOS or Linux, including WSL. New installs use the local engine in shadow mode: deterministic rules block, everything else is logged. Reflex gates shell commands and subagent spawns only; file edits and MCP tool calls go through each agent's own permissions. It supplements a sandbox and least-privilege credentials.
 
 npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/reflex
 
@@ -10,7 +10,7 @@ npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/r
 
 - [README](https://github.com/ursuciprian/reflex#readme): what Reflex is, install, usage, features, measured results and limits
 - [In one minute](https://github.com/ursuciprian/reflex#in-one-minute): a seven-point summary of what Reflex does and does not do
-- [Install](https://github.com/ursuciprian/reflex#install): one-line install with curl, npx, pnpm dlx, bunx or yarn dlx
+- [Install](https://github.com/ursuciprian/reflex#install): Claude Code plugin, or a one-line install with curl, npx, pnpm dlx, bunx or yarn dlx
 - [How a command is decided](https://github.com/ursuciprian/reflex#how-a-command-is-decided): read-only list, rules, fast lane, then the engine and the policy; the six Jev questions
 - [Real-world scenarios, with outputs](https://github.com/ursuciprian/reflex#real-world-scenarios-with-outputs): unedited decisions for terraform apply in prod, kubectl delete, curl piped to bash, a prompt injection in a README
 - [Measured results](https://github.com/ursuciprian/reflex#measured-results): golden-set numbers for the tool gate, the injection guard, the escalation ladder, System 2 cost and Jev vs Laya
@@ -19,7 +19,7 @@ npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/r
 - [Supported agents](https://github.com/ursuciprian/reflex#supported-agents-claude-code-hooks-codex-hooks-and-more): which hook each agent uses and how an ask is shown
 - [Cost and latency](https://github.com/ursuciprian/reflex#cost-and-latency): token use, timing and price assumptions per engine
 - [Limits](https://github.com/ursuciprian/reflex#limits): what Reflex does not cover
-- [FAQ](https://github.com/ursuciprian/reflex/blob/main/docs/FAQ.md): 20 questions with direct answers, from "how do I stop Claude Code from running dangerous commands" to uninstalling
+- [FAQ](https://github.com/ursuciprian/reflex/blob/main/docs/FAQ.md): 21 questions with direct answers, from "how do I stop Claude Code from running dangerous commands" to uninstalling
 - [Setup](https://github.com/ursuciprian/reflex/blob/main/docs/SETUP.md): TypeSafe key, install options, per-agent hooks, enforce mode, calibrated allow, the autonomous profile, configuration variables, uninstall
 - [Guide](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md): design, testing, rollout, data handling, safety properties, injection guard, autonomous agents, Laya
 
