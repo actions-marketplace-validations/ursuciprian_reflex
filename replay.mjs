@@ -49,7 +49,7 @@ const project = opt("--project") && resolve(opt("--project"));
 // directory stays the real one so the tamper check still recognises commands that touch it.
 Object.assign(process.env, {REFLEX_MODE: "shadow", REFLEX_JUDGE: "off", REFLEX_QUEUE: "off", REFLEX_CHECKPOINTS: "off", REFLEX_ENGINE: engine});
 const {CONFIG, USER_CONFIG, configurationError, judgeSettings, jevJudge, precheck, redact} = await import("./gate.mjs");
-const {alwaysHuman} = await import("./autonomy.mjs");
+const {alwaysHuman, runawayReplay} = await import("./autonomy.mjs");
 if (configurationError()) die(redact(configurationError()));
 // Whether the user's autonomous profile has a System 2 (REFLEX_JUDGE above only keeps replay from calling it).
 const system2 = judgeSettings(USER_CONFIG.judge, undefined, engine).enabled;
@@ -98,10 +98,16 @@ const dirOf = d => { try { return typeof d === "string" && d.startsWith("file://
 const READERS = {
   claude() {
     const out = [], files = walk(join(homedir(), ".claude/projects"), recent);
-    for (const f of files) for (const e of lines(f, '"Bash"'))
-      for (const c of Array.isArray(e.message?.content) ? e.message.content : [])
-        if (c.type === "tool_use" && c.name === "Bash" && typeof c.input?.command === "string")
-          out.push({agent: "claude", id: c.id, command: c.input.command, cwd: e.cwd, ts: tsOf(e.timestamp)});
+    for (const f of files) {
+      const bash = new Map();   // for the runaway guard: which of them failed, and in which session (a subagent is its own)
+      for (const e of lines(f, '"tool_'))
+        for (const c of Array.isArray(e.message?.content) ? e.message.content : [])
+          if (c.type === "tool_use" && c.name === "Bash" && typeof c.input?.command === "string") {
+            const x = {agent: "claude", id: c.id, command: c.input.command, cwd: e.cwd, ts: tsOf(e.timestamp), session: e.sessionId && `${e.sessionId}${e.agentId ? `/${e.agentId}` : ""}`};
+            out.push(x);
+            bash.set(c.id, x);
+          } else if (c.type === "tool_result" && c.is_error === true && bash.has(c.tool_use_id)) bash.get(c.tool_use_id).failed = true;
+    }
     return {files: files.length, calls: out};
   },
   codex() {
@@ -116,12 +122,13 @@ const READERS = {
         const p = e.payload ?? {}, ts = tsOf(e.timestamp);
         if (p.cwd && (e.type === "session_meta" || e.type === "turn_context")) cwd = p.cwd;
         if (p.type === "item_completed" && p.item?.type === "CommandExecution")
-          items.push({agent: "codex", id: p.item.id, command: unwrap(p.item.command), cwd: dirOf(p.item.cwd) ?? cwd, ts});
+          items.push({agent: "codex", id: p.item.id, command: unwrap(p.item.command), cwd: dirOf(p.item.cwd) ?? cwd, ts, session: f,
+                      failed: typeof p.item.exit_code === "number" && p.item.exit_code !== 0});
         else if (p.type === "function_call" && ["exec_command", "shell", "shell_command"].includes(p.name)) {
           let a; try { a = JSON.parse(p.arguments); } catch { continue; }
-          fcalls.push({agent: "codex", id: p.call_id, command: unwrap(a.cmd ?? a.command), cwd: a.workdir ?? cwd, ts});
+          fcalls.push({agent: "codex", id: p.call_id, command: unwrap(a.cmd ?? a.command), cwd: a.workdir ?? cwd, ts, session: f});
         } else if (p.type === "local_shell_call" && p.action?.command)
-          fcalls.push({agent: "codex", id: p.call_id, command: unwrap(p.action.command), cwd: p.action.working_directory ?? cwd, ts});
+          fcalls.push({agent: "codex", id: p.call_id, command: unwrap(p.action.command), cwd: p.action.working_directory ?? cwd, ts, session: f});
       }
       const logged = new Set(items.map(i => i.command));
       out.push(...items, ...fcalls.filter(c => !logged.has(c.command)));
@@ -139,12 +146,12 @@ const READERS = {
     const out = [];
     try {
       conn = new sqlite.DatabaseSync(db, {readOnly: true});
-      const rows = conn.prepare("SELECT p.id, p.data, p.time_created AS ts, s.directory FROM part p LEFT JOIN session s ON s.id = p.session_id " +
+      const rows = conn.prepare("SELECT p.id, p.session_id, p.data, p.time_created AS ts, s.directory FROM part p LEFT JOIN session s ON s.id = p.session_id " +
         "WHERE p.time_created >= ? AND p.data LIKE '%\"bash\"%'").all(since);
       for (const r of rows) {
         let d; try { d = JSON.parse(r.data); } catch { continue; }
         if (d.type === "tool" && d.tool === "bash" && typeof d.state?.input?.command === "string")
-          out.push({agent: "opencode", id: r.id, command: d.state.input.command, cwd: d.state.input.workdir ?? r.directory, ts: r.ts});
+          out.push({agent: "opencode", id: r.id, command: d.state.input.command, cwd: d.state.input.workdir ?? r.directory, ts: r.ts, session: r.session_id});
       }
     } catch (e) { return {skipped: `unreadable opencode.db (${redact(e.message).slice(0, 120)})`}; } finally { conn?.close(); }
     return {files: 1, calls: out};
@@ -157,7 +164,7 @@ const READERS = {
         if (e.type === "session") cwd = e.cwd;
         for (const c of Array.isArray(e.message?.content) ? e.message.content : [])
           if (c.type === "toolCall" && c.name === "bash" && typeof c.arguments?.command === "string")
-            out.push({agent: "pi", id: c.id, command: c.arguments.command, cwd, ts: tsOf(e.timestamp)});
+            out.push({agent: "pi", id: c.id, command: c.arguments.command, cwd, ts: tsOf(e.timestamp), session: f});
       }
     }
     return {files: files.length, calls: out};
@@ -253,10 +260,12 @@ async function replay() {
   for (const x of open) x.j = CONFIG.engine === "local" ? LOCAL : unique.get(`${x.c.cwd ?? ""}\0${x.c.command}`);
 
   const {t, rules, samples, per_100} = tally(judged);
+  // The runaway guard over the same sessions, in order: which it would have stopped, and on what signal.
+  const runaway = runawayReplay(judged.map(({c, j}) => ({...c, j})));
   const tokens = engineRuns.reduce((s, j) => s + (j.usage?.input_tokens ?? 0), 0), lat = engineRuns.map(j => j.latency_s).filter(x => x > 0);
   const result = {engine: CONFIG.engine, since: new Date(since).toISOString(), project: project ?? null, system2_configured: system2, sources, totals: t,
     per_100,
-    top_rules: Object.values(rules).sort((a, b) => b.count - a.count).slice(0, 10), samples,
+    top_rules: Object.values(rules).sort((a, b) => b.count - a.count).slice(0, 10), samples, runaway,
     cost: CONFIG.engine === "local" ? {jev_estimate: estimate}
       : {calls: engineRuns.length, input_tokens: tokens, usd: CONFIG.engine === "jev" ? usd(tokens) : 0,
          latency_s: {p50: pct(lat, 0.5), p95: pct(lat, 0.95)}}};
@@ -272,6 +281,7 @@ async function replay() {
   console.log(`  supervised   ${result.per_100.reach_human} per 100 commands would reach a human (enforce mode; shadow logs engine asks only)`);
   console.log(`  autonomous   ${result.per_100.reach_system2} per 100 would reach System 2, ${result.per_100.autonomous_human} per 100 a human` +
     (system2 ? " (always-human class)" : " (no System 2 configured, so every ask; reflex setup --profile autonomous to add one)"));
+  console.log(`  runaway      ${runaway.stopped} of ${runaway.sessions} sessions would have been stopped (${Object.entries(runaway.by).map(([k, v]) => `${k} ${v}`).join(", ")}; ${runaway.trips} stops)`);
   if (result.top_rules.length) console.log(`  top rules    ${result.top_rules.map(r => `${r.id} ${r.count}`).join(", ")}`);
   if (CONFIG.engine === "local")
     console.log(`  jev estimate ${estimate.calls} distinct commands left to an engine: ~${estimate.input_tokens} input tokens, ~$${estimate.usd} (--engine jev --yes to measure)`);

@@ -28,7 +28,7 @@ import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join, posix, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
-import {envelopeFor, ladder, queueAnswer} from "./autonomy.mjs";
+import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +67,18 @@ export const KEYLESS_JUDGE_DEFAULTS = {budget: {calls: 300, session_calls: 100, 
 export const BACKEND_DEFAULTS = {cli: {cli: "claude", model: "sonnet"}, anthropic: {url: "https://api.anthropic.com", model: "claude-sonnet-5", key_env: "ANTHROPIC_API_KEY"},
   "openai-compatible": {}, none: {}};
 export const QUEUE_DEFAULTS = {ttl_hours: 24, notify: null};
+// The runaway guard (autonomy.mjs): stops a session that loops, storms the gate, burns through
+// commands or spend, or climbs in risk. Tuned on 14 days of real sessions (docs/GUIDE.md) so that
+// normal work, a long test-fix cycle included, never trips it. On unless config.json or
+// REFLEX_RUNAWAY=off turns it off; it follows the mode: shadow logs, enforce denies.
+export const RUNAWAY_DEFAULTS = {loop: {repeats: 10, read_only_repeats: 20, failures: 8, window_minutes: 5}, storm: {denies: 8, window_minutes: 5},
+  burn: {per_minute: 50, jev_calls: 2000, system2_calls: 150}, escalation: {steps: 4, rise: 1, at: 2.5, window_minutes: 15}};
+export function runawaySettings(saved = {}, env) {
+  const s = saved && typeof saved === "object" ? saved : {};
+  if (env === undefined && saved === false) env = "off";
+  return {...Object.fromEntries(Object.entries(RUNAWAY_DEFAULTS).map(([k, v]) => [k, {...v, ...s[k]}])),
+          enabled: env === "on" ? true : env === "off" ? false : env !== undefined ? env : s.enabled ?? true};
+}
 const ENGINE = ENV.REFLEX_ENGINE ?? flagValue("--engine", USER_CONFIG.engine ?? "jev");
 // engine laya: the same questions and policy as Jev, answered by a Laya checkpoint served on this
 // machine (setup/laya/server.py, `reflex laya start`); nothing leaves it and no key is needed.
@@ -98,6 +110,7 @@ export const CONFIG = {
   judge: judgeSettings(USER_CONFIG.judge, ENV.REFLEX_JUDGE, ENGINE),
   queue: {...QUEUE_DEFAULTS, ...USER_CONFIG.queue, enabled: onOff(ENV.REFLEX_QUEUE, USER_CONFIG.queue?.enabled)},
   checkpoints: onOff(ENV.REFLEX_CHECKPOINTS, USER_CONFIG.checkpoints),
+  runaway: runawaySettings(USER_CONFIG.runaway, ENV.REFLEX_RUNAWAY),
 };
 /** Saved judge settings with the backend's (and, keyless, the engine's) defaults filled in; `enabled` unless the backend is none or REFLEX_JUDGE=off. */
 export function judgeSettings(saved = {}, env, engine = "jev") {
@@ -139,8 +152,11 @@ function layaError() {
 // Invalid ladder settings ask, like any invalid configuration: a typo must not turn System 2 into an approver.
 function ladderError() {
   const j = CONFIG.judge, q = CONFIG.queue, num = (v, lo, hi = Infinity) => typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi;
-  for (const [k, v] of [["judge", j.enabled], ["queue", q.enabled], ["checkpoints", CONFIG.checkpoints]])
+  for (const [k, v] of [["judge", j.enabled], ["queue", q.enabled], ["checkpoints", CONFIG.checkpoints], ["runaway", CONFIG.runaway.enabled]])
     if (typeof v !== "boolean") return `${k} must be on or off`;
+  const r = CONFIG.runaway;
+  if (!Object.entries(RUNAWAY_DEFAULTS).every(([k, v]) => r[k] && typeof r[k] === "object" && Object.keys(v).every(f => num(r[k][f], f === "rise" || f === "at" ? 0 : 1))))
+    return `runaway: ${Object.entries(RUNAWAY_DEFAULTS).map(([k, v]) => `${k}.{${Object.keys(v).join(",")}}`).join(", ")} must be positive numbers`;
   if (!["supervised", "autonomous"].includes(CONFIG.profile)) return "profile must be supervised or autonomous";
   if (!num(q.ttl_hours, 0.01) || (q.notify != null && typeof q.notify !== "string")) return "queue.ttl_hours must be a positive number and queue.notify a command";
   if (!JUDGE_BACKENDS.includes(j.backend)) return `judge.backend must be one of ${JUDGE_BACKENDS.join(", ")}`;
@@ -975,7 +991,7 @@ function precheckAs(command, cwd, env) {
   if (writes.includes(HERE) || writes.includes(CONFIG.data) || writes.includes(dirname(USER_CONFIG_FILE)) ||
       // an agent must not answer its own queue item, widen its own envelope or rewind the tree
       /\breflex\s+(setup|install|uninstall)\b/.test(command.replace(/["'\\]/g, "")) ||
-      /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints)\b[^\n;&|]*\b(approve|deny|clear|set|restore)\b/.test(command.replace(/["'\\]/g, "")) ||
+      /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(command.replace(/["'\\]/g, "")) ||
       (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     return ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"});
   // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
@@ -1165,11 +1181,26 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   const quick = background ? null : precheck(call.command, call.cwd, env);
   // A human's answer in the approval queue (autonomous profile): the identical command, cwd and
   // session, within its TTL. A deterministic deny is never lifted, not even by an approval.
-  if (CONFIG.mode === "enforce" && !background && CONFIG.queue.enabled && quick?.source !== "read-only" &&
-      !(quick?.source === "rule" && quick.outcome === "deny")) {
-    const q = queueAnswer(call);
+  let resumed = false;
+  if (CONFIG.mode === "enforce" && !background && CONFIG.queue.enabled && !(quick?.source === "rule" && quick.outcome === "deny")) {
+    const q = quick?.source === "read-only" ? null : queueAnswer(call);
     if (q) return finish(q, call, q.outcome === "deny" ? "deny" : allowSetting(holdAllow(q, call)).outcome === "allow" ? "allow" : "pass", {env});
+    // a human lifted a runaway stop of this command: the guard steps aside once, the gate does not.
+    // A human's deny of the stop is a deny.
+    const r = queueAnswer(runawayCall(call));
+    if (r?.resume) resumed = true;
+    else if (r) return finish(r, call, "deny", {env});
   }
+  // The runaway guard (autonomy.mjs) watches the session in the hook path, once per command. It only
+  // ever adds a deny, never lifts one: a rule deny keeps its own reason. Shadow logs what it would stop.
+  const stop = background ? null : runaway(call, quick, {resumed});
+  if (stop && !stop.dry && !(quick?.source === "rule" && quick.outcome === "deny")) {
+    const j = {outcome: "deny", source: "runaway", id: `runaway-${stop.signal}`, rule: `stopped: ${stop.reason}`, runaway: {signal: stop.signal}};
+    if (CONFIG.queue.enabled && stop.fresh) j.rule += `. Parked for the user as ${park(runawayCall(call), j, {id: "runaway"}).item.id}`;
+    trace(j, call, "deny");
+    return view(j, "deny");
+  }
+  if (stop) call = {...call, runaway: {signal: stop.signal, ...(stop.dry ? {dry: true} : {superseded: "rule deny"})}};
   // A session whose agent read a suspected prompt injection: network egress asks, before the
   // read-only list and the fast lane (`gh api "…?q=$SECRET"` reads, `git push` is fast lane), and
   // Jev's policy applies its taint gates. Like Jev, enforced only in enforce mode (shadow takes the
@@ -1198,6 +1229,7 @@ export async function decide(call, {background = false, asker, judger} = {}) {
 // (System 2, the always-human class, the queue, checkpoints), then the trace and the agent's view.
 async function finish(j, call, effective, opts = {}) {
   if (CONFIG.judge.enabled || CONFIG.queue.enabled || CONFIG.checkpoints) ({j, effective} = await ladder(j, call, effective, opts));
+  runawayNote(call, j, effective);
   trace(j, call, effective);
   return view(j, effective);
 }
@@ -1381,6 +1413,8 @@ export function record(ev) {
   append(FEEDBACK(), {ts: new Date().toISOString(), agent: ev.agent ?? null, event: ev.event ?? "ran",
     session_id: ev.session_id ?? null, call_id: ev.call_id ?? null, exit_code: ev.exit_code ?? null,
     ...(ev.prompt_id && {prompt_id: ev.prompt_id}), ...(ev.key && {key: ev.key})});
+  // the runaway guard's failing-command loop and denial storm read these
+  if (["failed", "denied"].includes(ev.event)) runawayMark(ev);
 }
 
 // Logs. One JSON line per judged command; the same shape report.mjs replays.
@@ -1399,7 +1433,7 @@ function trace(j, call, effective) {
     decision: j.outcome, policy_decision: j.policy_outcome ?? j.outcome, rule: j.rule, source: j.source, policy_version: j.policy_version ?? null,
     mode: CONFIG.mode, emitted: effective === "pass" ? null : effective,
     agent: call.agent ?? null, session_id: call.session_id ?? null, call_id: call.call_id ?? null,
-    permission_mode: call.permission_mode ?? null, ...(j.ladder && {ladder: j.ladder})});
+    permission_mode: call.permission_mode ?? null, ...(j.ladder && {ladder: j.ladder}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway})});
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1416,7 +1450,7 @@ function claudeCall(input) {
   const session_id = subgoal && input.agent_id ? `${input.session_id}/${input.agent_id}` : input.session_id;
   return {agent: "claude-code", ...(subgoal ? {subgoal} : {command: t.command}), cwd: input.cwd,
           session_id, call_id: input.tool_use_id, prompt_id: input.prompt_id, transcript_path: input.transcript_path,
-          permission_mode: input.permission_mode, unsandboxed: t.dangerouslyDisableSandbox === true};
+          permission_mode: input.permission_mode, unsandboxed: t.dangerouslyDisableSandbox === true, ...(!subgoal && input.agent_id && {agent_id: input.agent_id})};
 }
 // What a PermissionRequest is about, as the trace (state.call.command) and subgoals.jsonl store it:
 // PermissionRequest input has no tool_use_id, so the text is the join key.
@@ -1446,7 +1480,7 @@ function claudePost(input) {
   // Claude's Bash result carries no exit code; PostToolUseFailure is the failure signal.
   const ev = input.hook_event_name;
   record({agent: "claude-code", event: ev === "PermissionDenied" ? "denied" : ev === "PostToolUseFailure" ? "failed" : "ran",
-          session_id: input.session_id, call_id: input.tool_use_id,
+          session_id: input.session_id, call_id: input.tool_use_id, agent_id: input.agent_id,
           exit_code: input.tool_response?.exit_code ?? (ev === "PostToolUse" ? 0 : null)});
 }
 

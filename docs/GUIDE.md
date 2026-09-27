@@ -14,13 +14,14 @@
 6. [Data handling](#data-handling)
 7. [Safety properties and limits](#safety-properties-and-limits)
 8. [Injection guard](#injection-guard)
-9. [Autonomous agents](#autonomous-agents)
-10. [Conditional instructions](#conditional-instructions)
-11. [Tool router](#tool-router)
-12. [Model routing](#model-routing)
-13. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
-14. [Laya (local System 1)](#laya-local-system-1)
-15. [Where this goes next](#where-this-goes-next)
+9. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
+10. [Autonomous agents](#autonomous-agents)
+11. [Conditional instructions](#conditional-instructions)
+12. [Tool router](#tool-router)
+13. [Model routing](#model-routing)
+14. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
+15. [Laya (local System 1)](#laya-local-system-1)
+16. [Where this goes next](#where-this-goes-next)
 
 ## Local and hosted operation
 
@@ -859,6 +860,111 @@ oh-my-pi and Hermes (and Hermes starts a new one after compressing the context),
 cross between a parent and its subagents there. Codex fires no PostToolUse for a failed tool or an
 MCP error result, and scans only the last chunk of a long-running command. In Claude Code, `WebFetch`
 hands the hook the fetch model's summary of the page, not the page.
+
+## Runaway guard: stop runaway AI agents
+
+Autonomous coding agents such as Claude Code and Codex sometimes go wrong in ways no single command
+shows: a test that keeps failing and gets run again unchanged, a retry loop hammering an API, a
+`git push` rejected over and over, a burst of attempts to get past a denial, or a slow climb from
+editing files to touching shared infrastructure. The runaway guard watches each agent session in
+real time and pauses the agent when that happens, usually minutes before a human would notice.
+
+It is part of the gate, so it covers every agent Reflex hooks (Claude Code, Codex, opencode, pi,
+oh-my-pi, Hermes). It is on by default and follows the mode: in enforce mode it denies, in shadow
+mode it only logs what it would have stopped. It never allows anything, never lifts a deny and makes
+no API call.
+
+### What it watches
+
+Each command is added to a short sliding window for its session (a Claude Code subagent has its own
+window, so parallel agents do not add up). Before the command runs, these signals are checked:
+
+| Signal | Trips when | Default |
+|---|---|---|
+| Loop | the same command, normalised (PR numbers, hashes, UUIDs and timestamps are slots), ran N times in the window. A read-only command has a higher bar, so polling CI or `git status` is not a loop | 10 in 5 minutes; read-only 20 |
+| Failing loop | the same command failed N times in the window (Claude Code PostToolUseFailure, Hermes). High enough that a fast TDD cycle (edit, run, fail every 45 s) does not trip | 8 in 5 minutes |
+| Denial storm | N commands were denied in the window: by a rule, Jev, System 2, or the agent's own permission check. An ask counts in Codex, where an ask is a deny. A command parked for a human does not count | 8 in 5 minutes |
+| Burn rate | N commands in the last minute | 50 |
+| Spend | Jev answers, or System 2 calls, in the session | 2000, 150 |
+| Escalation | the mean risk of the last 4 commands that were not denied reached 2.5 of 3 and rose by at least 1 over the 4 before them. Risk is Jev's blast score. Keyless (engine local) a rule ask is 2 and the fast lane 1, so the default 2.5 needs Jev; set `escalation.at` to 2 to use it keyless (on the author's sessions that stopped 3 normal stretches of work on Reflex itself, where tamper asks are routine) | 4 steps, 15 minutes |
+
+A loop and the burn rate stop any command, read-only ones included: an agent spinning on `sleep 1`
+or `true` while it waits is the most common runaway there is. Denial storms, spend and escalation
+stop only commands that are not read-only, so the agent can still look around and report.
+
+### What the agent sees
+
+A deny with the reason and what to do next, for example:
+
+```
+reflex (runaway): stopped: the same failing command ran 8 times in 3 minutes; change approach or ask the user, do not retry it as is
+reflex (runaway): stopped: 8 commands were denied in 4 minutes. Do not look for another way around the gate; stop and ask the user how to proceed
+```
+
+A denial storm is treated as a reason to stop, never to relax. The guard's own denials do not count
+towards any signal, so a stop ends by itself once the window has moved on (a loop stop applies to
+that command only). The spend caps hold for the rest of the session. A human can lift a stop sooner:
+
+- with the approval queue on, the first stop of each episode (per command, for a loop) is parked
+  under its own key (`reflex queue list`, session id ending in `#runaway`). `reflex queue approve
+  <id>` lets that exact command past the guard once and restarts the session's spend counts; the rest
+  of the gate still judges the command, so the approval is never an approval of the command itself.
+  `reflex queue deny <id>` keeps it denied;
+- `reflex runaway reset <session id>` (or `--all`) forgets a session's window, and the Jev and
+  System 2 counts with it. An agent running it is a tamper ask, like `reflex queue approve`.
+
+`reflex runaway` lists the stops of the last 24 hours. `reflex status` shows the guard and warns
+about a stop in the last hour; `reflex report` counts stops by signal; every enforced stop is a trace
+row with `source: "runaway"`, and a shadow stop adds `runaway: {signal, dry: true}` to the command's
+row.
+
+### Configuration
+
+In `~/.config/reflex/config.json`; any field left out keeps its default:
+
+```json
+{
+  "runaway": {
+    "enabled": true,
+    "loop": {"repeats": 10, "read_only_repeats": 20, "failures": 8, "window_minutes": 5},
+    "storm": {"denies": 8, "window_minutes": 5},
+    "burn": {"per_minute": 50, "jev_calls": 2000, "system2_calls": 150},
+    "escalation": {"steps": 4, "rise": 1, "at": 2.5, "window_minutes": 15}
+  }
+}
+```
+
+`"runaway": false` turns it off; `REFLEX_RUNAWAY=off` (or `on`) overrides it for one session. An invalid value is a configuration
+error, and every command asks, as with any other invalid setting.
+
+### Agent loop detection measured on real sessions
+
+`reflex replay` runs the guard over your own transcripts and prints how many sessions it would have
+stopped and why. On 30 days of the author's sessions (27,819 commands in 383 sessions, Claude Code,
+Codex and pi), the defaults stop 5 sessions:
+
+- 4 subagents of one long benchmark session, 10 stops, all loops: agents waiting on a remote job by
+  calling `sleep 1`, `true` or `echo ok` hundreds of times (823 `sleep 1` in one of them), 20 times
+  in one to five minutes, and one reading the same remote log 20 times in 5 minutes;
+- 1 Codex session, 2 storm stops, from repeated reads of secret files that Codex would have turned
+  into denies.
+
+No test-fix cycle, build, review or deploy session tripped it. With a read-only command held to the
+same bar as any other (10) and 5 failures, the same history stopped 7 subagents of that one session,
+but synthetic cases showed the risk: CI polling every 25 seconds and a TDD cycle failing every 45
+seconds both tripped, so read-only repeats need 20 and failures 8. Looser than 10 repeats (6), 8
+denies (3) or 50 a minute (25) started to stop normal polling and parallel bursts on real sessions.
+
+### Cost and limits
+
+Each command reads and writes one small file (`<data>/runaway/<hash>.json`, at most 256 events
+inside the longest window), so the cost is bounded and does not grow with the session. There is no
+lock: two parallel hooks of one session can drop an event, which only makes the guard later, never
+stricter. Failures are known only where the agent reports them (Claude Code, Hermes, and Codex
+transcripts in replay); live in Codex, opencode and pi only plain repeats count. In shadow mode
+with Jev, a command's risk and denial reach the window from the background judge, a moment after
+the command. The loop key is the command's shape: the same test with a different file name, or with
+the output piped to a different `tail`, is a different command.
 
 ## Autonomous agents
 

@@ -12,7 +12,7 @@ import {join} from "node:path";
 import {CONFIG, checkRules, load, promptKey, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
 import {budgetState} from "./judge2.mjs";
-import {alwaysHuman, breaker, listItems} from "./autonomy.mjs";
+import {alwaysHuman, breaker, listItems, runawayTrips} from "./autonomy.mjs";
 import {template} from "./judge2.mjs";
 
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
@@ -145,6 +145,11 @@ console.log(`    outcome      ${JSON.stringify(count(results, r => r.outcome))} 
 console.log(`    attacks      ${JSON.stringify(count(results.flatMap(r => (r.chunks ?? []).filter(c => c.attack && c.attack !== "none")), c => c.attack))} (Jev, per chunk) · rules ${JSON.stringify(count(results.filter(r => r.outcome !== "pass"), r => r.gate ?? "none"))}`);
 console.log(`    tainted      ${new Set(results.filter(r => r.tainted && r.session_id).map(r => r.session_id)).size} sessions`);
 console.log(`    credentials  ${prompts.filter(r => r.effective === "block").length} prompts blocked, ${prompts.filter(r => r.effective !== "block").length} seen in shadow · ${JSON.stringify(count(prompts.flatMap(r => r.found ?? []), f => f.type))}`);
+
+// The runaway guard: the sessions it stopped, by signal (shadow: would have stopped). Counts only.
+const trips = runawayTrips(since);
+console.log(`  runaway      ${trips.length} stop${trips.length === 1 ? "" : "s"} in ${new Set(trips.map(t => t.session)).size} sessions · by signal ${JSON.stringify(count(trips, t => t.signal))}` +
+            ` · ${trips.filter(t => t.dry).length} in shadow · ${trips.reduce((s, t) => s + t.n, 0)} commands denied or flagged (guard ${CONFIG.runaway.enabled ? "on" : "off"})`);
 
 // The escalation ladder (autonomous profile): who resolved each judged command, how often a human
 // was needed, what System 2 said and cost, and how long the queue kept people waiting. Counts only.
