@@ -1,0 +1,16 @@
+{
+  "name": "reflex",
+  "description": "Reflex, the pre-execution risk gate and prompt injection guard for AI coding agents.",
+  "owner": {
+    "name": "Ciprian Ursu",
+    "url": "https://github.com/ursuciprian"
+  },
+  "plugins": [
+    {
+      "name": "reflex",
+      "source": "./",
+      "description": "Judges every Bash command and subagent spawn before it runs, and screens tool results and prompts for prompt injection. Local rules, shadow mode by default, no API key needed.",
+      "category": "security"
+    }
+  ]
+}

@@ -3,8 +3,8 @@
 import {existsSync, mkdtempSync, readFileSync, rmSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
-import {join} from "node:path";
-import {CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, setupFile} from "./gate.mjs";
+import {dirname, join} from "node:path";
+import {CLAUDE_SETTINGS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooksInstalled, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
 import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
@@ -121,7 +121,38 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
   }
   agents.push(item);
 }
-if (!agents.length) warnings.push("No agent installations recorded. Run reflex setup --agents claude,codex, or use reflex run in your own terminal.");
+// The Claude Code plugin (reflex@<marketplace>). Its hooks stand down while `reflex setup` hooks are
+// in the settings file, so exactly one of the two judges each call.
+const settingsHooks = settingsHooksInstalled();
+let installs = [], enabled = {};
+try { installs = Object.entries(read(join(dirname(CLAUDE_SETTINGS), "plugins/installed_plugins.json")).plugins ?? {})
+  .filter(([id]) => id.startsWith("reflex@")).flatMap(([id, list]) => (Array.isArray(list) ? list : []).map(i => ({id, ...i}))); } catch { /* no plugins */ }
+try { enabled = read(CLAUDE_SETTINGS).enabledPlugins ?? {}; } catch { /* no settings */ }
+const pluginOn = installs.some(i => enabled[i.id] !== false && i.scope !== "project");
+const plugin = {installed: installs.map(i => ({id: i.id, scope: i.scope, version: i.version ?? null, path: i.installPath ?? null})),
+  enabled: pluginOn, active: pluginOn && !settingsHooks, settings_hooks: settingsHooks, checks: []};
+const claudeHooks = settingsHooks ? `reflex setup hooks in ${CLAUDE_SETTINGS}${pluginOn ? " (the plugin stands down)" : ""}`
+  : pluginOn ? `the Claude Code plugin (${installs[0].id})` : "none recorded";
+if (plugin.active && CONFIG.judge.enabled) warnings.push("System 2 is on, but the plugin's PreToolUse hook has a 10 s timeout and a longer judge call fails open. Use reflex setup --agents claude, which sizes the timeout to the judge.");
+if (doctor && plugin.active) for (const i of installs) {
+  const gate = join(i.installPath ?? "", "gate.mjs");
+  if (!existsSync(gate)) { errors.push(`plugin ${i.id}: gate is missing at ${gate}. Run claude plugin update ${i.id}.`); continue; }
+  const scratch = mkdtempSync(join(tmpdir(), "reflex-doctor-"));
+  try {
+    for (const [command, expected] of [["git status", "pass"], ["git push --force origin main", "deny"]]) {
+      // judged, never executed; the probe's records go to a disposable directory
+      const r = spawnSync(process.execPath, [gate, "--claude", "--plugin"], {encoding: "utf8", timeout: 10000,
+        input: JSON.stringify({tool_name: "Bash", tool_input: {command}, cwd: scratch, session_id: "reflex-doctor"}),
+        env: {...process.env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: scratch}});
+      let actual;
+      try { actual = JSON.parse(r.stdout.trim() || "{}").hookSpecificOutput?.permissionDecision ?? "pass"; } catch { /* invalid output fails below */ }
+      const ok = r.status === 0 && actual === expected;
+      plugin.checks.push({command, expected, actual: actual ?? null, ok});
+      if (!ok) errors.push(`plugin ${i.id}: ${expected} probe failed (${r.error?.message ?? actual ?? "invalid output"}).`);
+    }
+  } finally { rmSync(scratch, {recursive: true, force: true}); }
+}
+if (!agents.length && !plugin.active) warnings.push("No agent installations recorded. Run reflex setup --agents claude,codex, or use reflex run in your own terminal.");
 // The escalation ladder. Reachability is a GET of the judge's model list: never a paid call.
 const cliJudge = CONFIG.judge.backend === "cli";
 const judge = {enabled: CONFIG.judge.enabled, backend: CONFIG.judge.backend, ...(cliJudge ? {cli: CONFIG.judge.cli, command: CONFIG.judge.command ?? null}
@@ -148,7 +179,7 @@ const trips = runawayTrips(Date.now() - 36e5);
 const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
 if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, judge, queue, checkpoints: CONFIG.checkpoints, runaway, agents, errors, warnings};
+  policy, api_key: key, claude_hooks: claudeHooks, plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
@@ -158,6 +189,7 @@ else {
     (judge.budget ? `; budget left today ${judge.budget.calls_left} calls, $${judge.budget.usd_left}` : "") : "off"}`);
   console.log(`Queue: ${queue.enabled ? "on" : "off"}; ${queue.pending} pending of ${queue.total} · checkpoints ${CONFIG.checkpoints ? "on" : "off"}`);
   console.log(`Runaway guard: ${runaway.enabled ? `on (${CONFIG.mode === "enforce" ? "stops" : CONFIG.mode === "shadow" ? "logs only, shadow" : "off with the mode"}); ${runaway.stops_last_hour} stop${runaway.stops_last_hour === 1 ? "" : "s"} in the last hour` : "off"}`);
+  console.log(`Claude Code hooks: ${claudeHooks}${plugin.checks.length ? `; plugin probes ${plugin.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);
   for (const a of agents) console.log(`${a.name}: ${a.configured ? "configured" : "not verified"}${a.guard ? " + guard" : ""}; ${a.mode}/${a.engine}; ${a.hook_observed ? "hook observed" : "awaiting hook event"}; ${a.version ?? "version unknown"}${a.checks.length ? `; probes ${a.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);
   for (const w of warnings) console.log(`Note: ${w}`);
   for (const e of errors) console.error(`Error: ${e}`);

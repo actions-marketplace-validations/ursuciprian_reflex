@@ -79,7 +79,23 @@ export function runawaySettings(saved = {}, env) {
   return {...Object.fromEntries(Object.entries(RUNAWAY_DEFAULTS).map(([k, v]) => [k, {...v, ...s[k]}])),
           enabled: env === "on" ? true : env === "off" ? false : env !== undefined ? env : s.enabled ?? true};
 }
-const ENGINE = ENV.REFLEX_ENGINE ?? flagValue("--engine", USER_CONFIG.engine ?? "jev");
+// Claude Code plugin (hooks/hooks.json passes --plugin). `reflex setup` writes the same hooks into
+// the user's Claude Code settings; when those are there, they win and every plugin hook exits at
+// once, so no call is judged or counted twice. The settings file is the one install.mjs writes.
+export const CLAUDE_SETTINGS = join(ENV.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "settings.json");
+export function settingsHooksInstalled(file = CLAUDE_SETTINGS) {
+  try {
+    const hooks = JSON.parse(readFileSync(file, "utf8")).hooks ?? {};
+    return Object.values(hooks).flat().some(g => (g?.hooks ?? []).some(h =>
+      typeof h?.command === "string" && !h.command.includes("--plugin") && /(gate|guard|instructions)\.mjs"?\s+--claude/.test(h.command)));
+  } catch { return false; }
+}
+export const PLUGIN = process.argv.includes("--plugin");
+if (PLUGIN && settingsHooksInstalled()) process.exit(0);
+// With no saved engine the gate starts where a fresh `reflex setup` does: local, no key needed, or
+// Jev when a Keychain item or an earlier install is recorded. The plugin relies on this default.
+const ENGINE = ENV.REFLEX_ENGINE ?? flagValue("--engine", USER_CONFIG.engine ??
+  (USER_CONFIG.keychain || Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
 // engine laya: the same questions and policy as Jev, answered by a Laya checkpoint served on this
 // machine (setup/laya/server.py, `reflex laya start`); nothing leaves it and no key is needed.
 export const LAYA_DEFAULTS = {port: 8421, model: "typed-decisions"};

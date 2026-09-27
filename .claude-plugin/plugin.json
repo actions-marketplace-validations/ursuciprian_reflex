@@ -1,0 +1,32 @@
+{
+  "name": "reflex",
+  "displayName": "Reflex",
+  "version": "0.11.0",
+  "description": "Pre-execution risk gate and prompt injection guard for Claude Code: judges every Bash command and subagent spawn before it runs, with local rules, an editable policy, optional TypeSafe Jev (System One) judgments, System 2 escalation and a human approval queue. Shadow mode by default, no API key needed.",
+  "author": {
+    "name": "Ciprian Ursu",
+    "url": "https://github.com/ursuciprian"
+  },
+  "homepage": "https://github.com/ursuciprian/reflex#readme",
+  "repository": "https://github.com/ursuciprian/reflex",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "claude-code-hooks",
+    "claude-code-plugin",
+    "claude-code-security",
+    "pre-tool-use",
+    "pre-execution-hook",
+    "command-approval",
+    "guardrails",
+    "agent-security",
+    "prompt-injection",
+    "prompt-injection-protection",
+    "human-in-the-loop",
+    "tool-call-gating",
+    "permission-prompts",
+    "devsecops",
+    "jev",
+    "typesafe"
+  ]
+}
