@@ -6,6 +6,15 @@ This file inlines the essential content of the Reflex documentation. Sources: RE
 
 ## Install
 
+Claude Code plugin (Claude Code only; same hooks as `reflex setup`, plus read-only `/reflex:*` commands):
+
+```text
+/plugin marketplace add ursuciprian/reflex
+/plugin install reflex@reflex
+```
+
+Every agent:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash
 # or
@@ -175,6 +184,20 @@ shadow mode too. Commands the rules do not cover are asked about (local engine) 
 in context (AWS profile, kube context, Terraform workspace, git branch, the script the command
 runs). After a shadow period, `reflex setup --mode enforce` puts those judgments in front of the
 agent.
+
+### How do I install Reflex as a Claude Code plugin?
+
+Add the marketplace in this repository and install the plugin, inside Claude Code:
+`/plugin marketplace add ursuciprian/reflex`, then `/plugin install reflex@reflex` (or, from a
+shell, `claude plugin marketplace add ursuciprian/reflex` and `claude plugin install reflex@reflex`).
+The plugin wires the same Claude Code hooks as `reflex setup`: the `PreToolUse` command gate on
+Bash and subagent spawns, the post-tool records, conditional instructions and the prompt injection
+guard. It adds read-only commands (`/reflex:status`, `/reflex:check <command>`, `/reflex:report`,
+`/reflex:replay`, `/reflex:queue`, `/reflex:suggest`). It needs Node.js 18+ on the `PATH` and no
+build step, npm install or API key; with no saved settings it runs the local engine in shadow mode.
+If `reflex setup` hooks are also in `~/.claude/settings.json`, the plugin's hooks stand down so
+nothing is judged twice, and `reflex doctor` shows which one is active. Use `reflex setup` for
+other agents, the autonomous profile, or the permission rules that guard Reflex's own files.
 
 ### How is Reflex different from Claude Code permission prompts and allowlists?
 

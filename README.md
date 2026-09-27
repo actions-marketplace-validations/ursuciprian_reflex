@@ -62,6 +62,36 @@ Questions people ask about it are answered in the [Reflex FAQ](#faq) and in
 
 ## Install
 
+### Claude Code plugin
+
+Reflex is a Claude Code plugin with its own marketplace in this repository. Inside Claude Code:
+
+```text
+/plugin marketplace add ursuciprian/reflex
+/plugin install reflex@reflex
+```
+
+Or from your shell: `claude plugin marketplace add ursuciprian/reflex`, then
+`claude plugin install reflex@reflex`. Restart the session (or run `/reload-plugins`).
+
+The plugin adds the same Claude Code hooks as `reflex setup` (the `PreToolUse` command gate on
+`Bash|Task|Agent`, the post-tool and permission records, conditional instructions and the prompt
+injection guard), plus read-only commands: `/reflex:status`, `/reflex:check <command>`,
+`/reflex:report`, `/reflex:replay`, `/reflex:queue` and `/reflex:suggest`. `reflex` is on the Bash
+`PATH` while the plugin is enabled. It needs Node.js 18+ as `node` on the `PATH` Claude Code runs
+with; no build step, no npm install, no API key. Without saved settings it runs the local engine in
+shadow mode, the same default as `reflex setup`, and it reads the same `~/.config/reflex/config.json`
+and Keychain item when you have them.
+
+The plugin changes no settings of its own. If `reflex setup` hooks are also in
+`~/.claude/settings.json`, those run and the plugin's hooks exit at once, so no command is judged
+twice; `reflex doctor` says which one is active. Two things only `reflex setup` does: it adds
+permission rules that make Claude Code ask before editing Reflex's files and settings, and it sizes
+the hook timeout to System 2 in the autonomous profile. See
+[docs/SETUP.md: Claude Code plugin](docs/SETUP.md#claude-code-plugin).
+
+### Every agent: install script or package runner
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash
 ```

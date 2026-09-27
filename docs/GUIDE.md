@@ -36,8 +36,8 @@ selection unchanged. A separate LiteLLM container needs the same configuration o
 `--engine laya` (experimental) asks Jev's questions of a Laya checkpoint served on this machine:
 nothing leaves it. Measured far below Jev on every golden set; see [Laya](#laya-local-system-1).
 
-`--engine jev` enables the existing hosted behavior below. Older direct hook installations retain
-Jev until an engine is selected; `reflex setup` records the choice. Defaults are bundled, with durable
+`--engine jev` enables the existing hosted behavior below. Older direct hook installations (a Keychain item or an agent record in
+`config.json`) retain Jev until an engine is selected; with no settings at all the gate uses `local`; `reflex setup` records the choice. Defaults are bundled, with durable
 user overrides under `~/.config/reflex/tool-gate/`; `reflex status` shows the active policy path.
 
 `reflex doctor` runs local synthetic decision checks in a disposable state directory. These probes
