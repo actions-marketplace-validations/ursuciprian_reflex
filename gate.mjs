@@ -335,6 +335,8 @@ export function shellWords(s) {
           const m = ANSI_ESCAPE.exec(s);
           if (!m) return null;
           const code = m[1] ?? m[2] ?? m[3];
+          // bash cuts the word at a NUL, and \0 is the expansion placeholder here: not read
+          if ((code && parseInt(code, 16) === 0) || (m[4] && parseInt(m[4], 8) % 256 === 0) || m[5] === "@") return null;
           w.value += code ? String.fromCodePoint(Math.min(parseInt(code, 16), 0x10ffff)) : m[4] ? String.fromCharCode(parseInt(m[4], 8) & 255)
             : m[5] !== undefined ? String.fromCharCode(m[5].charCodeAt(0) & 31) : ANSI_C[m[6]] ?? (/['"\\?]/.test(m[6]) ? m[6] : "\\" + m[6]);
           i = ANSI_ESCAPE.lastIndex;
@@ -357,6 +359,8 @@ export function shellWords(s) {
     }
     w.end = i; w.raw = s.slice(w.start, i);
     if (w.raw.includes("X%")) { w.exps.push("?"); if (maskQuotes(w.raw, "_").includes("X%")) w.split = true; }
+    // {a,b} and {1..3} outside quotes are expanded into words: sort {-o,out} is sort -o out
+    if (/\{[^{}\s]*(,|\.\.)[^{}\s]*\}/.test(maskQuotes(w.raw, "_").replace(/\\./g, "__"))) { w.exps.push("?"); w.split = true; }
     words.push(w);
   }
   return words;
@@ -414,14 +418,14 @@ function sedSafe(args) {
         if (!w || w.exps.length) return false;
         scripts.push(w.value); expression = true; continue;
       }
-      if (name === "line-length") { if (eq < 0) i++; continue; }
+      if (name === "line-length") { if (eq < 0 && !/^\d+$/.test(args[++i]?.value ?? "")) return false; continue; }
       if (SED_LONG.has(name) && eq < 0) continue;
       return false;
     }
     for (let k = 1; k < v.length; k++) {
       const f = v[k];
       if (/[nErsuzba]/.test(f)) continue;
-      if (f === "l") { if (k === v.length - 1) i++; break; }
+      if (f === "l") { if (k === v.length - 1 ? !/^\d+$/.test(args[++i]?.value ?? "") : !/^\d+$/.test(v.slice(k + 1))) return false; break; }
       if (f !== "e") return false;
       const w = k < v.length - 1 ? {value: v.slice(k + 1), exps: []} : args[++i];
       if (!w || w.exps.length) return false;
@@ -429,6 +433,9 @@ function sedSafe(args) {
     }
   }
   if (!expression) { const w = pos.shift(); if (!w || w.exps.length) return false; scripts.push(w.value); }
+  // GNU joins -e pieces with newlines, so a piece ending in a backslash continues a/i/c text into
+  // the next one; BSD ends the text at the piece and reads the next one as commands: not read
+  if (scripts.slice(0, -1).some(p => /(^|[^\\])(\\\\)*\\$/.test(p))) return false;
   return sedScriptSafe(scripts.join("\n"));
 }
 function sedScriptSafe(s) {
@@ -438,11 +445,31 @@ function sedScriptSafe(s) {
   // text up to delimiter d, backslash escapes skipped; false at a newline or the end
   const upTo = d => { for (; i < n && s[i] !== d; i++) { if (s[i] === "\n") return false; if (s[i] === "\\") i++; } if (i >= n) return false; i++; return true; };
   const delimited = () => { const d = s[i]; if (d === undefined || d === "\n" || d === "\\") return false; i++; return upTo(d); };
+  // a regex up to delimiter d: [...] is one unit ([]x], [^]x], [[:alpha:]] included), as both seds read it
+  const regexUpTo = d => {
+    for (; i < n && s[i] !== d; i++) {
+      if (s[i] === "\n") return false;
+      if (s[i] === "\\") { i++; continue; }
+      if (s[i] !== "[") continue;
+      i++;
+      if (s[i] === "^") i++;
+      if (s[i] === "]") i++;
+      for (; i < n && s[i] !== "]"; i++) {
+        if (s[i] === "\n") return false;
+        const cls = s[i] === "[" && /[:=.]/.test(s[i + 1] ?? "") ? s[i + 1] : null;
+        if (cls) { const e = s.indexOf(cls + "]", i + 2); if (e < 0) return false; i = e + 1; }
+      }
+      if (i >= n) return false;
+    }
+    if (i >= n) return false;
+    i++; return true;
+  };
+  const regex = () => { const d = s[i]; if (d === undefined || d === "\n" || d === "\\") return false; i++; return regexUpTo(d); };
   const toEol = () => { const e = s.indexOf("\n", i); const t = s.slice(i, e < 0 ? n : e); i = e < 0 ? n : e; return t; };
   const address = () => {
     if (/\d/.test(s[i])) { while (/\d/.test(s[i])) i++; if (s[i] === "~") { i++; while (/\d/.test(s[i])) i++; } return true; }
     if (s[i] === "$") { i++; return true; }
-    if (s[i] === "/" || s[i] === "\\") { if (s[i] === "\\") i++; if (!delimited()) return false; while (s[i] === "I" || s[i] === "M") i++; return true; }
+    if (s[i] === "/" || s[i] === "\\") { if (s[i] === "\\") i++; if (!regex()) return false; while (s[i] === "I" || s[i] === "M") i++; return true; }
     return null;
   };
   const end = () => { ws(); return i >= n || /[;\n}#]/.test(s[i]); };
@@ -478,7 +505,7 @@ function sedScriptSafe(s) {
     if (/[rR]/.test(c)) { if (/[;}]/.test(toEol())) return false; continue; }
     if (c === "s") {
       const d = s[i];
-      if (!delimited()) return false;
+      if (!regex()) return false;
       if (!upTo(d)) return false;
       while (i < n && /[gpiImM\d]/.test(s[i])) i++;
       if (!end()) return false;
@@ -495,13 +522,28 @@ function sedScriptSafe(s) {
 // the debugger (-D) or load a program from a file (-f -E -i -l, --file, --exec, --include, --load,
 // --source): any spelling, any unique prefix, a value attached or not.
 const AWK_LONG = ["file", "exec", "include", "load", "source", "profile", "pretty-print", "dump-variables", "debug"];
-const awkSafe = args => !args.some(w => {
-  const v = w.value;
-  if (v === "-" || v === "--" || !v.startsWith("-")) return false;
-  if (v.startsWith("--")) { const name = v.slice(2).split("=")[0]; return AWK_LONG.some(o => o.startsWith(name)); }
-  for (const f of v.slice(1)) { if (/[Fv]/.test(f)) return false; if (/[fEilLpodD]/.test(f)) return true; }
-  return false;
-});
+// -W takes a long option as its value (-W dump-variables=f). The program text is checked as the
+// shell passes it (sys''tem, $'\x73ystem'), with UNSAFE_FLAGS' awk words: system, getline, @include,
+// @load, and a pipe or redirect in the program.
+const awkLong = name => !name || AWK_LONG.some(o => o.startsWith(name.split("=")[0]));
+function awkSafe(args) {
+  let program = false, dd = false;
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i].value;
+    if (/\b(system|getline)\b|@include|@load/.test(v)) return false;
+    if (dd || v === "-" || !v.startsWith("-")) { if (!program) { program = true; if (/[|>]/.test(v)) return false; } dd = true; continue; }
+    if (v === "--") { dd = true; continue; }
+    if (v.startsWith("--")) { if (awkLong(v.slice(2))) return false; continue; }
+    for (let k = 1; k < v.length; k++) {
+      const f = v[k];
+      if (f === "W") { if (awkLong(k < v.length - 1 ? v.slice(k + 1) : args[++i]?.value ?? "")) return false; break; }
+      if (f === "e") { const t = k < v.length - 1 ? v.slice(k + 1) : args[++i]?.value ?? ""; if (/[|>]/.test(t)) return false; program = true; break; }
+      if (/[Fv]/.test(f)) { if (k === v.length - 1) i++; break; }
+      if (/[fEilLpodD]/.test(f)) return false;
+    }
+  }
+  return true;
+}
 // Commands whose options or first words decide whether they write or run something: an
 // expansion among their words could turn into one (X=-i; sed $X …, gh api $(echo -X) DELETE).
 // Only a name the command itself sets to literal values none of which starts with - is read.
@@ -524,6 +566,9 @@ function argsUnsafe(raw, head, whole) {
   }
   if (words[k].raw.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "") !== head) return true;
   const args = words.slice(k + 1), b = bindings(whole);
+  // a glob that starts a word could match a file named -i or --output=x (not after --)
+  const dd = args.findIndex(w => w.raw === "--");
+  if (args.some((w, j) => (dd < 0 || j < dd) && /^[*?[]/.test(maskQuotes(w.raw, "_")))) return true;
   // printf reads options (-v) in its first word only
   if (head === "printf") return !!args[0] && (args[0].exps.length > 0 || /^-\w*v/.test(args[0].value));
   for (const w of args) {
@@ -687,6 +732,9 @@ export function readOnly(cmd, extra = [], depth = 0, whole = null) {
   // double quotes stay visible.
   const m = maskQuotes(c);
   if (/>|`|\$\(|<\(|<<|(^|[;&|]\s*)\.\s|\bsudo\b|\btee\b|\bxargs\b|\beval\b|\bsource\b/.test(m)) return false;
+  // zsh: =(cmd) runs cmd into a temporary file, and a ( right after word text is a glob qualifier
+  // (*(e:cmd:), f(+func)) that runs code. Either way ( after anything but a separator is not read.
+  if (/[^\s;&|<>()]\(/.test(m)) return false;
   // `&` (background) separates commands just like `;`.
   const mk = maskQuotes(c, "_"), raws = [];
   let last = 0;
@@ -2131,6 +2179,19 @@ async function selfcheck() {
     ["B=main; git push -f origin $B", "force-push-main"], ["git push -f origin `echo main`", "force-push-main"],
     ["git push --force-with-lease=main:abc123 origin HEAD", "force-push-main"], ["git -P push -f origin main", "force-push-main"]])
     ok(pw(c) === id, `still a command: ${c}`);
+  // second review of #43: BSD a\\ across -e, BSD -l, a NUL in $'…', sed bracket expressions, awk
+  // program text as the shell passes it, gawk -W, brace expansion, zsh =(…) and glob qualifiers, a
+  // glob that could match a file named like an option
+  for (const cmd of ["sed -e 'a\\' -e 'w out' f", "sed -e 'i\\' -e 'w out' f", "sed -e 'c\\' -e 'w out' f", "sed -n -l 'w out' p", "sed -l 'w out' p",
+  "sed -n -e p $'\\0'--in-place=.bak f", "sort $'\\0'-o out f", "sed -e p $'\\0'-i.bak f", "sed -e p $'\\x00'-i.bak f", "gh api $'\\0'-X DELETE repos/o/r",
+  "sed 's/[/]/p;#/w out' f", "sed -n '/[/p;#]/w out' f", "sed 's/[/]/g;a /w out' f",
+  "awk 'BEGIN{sys''tem(\"touch out\")}'", "awk \"BEGIN{sys\"\"tem(\\\"touch out\\\")}\"", "awk $'BEGIN{\\x73ystem(\"touch out\")}'",
+  "awk -W dump-variables=out 'BEGIN{}'", "awk -W exec=prog.awk", "awk -Wprofile=p 'BEGIN{}'",
+  "sort {-o,out} f", "sed -e p {-i.bak,f}", "gh api {-X,DELETE} repos/o/r", "find . {-fprint,out}", "awk {-f,prog.awk} f", "yq {-i,.a=1} f",
+  "journalctl {--rotate,}", "tree {-o,out}", "docker compose config {-o,out}", "date {-s,12:00}",
+  "cat =(touch out)", "sed -n p =(touch out)", "cat *(e:'touch out':)", "ls f(+func)", "cat >(touch out)", "sed -n p *", "sort *.txt"]) ok(!readOnly(cmd), `not read-only: ${cmd}`);
+  for (const cmd of ["sed 's/[^/]*$//' f", "sed -n p -- *", "sed -e 's/a/b/' -e 'p' f", "sed -l 5 -n p f", "sed -n '/[[:digit:]]/p' f", "sed 's/[]x]/y/' f",
+  "awk -F: '{print $1}' f", "awk '{print}' f", "cat *.md", "ls src/*.txt", "sed -n 1p src/*.md", "echo {a,b}", "awk -v n=1 'NR==n' f"]) ok(readOnly(cmd), `read-only: ${cmd}`);
   // review of #35: the force-push-main ref ends at a redirect, comment, group or backtick; a push
   // option is not a ref; git's global options are dropped once; interpreter heredocs are data only
   // when they print literals, from an interpreter on PATH or in a system directory

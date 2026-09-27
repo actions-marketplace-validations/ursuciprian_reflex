@@ -46,6 +46,12 @@ All notable changes to Reflex are documented here. The format follows
   script lines, instead of being pasted into every git pattern (rules-v15).
 - Redaction: `htpasswd -nb user pw` (no file), a quoted `smbclient -U 'DOM\user%pw'`,
   `sudo --stdin`, and `echo a multi word value | sudo -S`.
+- More read-only gaps found in review: a sed `-e` piece ending in a backslash (BSD ends a\ text
+  there, so the next piece runs as commands), BSD `-l` taking no value, a NUL escape in `$'…'`,
+  bracket expressions in sed regexes (`s/[/]/…`; this also makes `sed 's/[^/]*$//'` a read again),
+  awk program text read as the shell passes it (`sys''tem`, `$'\x73ystem'`), gawk `-W` long
+  options, brace expansion into options (`sort {-o,out}`), zsh `=(…)` and glob qualifiers
+  (`*(e:…:)`), and a glob that could match a file named like an option (`sed -n p *`, not after `--`).
 - An ask from an early rule or the tamper check no longer hides a deny rule that also matches: the
   more severe outcome wins, as it already did between spellings.
 
