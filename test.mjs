@@ -690,6 +690,15 @@ try {
       const tools = readFileSync(join(root, f), "utf8").match(/^allowed-tools:(.*)$/m)?.[1] ?? "";
       assert.ok(!/\*|--write|approve|deny|clear|setup|install/.test(tools), `${f}: only exact read-only commands are pre-approved: ${tools}`);
     }
+    // The Bash calls the commands make pass the gate; what could send, write or approve does not.
+    const judged = c => JSON.parse(success(spawnSync(process.execPath, [join(root, "gate.mjs"), "--check", c], {cwd: root, encoding: "utf8",
+      env: {...env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: join(scratch, "plugin-check")}}))).decision;
+    for (const c of ["reflex status", "reflex check 'git push --force origin main'", "reflex check 'a'\\''b'", "reflex report", "reflex report --since 30",
+      "reflex replay claude --since 7d", "reflex suggest claude", "reflex suggest claude --since 30d --min 3", "reflex queue list"])
+      assert.equal(judged(c), "pass", c);
+    for (const c of ["reflex report --push http://x.invalid", "reflex replay claude --engine jev", "reflex suggest claude --write --yes",
+      "reflex queue approve abc", "reflex check 'x'; rm -rf /", "reflex check \"$(rm -rf ~)\""])
+      assert.notEqual(judged(c), "pass", c);
     // Run the plugin's PreToolUse command as Claude Code would. No saved config: local engine, shadow mode.
     const pre = hooks.PreToolUse[0].hooks[0].command.replace("${CLAUDE_PLUGIN_ROOT}", root);
     const canary = JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "git push --force origin main"}, session_id: "p", cwd: home});
