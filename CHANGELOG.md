@@ -46,6 +46,9 @@ All notable changes to Reflex are documented here. The format follows
   script lines, instead of being pasted into every git pattern (rules-v15).
 - Redaction: `htpasswd -nb user pw` (no file), a quoted `smbclient -U 'DOM\user%pw'`,
   `sudo --stdin`, and `echo a multi word value | sudo -S`.
+- Redaction of `echo … | sudo -S` no longer backtracks exponentially on a run of quoted words, and
+  git options whose value is `$(…)`, `${…}` or a backtick span are dropped too (`git -C $(pwd) push -f
+  origin main` denies again).
 - More read-only gaps found in review: a sed `-e` piece ending in a backslash (BSD ends a\ text
   there, so the next piece runs as commands), BSD `-l` taking no value, a NUL escape in `$'…'`,
   bracket expressions in sed regexes (`s/[/]/…`; this also makes `sed 's/[^/]*$//'` a read again),

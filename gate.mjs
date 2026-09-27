@@ -1281,7 +1281,7 @@ const joinQuotes = s => { const j = s.replace(QUOTED_PART, "$2$4"); return j !==
 const TIMEOUT_OPTS = new RegExp(String.raw`\btimeout((\s+(-[fpv]+|-[ks]\s*[^\s-]\S*|--(foreground|preserve-status|verbose)|--(kill-after|signal)(=|\s+)[^\s-]\S*))+)(?=\s+[^\s-])`, "g");
 // git's global options (-C dir, -c k=v, --git-dir …, --no-pager, -P), quoted values too: `git -C "/my repo"
 // push` is `git push` to every git rule.
-const GIT_VALUE = String.raw`(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s;&|<>()'"])+`;
+const GIT_VALUE = String.raw`(?:'[^']*'|"(?:[^"\\]|\\.)*"|\$\((?:[^()]|\([^()]*\))*\)|\$\{[^}]*\}|\x60[^\x60]*\x60|\$(?![({])|[^\s;&|<>()'"$\x60])+`;
 const GIT_GLOBAL = new RegExp(String.raw`\bgit((?:\s+(?:-[cC]\s*${GIT_VALUE}|--(?:git-dir|work-tree|namespace|config-env|super-prefix|attr-source)(?:=|\s+)${GIT_VALUE}|` +
   String.raw`--(?:exec-path|list-cmds)=${GIT_VALUE}|-[pP]|--(?:no-pager|paginate|bare|exec-path|no-replace-objects|no-lazy-fetch|no-optional-locks|no-advice|` +
   String.raw`literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs)(?=\s)))+)(?=\s)`, "g");
@@ -2199,6 +2199,11 @@ async function selfcheck() {
     "{ git push -f origin main;}", `git -C "/my repo" push -f origin main`, `git -c "user.name=a b" push -f origin main`, "git -C /repo push --force origin main",
     "git -c core.x=y push -f origin master", "git --no-pager push -f origin main:main", "git --git-dir=/r/.git --work-tree /r push -f origin main"])
     ok(pw(c) === "force-push-main", `force push main: ${c}`);
+  for (const c of ["git -C $(pwd) push -f origin main", "git -C $(pwd)/x push -f origin main", "git -C $(pwd) push origin --delete main", "git -C $(pwd) push origin :main",
+    "git --work-tree=$(pwd) push -f origin main", "git -C $((1)) push -f origin main", "git -C `pwd` push -f origin main", "git -C ${D} push -f origin main",
+    "git -C $(git rev-parse --show-toplevel) push -f origin main"]) ok(pw(c) === "force-push-main", `force push main, an expanded git option value: ${c}`);
+  ok(pw("git -C $(pwd) push --mirror") === "push-mirror" && pw("git -C $(pwd) push -f") === "force-push-unknown-branch", "expanded git -C: mirror, unknown branch");
+  { const t0 = Date.now(); redact("echo " + "'a' ".repeat(40) + "done > gen.txt; make build"); ok(Date.now() - t0 < 500, "redact: a run of quoted words is linear"); }
   ok(pw("git -C /repo push --mirror") === "push-mirror" && pw("git -P --no-pager push origin --mirror") === "push-mirror", "git global options, push --mirror");
   for (const c of ["git push -f -o merge_request.target=main origin feat/x", "git push -f --push-option=target=main origin feat/x", "git push -f origin feat/x -o ci.skip=main"])
     ok(pw(c) === null, `a push option is not a ref: ${c}`);
