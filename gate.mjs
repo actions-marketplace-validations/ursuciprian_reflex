@@ -194,15 +194,14 @@ const READ_ONLY = new Set(("ls cat head tail less wc grep egrep rg fd find tree 
   "md5 shasum sha256sum od strings nl fold paste comm exit return free nproc lscpu seq").split(" "));
 // Flags that make an otherwise read-only tool run a program or write a file.
 const UNSAFE_FLAGS = new RegExp([
-  // sed: in place, a script file, or w / e after an address or as an s/// flag
-  String.raw`\bsed\b[^|;&]*(--in-place|\s-[a-zA-Z]*i|[;'"{}\s\d$,!][wWe](\s|['";}]|$)|\/[a-zA-Z0-9]*[we](\s|['";}]))`,
+  // sed is read by sedSafe, its options and its script, as sed parses them
   String.raw`\bawk\b.*(system|getline|@include|@load)`, String.raw`\bawk\b[^']*'[^']*[|>][^']*'`, String.raw`\bawk\b[^"]*"[^"]*[|>][^"]*"`,
   String.raw`--pre\b`, String.raw`--(upload|receive)-pack`, String.raw`--hostname-bin\b`,
   String.raw`--post-renderer`, String.raw`--compress-program`, String.raw`\b(git|sort)\b[^|;&]*--output\b`, String.raw`--ext-diff`,
   String.raw`\s-f(print0?|printf|ls)\b`, String.raw`\s-ok(dir)?\b`, String.raw`\bfd\b.*\s-[a-zA-Z]*[xX]\b`,
   String.raw`\b(sort|tree)\b[^|;&]*\s-o\b`, String.raw`--show-token`,
   // a program from a file (awk and sed -f, gawk -i/-E/-l), yq writing in place or split files
-  String.raw`\b[gm]?awk\b[^|;&]*\s(-[a-zA-Z]*[fEilL]|--(file|exec|include|load|source))`, String.raw`\bsed\b[^|;&]*\s(-[a-zA-Z]*f|--file)`,
+  String.raw`\b[gm]?awk\b[^|;&]*\s(-[a-zA-Z]*[fEilL]|--(file|exec|include|load|source))`,
   String.raw`\byq\b[^|;&]*\s(-[a-zA-Z]*[is]\b|--(inplace|split-exp))`,
 ].join("|"));
 // Every prefix of an ip object that ip.c resolves to it (address comes before addrlabel, route before
@@ -217,7 +216,7 @@ const READ_ONLY_SUB = {
   helm: /^(list|ls|status|get|lint|show|history|search|version)\b/,
   // gh api is a GET unless a method, field or input says otherwise, in any spelling
   gh: /^(pr|issue|run|release|repo) (view|list|checks|diff|status)\b|^auth status|^api(?!.*\s(-X\S*|--method|-[fF]\S*|--field|--raw-field|--input)(\s|=|$))\s/,
-  docker: /^(ps|logs|inspect|images|version|info|stats --no-stream|compose (ps|logs|config))\b/,
+  docker: /^(ps|logs|inspect|images|version|info|stats --no-stream|compose (ps|logs)|compose config(?!.*\s(-[a-zA-Z]*o|--output)))\b/,
   npm: /^(view|ls|list|outdated|config get)\b/,
   brew: /^(list|info|search|services list|--prefix)\b/,
   uniq: /^(-\S+\s*)*$/,          // flags only: `uniq in out` writes out
@@ -231,7 +230,8 @@ const READ_ONLY_SUB = {
   systemctl: /^((-[alqr]+|-[tpPHMn]\s+[^\s-]\S*|--(property|type|state|host|machine|lines|output)\s+[^\s-]\S*|--(failed|all|full|no-pager|no-legend|plain|quiet|user|system|recursive|reverse|value|show-types)|--[\w-]+=\S+)(\s+|$))*((status|is-active|is-enabled|is-failed|is-system-running|show|cat|list-units|list-unit-files|list-sockets|list-timers|list-jobs|list-dependencies|get-default)(\s.*)?)?$/,
   // getopt_long takes any unique prefix of a long option (--rot is --rotate), so no long option
   // may be a prefix of one that writes
-  journalctl: {test: s => !s.split(/\s+/).some(w => /^--[\w-]+(=|$)/.test(w) &&
+  // An exact option wins: --cursor is not --cursor-file.
+  journalctl: {test: s => !s.split(/\s+/).some(w => /^--[\w-]+(=|$)/.test(w) && !["--cursor"].includes(w.split("=")[0]) &&
     ["vacuum-size", "vacuum-files", "vacuum-time", "rotate", "flush", "sync", "relinquish-var", "smart-relinquish-var",
      "setup-keys", "update-catalog", "cursor-file"].some(o => ("--" + o).startsWith(w.split("=")[0])))},
   // options from an allowlist: ip takes any prefix of -batch (-ba, -bat) as a batch file of commands.
@@ -286,6 +286,257 @@ export function maskQuotes(s, fill = "") {
     out += ch;
   }
   return q && q !== "#" ? s : out;
+}
+
+// The words of a command as the shell passes them: backslashes dropped, $'…' decoded, quoted parts
+// joined. Each word keeps where it starts and ends, its raw text, and its expansions: a name for
+// $name or ${name}, "?" for anything else ($(…), `…`, ${x:-…}, $1, $@, and the X% a $(…) was
+// replaced with). An expansion stands in the value as \0; `split`: one is outside double quotes, so
+// the shell splits what it gives into words. null: an unbalanced quote.
+// ponytail: words, not the grammar: operators ; & | < > ( ) split words and are dropped.
+const ANSI_C = {n: "\n", t: "\t", r: "\r", a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", v: "\v"};
+const ANSI_ESCAPE = /x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8})|([0-7]{1,3})|c([\s\S])|([\s\S])/y;
+export function shellWords(s) {
+  const words = [], n = s.length, SEP = /[\s;&|<>()]/;
+  let i = 0;
+  const expansion = (w, quoted) => {   // at s[i], a $ or a backtick
+    if (s[i] === "`") { const e = s.indexOf("`", i + 1); if (e < 0) return false; w.exps.push("?"); i = e + 1; return true; }
+    const d = s[i + 1];
+    if (d === "(") {
+      let depth = 0, k = i + 1;
+      for (; k < n; k++) { if (s[k] === "(") depth++; else if (s[k] === ")" && --depth === 0) break; }
+      if (k >= n) return false;
+      w.exps.push("?"); i = k + 1; return true;
+    }
+    if (d === "{") {
+      const e = s.indexOf("}", i + 2); if (e < 0) return false;
+      const name = s.slice(i + 2, e);
+      w.exps.push(/^[A-Za-z_]\w*$/.test(name) ? name : "?"); i = e + 1; return true;
+    }
+    const m = s.slice(i + 1, i + 65).match(/^([A-Za-z_]\w*|[0-9@*#?$!-])/);
+    if (!m) { w.value += "$"; i++; return null; }
+    w.exps.push(/^[A-Za-z_]/.test(m[1]) ? m[1] : "?"); i += 1 + m[1].length; return true;
+  };
+  while (i < n) {
+    while (i < n && SEP.test(s[i])) i++;
+    if (i >= n) break;
+    if (s[i] === "#") { while (i < n && s[i] !== "\n") i++; continue; }
+    const w = {start: i, end: i, raw: "", value: "", exps: []};
+    while (i < n && !SEP.test(s[i])) {
+      const ch = s[i];
+      if (ch === "\\") { w.value += s[i + 1] ?? ""; i += 2; continue; }
+      if (ch === "'") { const e = s.indexOf("'", i + 1); if (e < 0) return null; w.value += s.slice(i + 1, e); i = e + 1; continue; }
+      if (ch === "$" && s[i + 1] === "'") {
+        for (i += 2; ; ) {
+          if (i >= n) return null;
+          if (s[i] === "'") { i++; break; }
+          if (s[i] !== "\\") { w.value += s[i++]; continue; }
+          ANSI_ESCAPE.lastIndex = i + 1;
+          const m = ANSI_ESCAPE.exec(s);
+          if (!m) return null;
+          const code = m[1] ?? m[2] ?? m[3];
+          w.value += code ? String.fromCodePoint(Math.min(parseInt(code, 16), 0x10ffff)) : m[4] ? String.fromCharCode(parseInt(m[4], 8) & 255)
+            : m[5] !== undefined ? String.fromCharCode(m[5].charCodeAt(0) & 31) : ANSI_C[m[6]] ?? (/['"\\?]/.test(m[6]) ? m[6] : "\\" + m[6]);
+          i = ANSI_ESCAPE.lastIndex;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        for (i++; ; ) {
+          if (i >= n) return null;
+          const d = s[i];
+          if (d === '"') { i++; break; }
+          if (d === "\\" && /[$`"\\]/.test(s[i + 1] ?? "")) { w.value += s[i + 1]; i += 2; continue; }
+          if (d === "$" || d === "`") { const r = expansion(w, true); if (r === false) return null; if (r) w.value += "\0"; continue; }
+          w.value += d; i++;
+        }
+        continue;
+      }
+      if (ch === "$" || ch === "`") { const r = expansion(w, false); if (r === false) return null; if (r) { w.value += "\0"; w.split = true; } continue; }
+      w.value += ch; i++;
+    }
+    w.end = i; w.raw = s.slice(w.start, i);
+    if (w.raw.includes("X%")) { w.exps.push("?"); if (maskQuotes(w.raw, "_").includes("X%")) w.split = true; }
+    words.push(w);
+  }
+  return words;
+}
+// The names a command sets to a literal value before it uses them: `X=a`, `export X=a` and
+// `for X in a b` at the start of a command. A name set any other way (`f=$(…)`, `read f`,
+// `${f:=…}`) is unknown; so is every name when the command reads or declares variables, or sets IFS.
+const BIND_CACHE = new Map();
+function bindings(whole) {
+  if (BIND_CACHE.has(whole)) return BIND_CACHE.get(whole);
+  const vals = new Map(), bad = new Set(), mask = maskQuotes(whole, "_");
+  const add = (name, v) => v !== null && /^[\w.\/:,@%+=~-]*$/.test(v) ? vals.set(name, [...(vals.get(name) ?? []), v]) : bad.add(name);
+  let none = /\bIFS=|\b(read|declare|typeset|local|mapfile|readarray|getopts|eval|source|unset)\b|\bprintf\s+-v|(^|[;&|\n(]\s*)\.\s/.test(mask);
+  for (const m of mask.matchAll(/\$\{(\w+):?[=?]/g)) bad.add(m[1]);
+  let last = 0;
+  for (const cut of [...mask.matchAll(/&&|\|\||[;&|\n]/g), {index: whole.length, 0: ""}]) {
+    const words = shellWords(whole.slice(last, cut.index)) ?? [];
+    last = cut.index + cut[0].length;
+    let k = 0;
+    while (k < words.length && /^(do|then|else|elif|if|while|until|!|\{|export|readonly)$/.test(words[k].raw)) k++;
+    if (/^(for|select)$/.test(words[k]?.raw)) {
+      const name = words[k + 1]?.raw ?? "";
+      if (words[k + 2]?.raw !== "in") { bad.add(name); continue; }
+      for (const w of words.slice(k + 3)) add(name, w.exps.length ? null : w.value);
+      continue;
+    }
+    for (; k < words.length && /^[A-Za-z_]\w*=/.test(words[k].raw); k++) {
+      const w = words[k], name = w.raw.split("=")[0];
+      add(name, w.exps.length ? null : w.value.slice(name.length + 1));
+    }
+  }
+  const out = {vals, bad, none};
+  if (BIND_CACHE.size > 64) BIND_CACHE.clear();
+  BIND_CACHE.set(whole, out);
+  return out;
+}
+// sed as sed parses it (GNU and BSD): the options, then the script. Not read-only: in place (-i,
+// -I, --in-place), a script from a file (-f), an option not known to be safe, or a script with
+// w, W or e (after an address or not, with or without a space: BSD writes `1w/path`), or an s///
+// with the w or e flag. r and R read a file, named to the end of the line. Anything the parser
+// does not follow (an unknown command, a stray character) is not read-only either.
+const SED_LONG = new Set(["quiet", "silent", "regexp-extended", "posix", "debug", "sandbox", "null-data", "zero-terminated", "separate", "unbuffered", "follow-symlinks", "binary"]);
+function sedSafe(args) {
+  const scripts = [], pos = [];
+  let expression = false, files = false;
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i].value;
+    if (files || v === "-" || !v.startsWith("-")) { pos.push(args[i]); continue; }
+    if (args[i].exps.length) return false;
+    if (v === "--") { files = true; continue; }
+    if (v.startsWith("--")) {
+      const eq = v.indexOf("="), name = v.slice(2, eq < 0 ? undefined : eq);
+      if (name === "expression") {
+        const w = eq < 0 ? args[++i] : {value: v.slice(eq + 1), exps: []};
+        if (!w || w.exps.length) return false;
+        scripts.push(w.value); expression = true; continue;
+      }
+      if (name === "line-length") { if (eq < 0) i++; continue; }
+      if (SED_LONG.has(name) && eq < 0) continue;
+      return false;
+    }
+    for (let k = 1; k < v.length; k++) {
+      const f = v[k];
+      if (/[nErsuzba]/.test(f)) continue;
+      if (f === "l") { if (k === v.length - 1) i++; break; }
+      if (f !== "e") return false;
+      const w = k < v.length - 1 ? {value: v.slice(k + 1), exps: []} : args[++i];
+      if (!w || w.exps.length) return false;
+      scripts.push(w.value); expression = true; break;
+    }
+  }
+  if (!expression) { const w = pos.shift(); if (!w || w.exps.length) return false; scripts.push(w.value); }
+  return sedScriptSafe(scripts.join("\n"));
+}
+function sedScriptSafe(s) {
+  const n = s.length;
+  let i = 0, depth = 0;
+  const ws = () => { while (i < n && (s[i] === " " || s[i] === "\t")) i++; };
+  // text up to delimiter d, backslash escapes skipped; false at a newline or the end
+  const upTo = d => { for (; i < n && s[i] !== d; i++) { if (s[i] === "\n") return false; if (s[i] === "\\") i++; } if (i >= n) return false; i++; return true; };
+  const delimited = () => { const d = s[i]; if (d === undefined || d === "\n" || d === "\\") return false; i++; return upTo(d); };
+  const toEol = () => { const e = s.indexOf("\n", i); const t = s.slice(i, e < 0 ? n : e); i = e < 0 ? n : e; return t; };
+  const address = () => {
+    if (/\d/.test(s[i])) { while (/\d/.test(s[i])) i++; if (s[i] === "~") { i++; while (/\d/.test(s[i])) i++; } return true; }
+    if (s[i] === "$") { i++; return true; }
+    if (s[i] === "/" || s[i] === "\\") { if (s[i] === "\\") i++; if (!delimited()) return false; while (s[i] === "I" || s[i] === "M") i++; return true; }
+    return null;
+  };
+  const end = () => { ws(); return i >= n || /[;\n}#]/.test(s[i]); };
+  const label = () => { ws(); while (i < n && !/[;\n}\s]/.test(s[i])) i++; };
+  for (;;) {
+    while (i < n && /[\s;]/.test(s[i])) i++;
+    if (i >= n) return depth === 0;
+    const a = address();
+    if (a === false) return false;
+    if (a) {
+      ws();
+      if (s[i] === ",") {
+        i++; ws();
+        if (s[i] === "+" || s[i] === "~") { i++; if (!/\d/.test(s[i])) return false; while (/\d/.test(s[i])) i++; }
+        else if (!address()) return false;
+      }
+    }
+    ws();
+    while (s[i] === "!") { i++; ws(); }
+    const c = s[i++];
+    if (c === "{") { depth++; continue; }
+    if (c === "}") { if (--depth < 0 || !end()) return false; continue; }
+    if (c === "#") { toEol(); continue; }
+    if (c === ":") { if (a) return false; label(); if (!end()) return false; continue; }
+    if (/[bTt]/.test(c)) { label(); if (!end()) return false; continue; }
+    if (/[aic]/.test(c)) {
+      // text to the end of the line; a line ending in a backslash goes on
+      ws(); if (s[i] === "\\") i++;
+      if (s[i] === "\n") i++;
+      for (;;) { const t = toEol(); if (i >= n || !/(^|[^\\])(\\\\)*\\$/.test(t)) break; i++; }
+      continue;
+    }
+    if (/[rR]/.test(c)) { if (/[;}]/.test(toEol())) return false; continue; }
+    if (c === "s") {
+      const d = s[i];
+      if (!delimited()) return false;
+      if (!upTo(d)) return false;
+      while (i < n && /[gpiImM\d]/.test(s[i])) i++;
+      if (!end()) return false;
+      continue;
+    }
+    if (c === "y") { const d = s[i]; if (!delimited() || !upTo(d) || !end()) return false; continue; }
+    if (/[lqQL]/.test(c)) { ws(); while (/\d/.test(s[i])) i++; if (!end()) return false; continue; }
+    if (c === "v") { ws(); while (/[\d.]/.test(s[i])) i++; if (!end()) return false; continue; }
+    if (/[=dDgGhHnNpPxzF]/.test(c)) { if (!end()) return false; continue; }
+    return false;   // w W e, and anything else
+  }
+}
+// gawk options that write a file (--profile, --pretty-print, --dump-variables and -p -o -d), run
+// the debugger (-D) or load a program from a file (-f -E -i -l, --file, --exec, --include, --load,
+// --source): any spelling, any unique prefix, a value attached or not.
+const AWK_LONG = ["file", "exec", "include", "load", "source", "profile", "pretty-print", "dump-variables", "debug"];
+const awkSafe = args => !args.some(w => {
+  const v = w.value;
+  if (v === "-" || v === "--" || !v.startsWith("-")) return false;
+  if (v.startsWith("--")) { const name = v.slice(2).split("=")[0]; return AWK_LONG.some(o => o.startsWith(name)); }
+  for (const f of v.slice(1)) { if (/[Fv]/.test(f)) return false; if (/[fEilLpodD]/.test(f)) return true; }
+  return false;
+});
+// Commands whose options or first words decide whether they write or run something: an
+// expansion among their words could turn into one (X=-i; sed $X …, gh api $(echo -X) DELETE).
+// Only a name the command itself sets to literal values none of which starts with - is read.
+const FLAG_SENSITIVE = new Set(["sed", "awk", "find", "fd", "rg", "sort", "tree", "yq", "xxd", "uniq", "date", "file", "printf",
+  "git", "kubectl", "terraform", "aws", "helm", "gh", "docker", "npm", "brew", "nvidia-smi", "systemctl", "journalctl", "ip"]);
+function argsUnsafe(raw, head, whole) {
+  const words = shellWords(raw);
+  if (!words) return true;
+  let k = 0;
+  while (k < words.length && /^(do|then|else|elif|if|while|until|!|\{)$/.test(words[k].raw)) k++;
+  for (;;) {
+    const w = words[k]?.raw;
+    if (w === undefined) return true;
+    if (/^\w+=/.test(w) || /^(time|nohup|command)$/.test(w)) k++;
+    else if (w === "rtk") k += words[k + 1]?.raw === "proxy" ? 2 : 1;
+    else if (w === "timeout") {
+      for (k++; words[k]?.raw.startsWith("-"); k++) if (/^(-[ks]|--(kill-after|signal))$/.test(words[k].raw)) k++;
+      k++;
+    } else break;
+  }
+  if (words[k].raw.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "") !== head) return true;
+  const args = words.slice(k + 1), b = bindings(whole);
+  // printf reads options (-v) in its first word only
+  if (head === "printf") return !!args[0] && (args[0].exps.length > 0 || /^-\w*v/.test(args[0].value));
+  for (const w of args) {
+    if (!w.exps.length) continue;
+    // one word after a literal part that is no option (`"repos/$R/pulls"`) is never an option; an
+    // awk program with an expansion in it is a program nobody has read
+    if (head !== "awk" && !w.split && w.value[0] !== "\0" && !w.value.startsWith("-")) continue;
+    if (b.none || w.value.startsWith("-") || w.exps.some(x => x === "?" || b.bad.has(x) || !b.vals.has(x))) return true;
+    if (w.value[0] === "\0" && b.vals.get(w.exps[0]).some(v => v.startsWith("-"))) return true;
+  }
+  if (head === "sed") return !sedSafe(args);
+  if (head === "awk") return !awkSafe(args);
+  return false;
 }
 
 // `ssh [options] host 'cmd'` (#26): unquoted words (options, then one host), then the quoted remote
@@ -380,7 +631,10 @@ function sshCall(c, m, whole) {
   if (host === undefined || words.some((w, k) => k !== i && /[${}*?[\]]|^-.*(\s|\/-)|^-\S*=-/.test(w))) return null;
   const vars = [...host.matchAll(/\$\{(\w+)\}|\$(\w+)/g)].map(x => x[1] ?? x[2]), lit = host.replace(/\$\{\w+\}|\$\w+/g, "x");
   if (!/^[\w.%@:-]+$/.test(lit) || /(^|@)-/.test(lit)) return null;
-  if (vars.length && !(whole.includes(m[0]) && vars.every(v => loopHost(whole, v, whole.indexOf(m[0]))))) return null;
+  // the call is found in `whole` by its text: every place that text appears must be in such a loop
+  const at = [];
+  for (let k = whole.indexOf(m[0]); k >= 0; k = whole.indexOf(m[0], k + 1)) at.push(k);
+  if (vars.length && !(at.length && vars.every(v => at.every(k => loopHost(whole, v, k))))) return null;
   if (bare) return rest.length && rest.every(w => /^[\w./:=,@%+-]+$/.test(w)) && !rest[0].startsWith("-") ? rest.join(" ") : null;
   if (rest.length) return null;
   if (q === "'") return body;
@@ -398,11 +652,17 @@ export function readOnly(cmd, extra = [], depth = 0, whole = null) {
     // SSH_CALL matches (as a plain word, `ssh h awk -f - <<'EOF'` took it for an argument).
     .replace(/<<-?\s*(['"])(\w+)\1([^\n]*)\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, "<_heredoc_$3")
     .replace(/[0-9&]?>{1,2}\s*\/dev\/null\b|<\s*\/dev\/null\b/g, "")
-    .replace(/[0-9]>&[0-9]/g, "")
-    // Quotes around an option hide it from the checks below, which see quoted text blanked:
-    // `sed "-i"`, `gh api '--method=DELETE'`, `nvidia-smi -"pm"` are the unquoted option.
-    .replace(/(^|\s)\$?(['"])(-[\w=.\/:,@%+-]*)\2/g, "$1$3");
-  for (let prev; prev !== c;) { prev = c; c = c.replace(/(^|\s)(-[\w=.\/:,@%+-]*)\$?(['"])([\w=.\/:,@%+-]*)\3/g, "$1$2$4"); }
+    .replace(/[0-9]>&[0-9]/g, "");
+  // Quotes and escapes around an option hide it from the checks below, which see quoted text
+  // blanked: `sed "-i"`, `sed -\i`, `gh api $'\x2dX'`, `nvidia-smi -"pm"` are the plain option. Each
+  // word that is an option once the shell has read it is written the way the shell passes it: its
+  // plain part as it is, the rest single-quoted (`--format=%h\ %s` is --format='%h %s').
+  const words = shellWords(c);
+  if (words) for (const w of words.reverse()) {
+    if (w.exps.length || !w.value.startsWith("-") || w.raw === w.value) continue;
+    const plain = w.value.match(/^-[\w=.\/:,@%+-]*/)[0], rest = w.value.slice(plain.length);
+    c = c.slice(0, w.start) + plain + (rest ? `'${rest.replace(/'/g, "'\\''")}'` : "") + c.slice(w.end);
+  }
   whole ??= c;
   // `ssh host 'cmd'` is only as safe as cmd, which must be read-only itself (the fast lane is for
   // local work). See sshCall for what else the call must not do.
@@ -428,7 +688,11 @@ export function readOnly(cmd, extra = [], depth = 0, whole = null) {
   const m = maskQuotes(c);
   if (/>|`|\$\(|<\(|<<|(^|[;&|]\s*)\.\s|\bsudo\b|\btee\b|\bxargs\b|\beval\b|\bsource\b/.test(m)) return false;
   // `&` (background) separates commands just like `;`.
-  return m.split(/&&|\|\||[;&|\n]/).map(s => s.trim()).filter(Boolean).every(seg => {
+  const mk = maskQuotes(c, "_"), raws = [];
+  let last = 0;
+  for (const s of mk.matchAll(/&&|\|\||[;&|\n]/g)) { raws.push(c.slice(last, s.index)); last = s.index + s[0].length; }
+  raws.push(c.slice(last));
+  return raws.map(r => [maskQuotes(r).trim(), r]).filter(([s]) => s).every(([seg, raw]) => {
     while (KEYWORD.test(seg)) seg = seg.replace(KEYWORD, "");
     if (/^(done|fi|esac|\}|\)|else|then|do)$/.test(seg)) return true;
     const assign = seg.match(/^(export\s+)?(\w+=("[^"]*"|'[^']*'|\S*))$/);
@@ -443,6 +707,7 @@ export function readOnly(cmd, extra = [], depth = 0, whole = null) {
     if ((prefixes.match(/\w+=\S*/g) ?? []).some(a => !assignmentOk(a))) return false;
     // /usr/bin/grep is grep: a system directory holds the same program
     const [path, ...rest] = seg.slice(prefixes.length).split(/\s+/), head = path.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "");
+    if (FLAG_SENSITIVE.has(head) && argsUnsafe(raw, head, whole)) return false;
     if (READ_ONLY.has(head)) return true;
     if (rest.length === 1 && /^--(version|help)$/.test(rest[0]) && /^[\w.-]+$/.test(head)) return true;
     const exec = head === "docker" && rest.join(" ").match(DOCKER_EXEC);
@@ -657,22 +922,23 @@ const onlyNotes = ps => !!ps?.length && ps.every(p => p.inert && p.targets.every
 // written by cat) is data, not a command: a PR body that mentions `git push --force origin main`
 // must not trip the force-push rule. Heredocs fed to a shell, an interpreter or ssh stay in.
 const DATA_CONSUMER = /(^|\s)(cat|jq|tee|git\s+(commit|tag|notes)\b[^\n]*|gh\s+(pr|issue|release|api)\b[^\n]*)\s[^\n]*$|(^|\s)cat$/;
-// `code`: also the program an interpreter reads from a heredoc (`python3 - <<'EOF'`) when it can
-// neither run a program nor write a file, so shell text in it (print("rm -rf /")) takes no effect.
-// Rules marked "shell" read that view; the rest still read the body. Only the whole command
-// `python3 - <<'EOF' … EOF`: the interpreter is the first word (no ssh, docker, env, sudo, flags or
-// assignments in front), the delimiter is quoted, and nothing comes before or after it.
-// ponytail: a keyword list, not a parser: a word that could run, write or delete anything (system,
-// subprocess, exec, eval, getattr, send, require, open(…, "w"), write, remove, …) keeps the body in,
-// and what is left out still goes to the engine, which sees the whole body.
-const INTERP_STDIN = /^\s*(\S*\/)?(python[\d.]*|node|ruby|perl|php)(\s+-)?\s*$/;
-const CODE_EFFECT = new RegExp([
-  String.raw`system|popen|spawn|exec|eval|passthru|proc_open|subprocess|child_process|\bpty\b|pexpect|ctypes|cffi|\bffi\b|open3|\bqx\b|%x|\x60|readpipe`,
-  String.raw`getattr|attrgetter|methodcaller|globals|\bvars\b|compile|importlib|runpy|inspect|pickle|marshal|\bFunction\s*\(|\bvm\b|\bsh\b|plumbum|invoke|fabric`,
-  String.raw`__(import|builtins|dict|subclasses|globals|getattribute|reduce|code|loader|spec)__|\bsend\b|\bdo\s*\(?\s*['"$]|require|\$\w+\s*\(|\bkill`,
-  String.raw`write|append|put_contents|\bopen\s*\([^)]*,(?!\s*['"]r[bt]?['"]\s*[,)])|\bopen\s*\(?\s*['"]\s*\||\bfile\s*=`,
-  String.raw`remove|unlink|rmtree|rmdir|rmSync|rename|os\.replace|shutil|chmod|\bfs\b|fileutils|\bFile\.`,
-].join("|"), "i");
+// `code`: also the program an interpreter reads from a heredoc (`python3 - <<'EOF'`) when all it does
+// is print literals, so shell text in it (print("rm -rf /")) takes no effect. Rules marked "shell"
+// read that view; the rest still read the body. Only the whole command `python3 - <<'EOF' … EOF`:
+// the interpreter is the first word (no ssh, docker, env, sudo, flags or assignments in front), a
+// bare name from PATH or one in a system directory or a version manager's shims (never ./x/python,
+// which could be anything), the delimiter is quoted, and nothing comes before or after it.
+// An allowlist, not a keyword list: every line is blank, a comment, or print, puts, echo or
+// console.log of string and number literals. A single-quoted string never interpolates; a
+// double-quoted one may not hold $ @ # { or a backtick (Ruby #{…}, Perl @{[…]}, PHP {$…}). No
+// import either: `python3 -` imports from the working directory first. Anything else keeps the
+// body in, and the engine sees the whole body either way.
+const INTERP_DIR = String.raw`(\/usr(\/local)?\/bin|\/bin|\/opt\/homebrew\/bin|(~|${homedir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})\/(\.pyenv\/shims|\.nvm\/versions\/node\/v[\d.]+\/bin))\/`;
+const INTERP_STDIN = new RegExp(String.raw`^\s*(${INTERP_DIR})?(python[\d.]*|node|ruby|perl|php)(\s+-)?\s*$`);
+const PRINT_LITERAL = String.raw`('([^'\\\n]|\\[^\n])*'|"([^"\\\n$@#{\x60]|\\[^\n])*"|-?\d+(\.\d+)?)`;
+const PRINT_ARGS = String.raw`${PRINT_LITERAL}(\s*[,+]\s*${PRINT_LITERAL})*`;
+const PRINT_ONLY = new RegExp(String.raw`^\s*((print|puts|echo|console\.log)(\s*\(\s*(${PRINT_ARGS})?\s*\)|\s+${PRINT_ARGS})\s*;?\s*((#|\/\/)[^\n]*)?|(#|\/\/)[^\n]*|<\?php)?\s*$`);
+const printOnly = body => body.split("\n").every(l => PRINT_ONLY.test(l));
 // A line scan with each terminator's next line found by a cursor, so a script full of `<<` (even
 // unterminated ones) stays linear.
 export function stripDataHeredocs(cmd, code = false) {
@@ -692,7 +958,7 @@ export function stripDataHeredocs(cmd, code = false) {
     if (list?.[c] !== undefined && !/\|/.test(after) &&   // `cat <<'EOF' | bash` runs the body
         ((quote && DATA_CONSUMER.test(last + " ")) ||
          (code && quote && INTERP_STDIN.test(before) && !after.trim() && lines.slice(0, i).every(l => !l.trim()) &&
-          lines.slice(list[c] + 1).every(l => !l.trim()) && !CODE_EFFECT.test(body())))) {
+          lines.slice(list[c] + 1).every(l => !l.trim()) && printOnly(body())))) {
       out.push(`${before}<<DATA${after}`);
       i = list[c];
     } else out.push(lines[i]);
@@ -934,14 +1200,26 @@ function scriptLines(body) {
   const expand = s => s.replace(/\$\{?(\w+)\}?/g, (v, name) => vars[name] ?? v);
   for (let pass = 0; pass < 3; pass++) for (const k in vars) vars[k] = expand(vars[k]);
   // and each line with the quoted parts of its words joined, as the shell joins them (m''ain)
-  const joined = l => { const j = joinQuotes(l); return j ? [l, j] : [l]; };
+  const joined = l => [...new Set([l, joinQuotes(l) ?? l, gitPlain(joinQuotes(l) ?? l)])];
   return {lines: lines.map(expand).flatMap(joined), skipped: lines.length < all.length};
 }
 
-// A directory with its own .git between the checkout and cwd (cwd included).
+// A directory with its own .git between the checkout and cwd (cwd included): its root, or null.
 function nestedCheckout(cwd) {
-  for (let d = resolve(cwd); d.startsWith(HERE + "/"); d = dirname(d)) if (existsSync(join(d, ".git"))) return true;
-  return false;
+  for (let d = resolve(cwd); d.startsWith(HERE + "/"); d = dirname(d)) if (existsSync(join(d, ".git"))) return d;
+  return null;
+}
+// Does the command stay in the nested checkout `root`, as far as its text shows? Not when it climbs
+// out (..), names the previous directory or the directory stack ($OLDPWD, cd -, popd, pushd ±N), or
+// changes to a directory this cannot resolve inside root (an expansion, ~, an absolute path elsewhere).
+function staysNested(command, cwd, root) {
+  const t = command.replace(/["'\\]/g, "");
+  if (/(^|[\s/=:])\.\.([\s/;&|)]|$)/.test(t) || /\b(OLDPWD|DIRSTACK)\b/.test(t)) return false;
+  for (const m of t.matchAll(/(?<![\w.\/-])(cd|pushd|popd|chdir)(?![\w.\/-])((?:\s+-[LPe@]+)*)(?:\s+--)?(?:\s+([^\s;&|<>()]+))?/g)) {
+    const d = m[3];
+    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/")) return false;
+  }
+  return true;
 }
 
 // A quoted part of a word: quotes with no space, operator, escape or expansion inside, next to other
@@ -953,14 +1231,26 @@ const joinQuotes = s => { const j = s.replace(QUOTED_PART, "$2$4"); return j !==
 // `timeout -k1 5 cat` as `timeout 5 cat` (readOnly accepts those spellings, so the rules must see
 // through them too). null when nothing changes.
 const TIMEOUT_OPTS = new RegExp(String.raw`\btimeout((\s+(-[fpv]+|-[ks]\s*[^\s-]\S*|--(foreground|preserve-status|verbose)|--(kill-after|signal)(=|\s+)[^\s-]\S*))+)(?=\s+[^\s-])`, "g");
+// git's global options (-C dir, -c k=v, --git-dir …, --no-pager, -P), quoted values too: `git -C "/my repo"
+// push` is `git push` to every git rule.
+const GIT_VALUE = String.raw`(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s;&|<>()'"])+`;
+const GIT_GLOBAL = new RegExp(String.raw`\bgit((?:\s+(?:-[cC]\s*${GIT_VALUE}|--(?:git-dir|work-tree|namespace|config-env|super-prefix|attr-source)(?:=|\s+)${GIT_VALUE}|` +
+  String.raw`--(?:exec-path|list-cmds)=${GIT_VALUE}|-[pP]|--(?:no-pager|paginate|bare|exec-path|no-replace-objects|no-lazy-fetch|no-optional-locks|no-advice|` +
+  String.raw`literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs)(?=\s)))+)(?=\s)`, "g");
+export const gitPlain = s => s.replace(GIT_GLOBAL, "git");
 const ruleSpelling = s => {
-  const v = (joinQuotes(s) ?? s).replace(/(^|[\s;&|(`]|\$\()\/(usr\/)?bin\/(?=[\w.-]+(\s|$))/g, "$1").replace(TIMEOUT_OPTS, "timeout");
+  const v = gitPlain((joinQuotes(s) ?? s).replace(/(^|[\s;&|(`]|\$\()\/(usr\/)?bin\/(?=[\w.-]+(\s|$))/g, "$1").replace(TIMEOUT_OPTS, "timeout"));
   return v !== s ? v : null;
 };
 const SEVERITY = {deny: 2, ask: 1};
 /** Everything decided without Jev, or null when Jev has to judge. A rule that fires on the command
  * as the rules know it (ruleSpelling) counts too; the more severe of the two rule outcomes wins. */
+// Over this size a command is not checked but asked about: the rules' work grows with it, and the
+// hook's timeout must not let an unchecked command through.
+const COMMAND_BYTES = 128 * 1024;
 export function precheck(command, cwd, env) {
+  if (command.length > COMMAND_BYTES)
+    return {outcome: "ask", rule: `command too large to check (over ${COMMAND_BYTES / 1024} KB)`, id: "command-size", source: "rule", policy_version: load("rules.json").version};
   const own = precheckAs(command, cwd, env), alt = ruleSpelling(command.replace(/\\\n/g, ""));
   const other = alt ? precheck(alt, cwd, env) : null;
   if (other?.source !== "rule") return own;
@@ -972,13 +1262,15 @@ function precheckAs(command, cwd, env) {
   command = command.replace(/\\\n/g, "");
   // Rules see the raw command (redaction could hide the very marker a rule looks for, such as
   // --secret-id=prod-db), minus heredoc bodies that are only data.
-  const haystack = [stripDataHeredocs(command),`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].join(" ");
+  const bare = stripDataHeredocs(command), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join(""), haystack = bare + ctx;
   const ruled = r => ({outcome: r.outcome, rule: r.rule, id: r.id, source: "rule", policy_version: rules.version});
   // Some rules must see reads too (printing an API key is a read).
-  const bare = stripDataHeredocs(command), ctx = haystack.slice(bare.length);
   const early = checkRules(haystack, {rules: rules.rules.filter(r => r.before_read_only)}, bare);
-  if (early) return ruled(early);
-  if (readOnly(command)) return {outcome: "pass", rule: "read-only", source: "read-only"};
+  if (early?.outcome === "deny") return ruled(early);
+  if (!early && readOnly(command)) return {outcome: "pass", rule: "read-only", source: "read-only"};
+  // An ask (an early rule, tamper) is held while the rules below run: a deny among them still wins.
+  let held = early ? ruled(early) : null;
+  const hold = r => { if (!held || (SEVERITY[r.outcome] ?? 0) > (SEVERITY[held.outcome] ?? 0)) held = r; };
   // Tamper is about what the command changes: a pipeline that only reads the gate's files or an
   // agent's settings (jq . ~/.claude/settings.json > /tmp/s.json) counts by its redirect targets alone.
   // Quotes and backslashes are dropped, as the shell drops them: ~/.claude/'settings.json' is the file.
@@ -987,23 +1279,26 @@ function precheckAs(command, cwd, env) {
   const ps = pipelines(command), writes = (ps ? writesView(ps, false, cwd) : `${bare} ; ${writesView(roughPipelines(bare), true, cwd)}`).replace(/["'\\]/g, "");
   // The checkout itself is protected wherever it was cloned, not only under a directory named reflex.
   // A git worktree or clone nested inside it is another checkout, unless the command climbs out (..).
-  const inRepo = cwd && (cwd + "/").startsWith(HERE + "/") && !(nestedCheckout(cwd) && !/(^|[\s/'"=:])\.\.([\s/'";&|)]|$)/.test(command));
-  if (writes.includes(HERE) || writes.includes(CONFIG.data) || writes.includes(dirname(USER_CONFIG_FILE)) ||
+  const nested = cwd && nestedCheckout(cwd), inRepo = cwd && (cwd + "/").startsWith(HERE + "/") && !(nested && staysNested(command, cwd, nested));
+  // ~ and $HOME are the home directory: ~/src/x/gate.mjs names the checkout wherever it was cloned
+  const home = writes.replace(/(^|[\s=:>])(~|\$HOME|\$\{HOME\})(?=\/|\s|$)/g, (m, p) => p + homedir());
+  if ([HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => writes.includes(p) || home.includes(p)) ||
       // an agent must not answer its own queue item, widen its own envelope or rewind the tree
       /\breflex\s+(setup|install|uninstall)\b/.test(command.replace(/["'\\]/g, "")) ||
       /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(command.replace(/["'\\]/g, "")) ||
       (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
-    return ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"});
+    hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
   if (/\bsuggest\b[^\n;&|]*\s--write\b/.test(command.replace(/["'\\]/g, "")))
-    return ruled({outcome: "ask", rule: "widens the fast lane (reflex suggest --write)", id: "tamper"});
+    hold(ruled({outcome: "ask", rule: "widens the fast lane (reflex suggest --write)", id: "tamper"}));
   const on = (r, what) => (r.applies_to ?? ["command"]).includes(what);
   // "shell" rules read commands: not the program of an interpreter heredoc that cannot run or write
   // anything, and nothing at all when every pipeline is inert and writes only notes.
   const code = onlyNotes(ps) ? null : stripDataHeredocs(command, true);
   const views = {shell: code === null ? false : [code + ctx, code], writes: [writes + ctx, writes]};
   const hit = checkRules(haystack, {rules: rules.rules.filter(r => !r.before_read_only && on(r, "command"))}, bare, views);
-  if (hit) return ruled(hit);
+  if (hit) hold(ruled(hit));
+  if (held) return held;
   // The scripts it runs, before the fast lane: `npm test` is only as safe as the test script.
   const perLine = {rules: rules.rules.filter(r => on(r, "script") && !r.whole_script)};
   const whole = {rules: rules.rules.filter(r => on(r, "script") && r.whole_script)};
@@ -1362,7 +1657,7 @@ export function taint(session_id, event = null, fields = {}) {
 // The command alone: a cwd like /tmp/http-client or a branch named ssh-keys is not egress.
 export function taintedRule(command) {
   const rules = load("rules.json"), bare = stripDataHeredocs(command);
-  const hit = checkRules(bare, {rules: rules.tainted ?? []}, bare);
+  const plain = gitPlain(bare), hit = checkRules(bare, {rules: rules.tainted ?? []}, bare) ?? checkRules(plain, {rules: rules.tainted ?? []}, plain);
   return hit && {outcome: hit.outcome, rule: hit.rule, id: hit.id, source: "taint", policy_version: rules.version};
 }
 
@@ -1714,6 +2009,25 @@ async function selfcheck() {
   ok(!readOnly(`echo 'unbalanced ; rm -rf x`), "unbalanced quotes are not trusted");
   ok(readOnly("git branch -a") && readOnly("git remote -v") && readOnly("sed -n '1,20p' f") && readOnly("sort f | uniq -c"), "reads still pass");
   ok(readOnly("S=/tmp/x; ls $S") && readOnly("for f in a b; do cat $f; done"), "safe variables");
+  // review of #32 and #35: words as the shell passes them, expansions in option position, sed as sed
+  // parses it, gawk options that write, docker compose config -o, journalctl --cursor, ssh loops
+  for (const cmd of ["sed -\\i s/a/b/ /etc/hosts", "gh api -\\X DELETE repos/o/r", "nvidia-smi -\\pm 1", "journalctl --\\rotate", "gh api $'\\x2dX' DELETE r",
+    "gh api $'\\055X' DELETE r", "ssh prod 'sed -\\i s/a/b/ /etc/hosts'", "X=-i; sed $X s/x/y/ f", "sed $(echo -i) s/a/b/ f", "gh api $(echo -X) DELETE r",
+    "o=--method=DELETE; gh api $o repos/o/r", "for x in -i; do sed $x s/a/b/ f; done", "sed -n p $1", "sed -n p ${f:-x}", "read f; sed -n p $f", "sed -n p -$f",
+    "find . $X", "sort $X f", "git log $X", "printf -v PATH /tmp", "sed '1e reboot' f", "sed -n '$e id' f", "sed 's/a/b/e' f", "sed '1etouch x' f",
+    "sed -n '1w/Users/me/.claude/settings.json' x.json", "sed -n '$w/path' f", "sed 's/a/b/w/path' f", "sed -n 'W out' f", "sed '1{w out\n}' f", "sed '/x/ !e' f",
+    "sed 's/a/b/;e id' f", "sed '1r x;w y' f", "sed 'Q;w x' f", "sed $'1w x' f", "sed \"$S\" f", "sed 's/a/b/' f -i", "sed -I '' s/a/b/ f", "sed --in-pl s/a/b/ f",
+    "sed -e p -e '1W out' f", "awk '@include \"x\"' f", "awk --profile=/tmp/p '{print}' f", "awk -p/tmp/p '{print}' f", "awk --pretty-print=o '{print}' f",
+    "awk -oout '{print}' f", "awk --dump-variables=d '{print}' f", "awk -ddump '{print}' f", "awk --prof '{}' f", "awk -D '{}' f",
+    "docker compose config --output f", "docker compose config -o f", "docker compose config -qo f",
+    "for h in a; do ssh $h 'uptime'; done | cat; ssh $h 'uptime'", "ssh $h 'uptime'; for h in a; do ssh $h 'uptime'; done"])
+    ok(!readOnly(cmd), `not read-only: ${cmd}`);
+  for (const cmd of ["sed -n '/x/,/y/p' f", "sed -E 's/(a|b)+/x/2' f", "sed -e 's/a/b/' -e '/^#/d' f", "sed -n '/start/{p;q}' f", "sed 's|/usr|/opt|g' f",
+    "sed '1i\\\nheader' f", "sed '$a footer' f", "sed = f | sed 'N;s/\\n/ /'", "sed --quiet -e 's/a/b/p' f", "sed 'y/abc/xyz/' f", "sed ':a;N;$!ba;s/\\n/ /g' f",
+    "sed -n '5~2p' f", "sed '0,/re/d' f", "sed -n '/a/,+3p' f", "sed 's/w/e/' f", "sed '/we/p' f", "for f in a.txt b.txt; do sed -n 1p $f; done",
+    "F=notes.txt; sed -n 1p \"$F\"", "awk -v x=1 '{print x}' f", "journalctl --cursor=abc -n 5", "docker compose config", "docker compose config --services",
+    "for h in a; do ssh $h 'uptime'; done; for h in b; do ssh $h 'uptime'; done", "printf '%s\\n' x"])
+    ok(readOnly(cmd), `read-only: ${cmd}`);
 
   // redaction
   const r = redact("curl -H 'Authorization: Bearer abc.def' https://u:hunter2@x.io " +
@@ -1755,9 +2069,9 @@ async function selfcheck() {
     ok(rule(c) === null, `not main: ${c}`);
   for (const c of ["git push origin --delete master", "git push origin +main", "git push -f origin main", "git push --force-with-lease origin main", "git push -d origin main",
     "git push origin HEAD:main --force", "git push origin +HEAD:refs/heads/main", "git push --force origin HEAD:refs/heads/master", "git push -f origin 'main'",
-    "git push origin ':main'", `git push origin "+main"`, "git -C /repo push --force origin main", "git -c core.x=y push -f origin master", "git --no-pager push -f origin main:main"])
+    "git push origin ':main'", `git push origin "+main"`])
     ok(rule(c) === "force-push-main", `force push or delete main: ${c}`);
-  ok(rule("git -C /repo push --mirror") === "push-mirror" && rule("git push -f", "git_branch=feat/main") === null, "git -C push --mirror; a branch named feat/main");
+  ok(rule("git push -f", "git_branch=feat/main") === null, "a branch named feat/main");
   ok(rule("echo $(rm -rf ~)") === "rm-root" && rule("x=`rm -rf /`") === "rm-root" && rule("bash -c 'rm -rf ~'") === "rm-root", "rm-root inside $(), backticks, quotes");
   ok(rule("rm -rf -- /") === "rm-root" && rule('rm --recursive --force "$HOME"') === "rm-root" && rule("rm -rf ${HOME}") === "rm-root", "rm-root variants");
   ok(rule("aws s3 rm s3://b --recursive", "aws_profile=prod01") === "prod-destroy" && rule("terraform state rm x", "cwd=/envs/live") === "prod-destroy", "prod variants");
@@ -1794,9 +2108,10 @@ async function selfcheck() {
   // replay: shell text that is data (a note, an interpreter's print, a command being judged) is not a command
   const pw = (c, cwd = "/w") => precheck(c, cwd, {})?.id ?? null;
   for (const c of ["touch MEMORY.md && echo '- trash, not rm / unlink' >> MEMORY.md", "echo 'never git push --force origin main' >> MEMORY.md",
-    "printf '%s\\n' 'kubectl delete ns x --context prod' >> notes.txt", "reflex check 'rm -rf /'", "python3 - <<'EOF'\nimport json\nprint('rm -rf /')\nEOF",
-    "node - <<'EOF'\nconsole.log('git push --force origin main')\nEOF", ".venv/bin/python <<'EOF'\nprint('rm -rf ~')\nEOF",
-    "python3 - <<'EOF'\nd = json.load(open('prod.json'))\nprint(d['delete from'])\nEOF"]) ok(pw(c) === null, `data, not a command: ${c}`);
+    "printf '%s\\n' 'kubectl delete ns x --context prod' >> notes.txt", "reflex check 'rm -rf /'", "python3 - <<'EOF'\nprint('rm -rf /')\nEOF",
+    "node - <<'EOF'\nconsole.log('git push --force origin main')\nEOF", "/usr/bin/python3 <<'EOF'\nprint('rm -rf ~')\nEOF",
+    "python3 - <<'EOF'\n# a note\nprint(\"delete from t\", 1)\nprint()\nEOF", "ruby - <<'EOF'\nputs 'rm -rf ~'\nEOF", "perl - <<'EOF'\nprint 'rm -rf ~';\nEOF",
+    `${homedir()}/.pyenv/shims/python3 <<'EOF'\nprint('rm -rf ~')\nEOF`]) ok(pw(c) === null, `data, not a command: ${c}`);
   for (const [c, id] of [["echo 'rm -rf ~' >> ~/.zshrc", "rm-root"], ["echo 'rm -rf ~' > run.sh && bash run.sh", "rm-root"], ["echo 'rm -rf ~' | sh", "rm-root"],
     ["echo 'rm -rf ~' >> notes.md; rm -rf ~", "rm-root"], ["echo 'rm -rf ~' >> notes.md & rm -rf ~", "rm-root"], ["reflex check x; rm -rf /", "rm-root"],
     ["echo x >> notes.md && git push -f origin main", "force-push-main"], ["python3 - <<'EOF'\nimport os\nos.system('rm -rf /')\nEOF", "rm-root"],
@@ -1816,6 +2131,27 @@ async function selfcheck() {
     ["B=main; git push -f origin $B", "force-push-main"], ["git push -f origin `echo main`", "force-push-main"],
     ["git push --force-with-lease=main:abc123 origin HEAD", "force-push-main"], ["git -P push -f origin main", "force-push-main"]])
     ok(pw(c) === id, `still a command: ${c}`);
+  // review of #35: the force-push-main ref ends at a redirect, comment, group or backtick; a push
+  // option is not a ref; git's global options are dropped once; interpreter heredocs are data only
+  // when they print literals, from an interpreter on PATH or in a system directory
+  for (const c of ["git push --force origin main>/tmp/log", "git push --force origin main</dev/null", "git push -f origin main#x", "git push -f origin main`true`",
+    "{ git push -f origin main;}", `git -C "/my repo" push -f origin main`, `git -c "user.name=a b" push -f origin main`, "git -C /repo push --force origin main",
+    "git -c core.x=y push -f origin master", "git --no-pager push -f origin main:main", "git --git-dir=/r/.git --work-tree /r push -f origin main"])
+    ok(pw(c) === "force-push-main", `force push main: ${c}`);
+  ok(pw("git -C /repo push --mirror") === "push-mirror" && pw("git -P --no-pager push origin --mirror") === "push-mirror", "git global options, push --mirror");
+  for (const c of ["git push -f -o merge_request.target=main origin feat/x", "git push -f --push-option=target=main origin feat/x", "git push -f origin feat/x -o ci.skip=main"])
+    ok(pw(c) === null, `a push option is not a ref: ${c}`);
+  const big = "git push -f origin " + "main>".repeat(40000), t1 = Date.now();
+  ok(pw(big) === "command-size" && pw("git push " + "main ".repeat(20000)) === null && pw("git push -f origin " + "main>".repeat(25000)) === "force-push-main" && Date.now() - t1 < 1500, "a huge command asks, quickly");
+  for (const c of ["python3 - <<'EOF'\nimport localmod\nprint('rm -rf ~')\nEOF", "/tmp/x/python - <<'EOF'\nprint('rm -rf ~')\nEOF",
+    "./python - <<'EOF'\nprint('rm -rf ~')\nEOF", "node - <<'EOF'\nimport('child_' + 'process').then(m => m['ex'+'ecSync']('rm -rf ~'))\nEOF",
+    "ruby - <<'EOF'\nKernel.__send__(:sys, 'rm -rf ~')\nEOF", "perl - <<'EOF'\nopen my $f, '-|', 'rm -rf ~';\nEOF", "python3 - <<'EOF'\nlocals()['x']('rm -rf ~')\nEOF",
+    "ruby - <<'EOF'\nputs \"#{`rm -rf ~`}\"\nEOF", "perl - <<'EOF'\nprint \"@{[ `rm -rf ~` ]}\";\nEOF", "python3 - <<'EOF'\nprint(f\"{__import__('os').system('rm -rf ~')}\")\nEOF",
+    "node - <<'EOF'\nconsole.log(`${require('child_process').execSync('rm -rf ~')}`)\nEOF"])
+    ok(pw(c) === "rm-root", `interpreter heredoc that is not print-only: ${c}`);
+  for (const c of ["sed 's/^/x/w/Users/me/.zshrc' notes.txt", "awk --profile=/Users/me/.zshrc '{print}' f", "echo x >> ~/.bashrc", "cp /tmp/p ~/.profile"])
+    ok(pw(c) === "shell-startup", `shell startup file: ${c}`);
+  for (const c of ["grep alias ~/.zshrc > /tmp/x", "cat ~/.zshrc", "vim ~/.profile.d/x"]) ok(pw(c) !== "shell-startup", `not a shell startup write: ${c}`);
   // tamper is what a command changes: reading agent settings is not tamper, writing them is
   for (const c of ["jq . ~/.claude/settings.json > /tmp/s.json", "grep -c reflex ~/.claude/settings.json > /tmp/n; echo done",
     "gh api -X POST repos/ursuciprian/reflex/pulls -f title=x", "gh pr create --repo ursuciprian/reflex --title x", "git clone https://github.com/ursuciprian/reflex /tmp/r"])
@@ -1895,6 +2231,15 @@ async function selfcheck() {
        "checkout: git add and commit are not tamper, an edit is");
     ok(pw("sed -i '' s/a/b/ gate.mjs", nested) !== "tamper" && pw("sed -i '' s/a/b/ ../gate.mjs", nested) === "tamper" &&
        pw(`sed -i '' s/a/b/ ${join(HERE, "gate.mjs")}`, nested) === "tamper", "checkout: a nested worktree is not the gate, unless the command reaches out");
+    // review of #35: a cd the tracker cannot resolve inside the nested checkout restores the checkout view
+    mkdirSync(join(nested, "sub"), {recursive: true});
+    for (const c of ["cd - && sed -i '' s/a/b/ gate.mjs", `cd "$(dirname "$PWD")" && sed -i '' s/a/b/ gate.mjs`, "pushd /tmp && popd && sed -i '' s/a/b/ gate.mjs",
+      "cd $OLDPWD && sed -i '' s/a/b/ gate.mjs", "popd; sed -i '' s/a/b/ gate.mjs", `cd ${HERE} && sed -i '' s/a/b/ gate.mjs`, "cd ~ && sed -i '' s/a/b/ gate.mjs",
+      "cd && sed -i '' s/a/b/ gate.mjs", "pushd +1; sed -i '' s/a/b/ gate.mjs", `sed -i '' s/a/b/ ${join(HERE, "gate.mjs").replace(homedir(), "~")}`])
+      ok(pw(c, nested) === "tamper", `nested checkout, the command leaves it: ${c}`);
+    for (const c of ["cd sub && sed -i '' s/a/b/ ../gate.mjs"]) ok(pw(c, nested) === "tamper", `nested checkout, climbs out: ${c}`);
+    for (const c of ["cd sub && sed -i '' s/a/b/ gate.mjs", "sed -i '' s/a/b/ setup/tool-gate/rules.json"])
+      ok(pw(c, nested) !== "tamper", `nested checkout, stays inside: ${c}`);
   } finally { rmSync(nested, {recursive: true, force: true}); }
 
   // policy

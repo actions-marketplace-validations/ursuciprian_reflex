@@ -31,7 +31,7 @@ import {spawn, spawnSync} from "node:child_process";
 import {homedir, tmpdir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
-import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, checkRules, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
+import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, checkRules, gitPlain, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
         stripDataHeredocs, taint, tainted, taintedRule} from "./gate.mjs";
 import {judge2, stubServer, template} from "./judge2.mjs";
 import {hitsOf, terms} from "./context.mjs";
@@ -51,7 +51,9 @@ export function alwaysHuman(j, call, env, {system1 = false} = {}) {
   if (!system1 && j.gate && esc.gates.includes(j.gate)) return {id: `gate:${j.gate}`, rule: `policy gate ${j.gate}`};
   const bare = stripDataHeredocs(String(call.command ?? ""));
   const haystack = [bare, `cwd=${call.cwd ?? ""}`, ...Object.entries(env ?? {}).map(([k, v]) => `${k}=${v}`)].join(" ");
-  const hit = checkRules(haystack, {rules: esc.rules.filter(r => !system1 || r.system1 !== false)}, bare);
+  // and with git's global options dropped (git -C x push is git push)
+  const list = {rules: esc.rules.filter(r => !system1 || r.system1 !== false)}, plain = gitPlain(bare);
+  const hit = checkRules(haystack, list, bare) ?? checkRules(gitPlain(haystack), list, plain);
   return hit && {id: hit.id, rule: hit.rule};
 }
 
@@ -644,7 +646,7 @@ async function selfcheck() {
       ["tainted", "prettier --write src/k6", {session_id: "T"}, /prompt injection/], ["no confidence", "prettier --write src/k7", {confidence: null}, /below 0\.9/],
       ["too long", `echo start; ${"true; ".repeat(80)}echo x >> notes.txt`, {}, /too long/], ["case", "Kubectl rollout restart deploy/api -n dev", {}, /outside this machine/],
       ["quotes", "ku''bectl rollout restart deploy/api -n dev", {}, /outside this machine/], ["publish verb", "cargo publish", {}, /outside this machine/],
-      ["install", "go install example.dev/tool@latest", {}, /outside this machine/], ["home", "echo 'alias k=kubectl' >> ~/.zshrc", {}, /outside/],
+      ["install", "go install example.dev/tool@latest", {}, /outside this machine/], ["home", "echo 'k=kubectl' >> ~/.toolrc", {}, /outside/],
       ["global", "git config --global core.hooksPath hooks", {}, /outside/], ["absolute", "cp build/x /etc/x", {}, /outside the working directory/]]) {
       const d = await K(command, extra);
       ok(d.effective === "pass" && why.test(d.reason), `keyless: ${what} -> pass, not allow (${d.effective}: ${d.reason.slice(0, 100)})`);
