@@ -208,18 +208,20 @@ export const resetBreaker = () => { breakerState = undefined; };
 // The runaway guard: watches each agent session as it runs and stops it when it is going wrong,
 // before a human would notice. Four signals over a short sliding window of the session's commands:
 //   loop        the same command (judge2 template: ids, hashes and timestamps as slots) ran
-//               loop.repeats times, or failed loop.failures times, in loop.window_minutes
-//   storm       storm.denies commands were denied (by Reflex, System 2, a human in the queue or the
-//               agent's own permission check) in storm.window_minutes: the agent is probing the gate
+//               loop.repeats times (loop.read_only_repeats for a read-only one: polling is work), or
+//               failed loop.failures times, in loop.window_minutes
+//   storm       storm.denies commands were denied (by Reflex, System 2 or the agent's own permission
+//               check; not a park) in storm.window_minutes: the agent is probing the gate
 //   burn        burn.per_minute commands in the last minute, or burn.jev_calls Jev answers or
 //               burn.system2_calls System 2 calls in the session
-//   escalation  the mean risk of the last escalation.steps commands (Jev's blast score, 0 to 3;
-//               keyless: a rule deny 3, a rule ask 2, the fast lane 1) reached escalation.at and rose
+//   escalation  the mean risk of the last escalation.steps commands that were not denied (Jev's blast
+//               score, 0 to 3; keyless: a rule ask 2, the fast lane 1) reached escalation.at and rose
 //               by escalation.rise over the steps before them
-// A trip is a deny with the reason, in enforce mode; shadow only logs it. Loop and burn stop any
-// command; storm and escalation stop what is not read-only (reading is how the agent finds its way
-// out). The guard's own denials do not count, so a stop ends by itself once the window has moved
-// on; a human can lift it sooner (reflex queue approve, when the queue is on, or reflex runaway reset).
+// A trip is a deny with the reason, in enforce mode; shadow only logs it. A loop and the rate stop
+// any command; storm, spend and escalation stop what is not read-only (reading is how the agent
+// finds its way out). The guard's own denials do not count, so a window stop ends by itself once
+// the window has moved on; the spend caps hold for the session. A human can lift a stop sooner:
+// reflex queue approve (queue on; also restarts the spend counts) or reflex runaway reset.
 // It never allows anything and makes no API call. State: one small file per session in
 // <data>/runaway, at most RUNAWAY_KEEP events inside the longest window, so each command costs a
 // bounded read and write. ponytail: no lock; two parallel hooks of one session can drop an event.
@@ -250,18 +252,18 @@ export function runawayCheck(s, ev, cfg = CONFIG.runaway) {
   const same = within(loop.window_minutes).filter(e => e.k === ev.k), failed = same.filter(e => e.f);
   if (failed.length >= loop.failures)
     return {signal: "loop", reason: `the same failing command ran ${failed.length} times in ${span(failed)}; change approach or ask the user, do not retry it as is`};
-  if (same.length >= loop.repeats)
+  if (same.length >= (ev.ro ? loop.read_only_repeats : loop.repeats))
     return {signal: "loop", reason: `the same command ran ${same.length} times in ${span(same)}; this looks like a loop. Change approach or ask the user`};
   const minute = within(1);
   if (minute.length >= burn.per_minute)
     return {signal: "burn", reason: `${minute.length} commands in the last minute (cap ${burn.per_minute}); slow down, or ask the user if this much is needed`};
+  if (ev.ro) return null;
   if ((s.jev ?? 0) >= burn.jev_calls) return {signal: "burn", reason: `this session used ${s.jev} Jev answers (cap ${burn.jev_calls}); ask the user before going on`};
   if ((s.s2 ?? 0) >= burn.system2_calls) return {signal: "burn", reason: `this session used ${s.s2} System 2 calls (cap ${burn.system2_calls}); ask the user before going on`};
-  if (ev.ro) return null;
   const denied = within(storm.window_minutes).filter(e => e.d);
   if (denied.length >= storm.denies)
     return {signal: "storm", reason: `${denied.length} commands were denied in ${span(denied)}. Do not look for another way around the gate; stop and ask the user how to proceed`};
-  const rs = [...within(esc.window_minutes), ev].filter(e => e.r != null && !e.ro).map(e => e.r).slice(-2 * esc.steps);
+  const rs = [...within(esc.window_minutes), ev].filter(e => e.r != null && !e.ro && !e.d).map(e => e.r).slice(-2 * esc.steps);
   if (rs.length === 2 * esc.steps) {
     const mean = xs => xs.reduce((a, b) => a + b, 0) / xs.length, before = mean(rs.slice(0, esc.steps)), last = mean(rs.slice(esc.steps));
     if (last >= esc.at && last - before >= esc.rise)
@@ -270,20 +272,23 @@ export function runawayCheck(s, ev, cfg = CONFIG.runaway) {
   return null;
 }
 /** The hook path, once per command: record it in the session's window and say whether to stop it. Never throws. */
-export function runaway(call, quick) {
+export function runaway(call, quick, {resumed = false} = {}) {
   const cfg = CONFIG.runaway;
   if (!cfg.enabled || CONFIG.mode === "off" || !call.session_id || !call.command) return null;
   try {
     const key = runKey(call), now = Date.now(), s = readRunaway(key) ?? {agent: call.agent ?? null, ev: [], jev: 0, s2: 0, trips: []};
-    const ev = runawayEvent(call, quick, now), hit = runawayCheck(s, ev, cfg), dry = CONFIG.mode !== "enforce";
+    const ev = runawayEvent(call, quick, now), dry = CONFIG.mode !== "enforce";
+    // a human lifted the stop (queue approval): this command is recorded, not checked, and the spend counts start over
+    if (resumed) Object.assign(s, {jev: 0, s2: 0});
+    const hit = resumed ? null : runawayCheck(s, ev, cfg);
     let fresh = false;
     if (hit) {
       // one trip per episode: the same signal again within five minutes is the same stop
-      const last = s.trips.findLast(t => t.signal === hit.signal);
+      const episode = hit.signal === "loop" ? `loop:${ev.k}` : hit.signal, last = s.trips.findLast(t => (t.episode ?? t.signal) === episode);
       fresh = !(last && now - last.last < 5 * 60e3);
-      if (fresh) s.trips = [...s.trips, {t: now, last: now, signal: hit.signal, reason: hit.reason, dry, n: 1}].slice(-20);
+      if (fresh) s.trips = [...s.trips, {t: now, last: now, signal: hit.signal, episode, reason: hit.reason, dry, n: 1}].slice(-20);
       else Object.assign(last, {last: now, n: last.n + 1, reason: hit.reason});
-      if (!dry) ev.g = 1;
+      if (!dry && !(quick?.source === "rule" && quick.outcome === "deny")) ev.g = 1;   // a rule deny keeps its own reason
     }
     s.ev = [...s.ev.filter(e => now - e.t < horizon(cfg)), ev].slice(-RUNAWAY_KEEP);
     s.session = String(key).slice(0, 160);
@@ -297,7 +302,8 @@ export function runawayNote(call, j, effective) {
   try {
     const key = runKey(call), s = readRunaway(key);
     if (!s) return;
-    const k = sha(template(call.command)), e = s.ev.findLast(x => call.call_id ? x.id === String(call.call_id) : x.k === k);
+    // without a call id, only the command just recorded can be this one
+    const k = sha(template(call.command)), e = call.call_id ? s.ev.findLast(x => x.id === String(call.call_id)) : s.ev.at(-1)?.k === k && !s.ev.at(-1).id ? s.ev.at(-1) : null;
     const out = CONFIG.mode === "enforce" ? effective : j.outcome;   // shadow: what enforce would do
     if (e) {
       // Codex cannot ask: an ask is a deny there (keyless "not covered" aside: that is every other
@@ -326,6 +332,8 @@ export function runawayMark(ev) {
 export function runawayTrips(since = 0) {
   let names = [];
   try { names = readdirSync(runDir()).filter(n => /^[0-9a-f]{12}\.json$/.test(n)); } catch { /* none yet */ }
+  // a session idle for a week has nothing left in any window
+  names = names.filter(n => { try { if (Date.now() - statSync(join(runDir(), n)).mtimeMs < 7 * 864e5) return true; rmSync(join(runDir(), n), {force: true}); } catch { /* gone */ } return false; });
   return names.flatMap(n => { const s = readJson(join(runDir(), n)) ?? {}; return (s.trips ?? []).filter(t => t.last >= since).map(t => ({...t, session: s.session, agent: s.agent})); })
     .sort((a, b) => b.last - a.last);
 }
@@ -406,6 +414,9 @@ function notify(item) {
   } catch { /* a notification must not change a decision */ }
 }
 export const pendingFor = call => { const it = readItem(`q-${queueKey(call).slice(0, 10)}`); return it?.key === queueKey(call) && it.status === "pending" ? it : null; };
+// A runaway stop is parked under its own key: approving it lifts the guard once and is never an
+// approval of the command itself, and it never collides with the command's own queue item.
+export const runawayCall = call => ({...call, session_id: `${call.session_id ?? ""}#runaway`});
 /** A human's answer for this exact call, or null. An approval is used once. */
 export function queueAnswer(call) {
   const key = queueKey(call), id = `q-${key.slice(0, 10)}`, it = readItem(id);
@@ -842,23 +853,35 @@ async function runawaySelfcheck(ok, scratch) {
   const cfg = runawaySettings({}), min = 60e3, t0 = Date.parse("2026-09-01T10:00:00Z");
   const RO = {outcome: "pass", source: "read-only"}, LOCAL = {outcome: "ask", source: "local"}, FAST = {outcome: "pass", source: "fast-lane"};
   const run = items => runawayReplay(items.map((x, i) => ({session: "R", agent: "claude", j: LOCAL, ...x, ts: t0 + x.at})), cfg);
-  const failing = [...Array(7)].map((_, i) => ({at: i * 30e3, command: "npm test", failed: true}));
-  ok(run(failing).by.loop === 1 && run(failing.slice(0, 5)).stopped === 0, "runaway: a test that keeps failing is stopped at the sixth run, not before");
+  const failing = [...Array(9)].map((_, i) => ({at: i * 20e3, command: "npm test", failed: true}));
+  ok(run(failing).by.loop === 1 && run(failing.slice(0, 8)).stopped === 0, "runaway: a test that keeps failing, rerun at once, is stopped at the ninth run, not before");
+  // a fast TDD cycle (edit, run, fail, 45 s apart) is work, not a loop
+  ok(run([...Array(12)].map((_, i) => ({at: i * 45e3, command: "pytest tests/test_parser.py -x", failed: i < 11}))).stopped === 0, "runaway: a 45-second TDD cycle does not trip");
   ok(run([...Array(12)].map((_, i) => ({at: i * 20e3, command: "curl -s https://api.example.dev/v1/jobs/42"}))).by.loop === 1, "runaway: a retry loop hammering an API");
-  ok(run([...Array(6)].map((_, i) => ({at: i * 40e3, command: "git push origin feat/x", failed: true, j: FAST}))).by.loop === 1, "runaway: git push rejected again and again");
-  ok(run([...Array(12)].map((_, i) => ({at: i * 15e3, command: "true", j: RO}))).by.loop === 1, "runaway: a spin loop of a read-only no-op is a loop too");
-  const s = {ev: failing.slice(0, 5).map(x => ({t: t0 + x.at, k: runawayEvent({command: x.command}).k, f: 1}))};
-  ok(/^the same failing command ran 5 times in 3 minutes; change approach or ask the user/.test(runawayCheck(s, runawayEvent({command: "npm test"}, LOCAL, t0 + 150e3), cfg)?.reason ?? ""),
+  ok(run([...Array(10)].map((_, i) => ({at: i * 25e3, command: "git push origin feat/x", failed: true, j: FAST}))).by.loop === 1, "runaway: git push rejected again and again");
+  ok(run([...Array(22)].map((_, i) => ({at: i * 10e3, command: "true", j: RO}))).by.loop === 1, "runaway: a spin loop of a read-only no-op is a loop too");
+  // polling CI or git status every 25 s is normal work: a read-only command has a higher bar
+  ok(run([...Array(12)].flatMap((_, i) => [{at: i * 25e3, command: "gh pr checks 41", j: RO}, {at: i * 25e3 + 5e3, command: "git status", j: RO}])).stopped === 0,
+     "runaway: polling with read-only commands does not trip");
+  const s = {ev: failing.slice(0, 8).map(x => ({t: t0 + x.at, k: runawayEvent({command: x.command}).k, f: 1}))};
+  ok(/^the same failing command ran 8 times in 3 minutes; change approach or ask the user/.test(runawayCheck(s, runawayEvent({command: "npm test"}, LOCAL, t0 + 170e3), cfg)?.reason ?? ""),
      "runaway: the reason says what happened and what to do");
   const storm = [...Array(9)].map((_, i) => ({at: i * 20e3, command: `cat ~/.aws/credentials-${i}`, j: {outcome: "deny", source: "rule"}}));
   ok(run(storm).by.storm === 1, "runaway: a denial storm (the agent probing the gate) is stopped");
   ok(run([...storm.slice(0, 8), {at: 170e3, command: "git status", j: RO}]).stopped === 0, "runaway: a storm does not stop a read-only command");
   ok(run([...Array(55)].map((_, i) => ({at: i * 1000, command: `node scripts/step-${i}.mjs`}))).by.burn === 1, "runaway: burn rate (commands per minute)");
   ok(runawayCheck({ev: [], jev: cfg.burn.jev_calls}, runawayEvent({command: "x"}), cfg)?.signal === "burn" &&
-     runawayCheck({ev: [], s2: cfg.burn.system2_calls}, runawayEvent({command: "x"}), cfg)?.signal === "burn", "runaway: Jev and System 2 spend per session");
+     runawayCheck({ev: [], s2: cfg.burn.system2_calls}, runawayEvent({command: "x"}), cfg)?.signal === "burn" &&
+     runawayCheck({ev: [], jev: cfg.burn.jev_calls}, runawayEvent({command: "git status"}, RO), cfg) === null, "runaway: Jev and System 2 spend per session; reading still works");
   const blast = b => ({outcome: "pass", source: "jev", answers: {blast: {score: b}}});
   const esc = [0.5, 0.8, 0.6, 0.9, 2.4, 2.8, 2.9, 3, 3].map((b, i) => ({at: i * 60e3, command: `deploy-step ${i}`, j: blast(b)}));
   ok(run(esc).by.escalation === 1 && run(esc.map(x => ({...x, j: blast(0.9)}))).stopped === 0, "runaway: rising blast within a session is stopped; flat risk is not");
+  // two denied commands and two secret-read asks after fast-lane work: denials are the storm's, not a climb
+  const denied = [...Array(4)].map((_, i) => ({at: i * 30e3, command: `git commit -m s${i}`, j: FAST}))
+    .concat([{at: 130e3, command: "rm -rf /", j: {outcome: "deny", source: "rule"}}, {at: 140e3, command: "rm -rf ~", j: {outcome: "deny", source: "rule"}},
+      {at: 150e3, command: "cat .env", j: {outcome: "ask", source: "rule"}}, {at: 160e3, command: "cat .env.local", j: {outcome: "ask", source: "rule"}},
+      {at: 170e3, command: "git commit -m next", j: FAST}]);
+  ok(run(denied).stopped === 0, "runaway: denied commands do not count as a climb in risk");
   // A long, busy, healthy session must not trip: two hours of a test-fix cycle (a failing test every
   // two to four minutes, the files edited in between), searches, diffs, commits, a parallel burst of
   // reads, one push, and the odd rule ask.
@@ -880,11 +903,11 @@ async function runawaySelfcheck(ok, scratch) {
   Object.assign(CONFIG, {engine: "local", mode: "enforce", runaway: runawaySettings({}), judge: {...CONFIG.judge, enabled: false}, queue: {...CONFIG.queue, enabled: true}});
   const G = (command, extra = {}) => decide({agent: "claude-code", command, cwd: scratch, session_id: "RG", call_id: `c${Math.random()}`, ...extra});
   try {
-    for (let i = 0; i < 10; i++) await G("sleep 1");
+    for (let i = 0; i < 20; i++) await G("sleep 1");
     const stopped = await G("sleep 1");
     const row = JSON.parse(readFileSync(join(CONFIG.data, "trace.jsonl"), "utf8").trim().split("\n").at(-1));
     const id = /Parked for the user as (q-[0-9a-f]{10})/.exec(stopped.reason)?.[1];
-    ok(stopped.effective === "deny" && stopped.source === "runaway" && /^reflex \(runaway\): stopped: the same command ran 10 times/.test(stopped.reason) &&
+    ok(stopped.effective === "deny" && stopped.source === "runaway" && /^reflex \(runaway\): stopped: the same command ran 20 times/.test(stopped.reason) &&
        row.source === "runaway" && row.runaway?.signal === "loop" && readItem(id)?.class === "runaway", `runaway: enforce denies with the reason, traced and parked (${stopped.reason})`);
     ok((await G("sleep 1")).effective === "deny" && listItems().filter(i => i.class === "runaway").length === 1, "runaway: a stop stays while the loop is in the window; one queue item per stop");
     ok((await G("ls -la")).effective === "pass", "runaway: a loop stop is about that command only");
@@ -892,26 +915,53 @@ async function runawaySelfcheck(ok, scratch) {
     const lifted = await decide({agent: "claude-code", command: "sleep 1", cwd: scratch, session_id: "RG", call_id: "c-lifted"});
     ok(lifted.effective === "pass" && lifted.source === "read-only" && readItem(id).status === "used", `runaway: a human's approval lifts the stop once; the gate still judges it (${lifted.source})`);
     ok((await G("sleep 1")).effective === "deny", "runaway: the approval is used once");
+    // a read-only command never consumes another kind of approval (a tainted-egress ask a human approved)
+    const other = {agent: "claude-code", command: "git log -1", cwd: scratch, session_id: "RQ"}, qk = queueKey(other);
+    writeItem({version: "queue-v1", id: `q-${qk.slice(0, 10)}`, key: qk, status: "approved", class: "tainted-egress", created: iso(), expires: iso(Date.now() + 3600e3)});
+    await decide(other);
+    ok(readItem(`q-${qk.slice(0, 10)}`).status === "approved", "runaway: a read-only command leaves a non-runaway approval alone");
+    ok(!pendingFor({command: "sleep 1", cwd: scratch, session_id: "RG"}) && pendingFor(runawayCall({command: "make dist", cwd: scratch, session_id: "RG"})) === null,
+       "runaway: a runaway item never makes the ladder think a case is waiting");
     ok(runawayTrips().some(t => t.signal === "loop" && !t.dry && t.n >= 2), "runaway: the stop is listed for reflex status and report");
-    ok(precheck("reflex runaway reset --all", scratch, {})?.id === "tamper", "runaway: an agent cannot lift its own stop (tamper)");
+    ok(precheck("reflex runaway reset --all", scratch, {})?.id === "tamper" && precheck("reflex runaway reset RG", scratch, {})?.id === "tamper",
+       "runaway: an agent cannot lift its own stop (tamper)");
     ok(runawayReset({session: "RG"}) === 1 && (await G("sleep 1")).effective === "pass", "runaway: reflex runaway reset lifts it");
     // a rule deny keeps its own reason; the guard never lifts or softens anything
     for (let i = 0; i < 10; i++) await G("git push --force origin main");
     const rule = await G("git push --force origin main");
     ok(rule.effective === "deny" && rule.source === "rule", "runaway: a rule deny keeps its reason");
-    // failures come from PostToolUse (record); five failures of the same command stop the sixth
-    for (let i = 0; i < 5; i++) { const call_id = `f${i}`; await G("npm run build", {session_id: "RF", call_id}); record({agent: "claude-code", event: "failed", session_id: "RF", call_id}); }
+    // failures come from PostToolUse (record); eight failures of the same command stop the ninth
+    for (let i = 0; i < 8; i++) { const call_id = `f${i}`; await G("npm run build", {session_id: "RF", call_id}); record({agent: "claude-code", event: "failed", session_id: "RF", call_id}); }
     const f = await G("npm run build", {session_id: "RF"});
-    ok(f.effective === "deny" && /same failing command ran 5 times/.test(f.reason), `runaway: a failing command from PostToolUse (${f.reason})`);
-    ok((await G("npm run build", {session_id: "RF", agent_id: "sub1"})).effective !== "deny", "runaway: a subagent has its own window");
+    ok(f.effective === "deny" && /same failing command ran 8 times/.test(f.reason), `runaway: a failing command from PostToolUse (${f.reason})`);
+    ok((await G("npm run build", {session_id: "RF", agent_id: "sub1"})).source !== "runaway", "runaway: a subagent has its own window");
+    // a human's queue deny of a stop stays a deny
+    const fid = /Parked for the user as (q-[0-9a-f]{10})/.exec(f.reason)?.[1];
+    answer(fid, "denied", {note: "wait for me"});
+    ok((await G("npm run build", {session_id: "RF"})).effective === "deny", "runaway: a human's deny of a stop is a deny");
+    // resume: the guard steps aside, the gate still asks what it would ask anyway (keyless: not covered)
+    runawayReset({session: "RF"});
+    for (let i = 0; i < 10; i++) await G("make dist", {session_id: "RR"});
+    const rr = await G("make dist", {session_id: "RR", call_id: "rr"}), rid = /as (q-[0-9a-f]{10})/.exec(rr.reason)?.[1];
+    answer(rid, "approved");
+    const resumed = await G("make dist", {session_id: "RR", call_id: "rr"});
+    ok(rr.source === "runaway" && readItem(rid)?.class === "runaway" && resumed.source !== "queue" && resumed.effective === "deny" && /Needs a human/.test(resumed.reason),
+       `runaway: a lifted stop still meets the gate: keyless with the queue on, not covered is parked (${resumed.effective} ${resumed.source})`);
+    // a storm through the gate: denies noted after the decision, the agent's own permission check via PostToolUse
+    for (let i = 0; i < 4; i++) await G(`git push --force origin main${" ".repeat(i)}`, {session_id: "RD"});
+    for (let i = 0; i < 4; i++) { const call_id = `pd${i}`; await G(`make deploy-${i}`, {session_id: "RD", call_id}); record({agent: "claude-code", event: "denied", session_id: "RD", call_id}); }
+    const sd = await G("make other", {session_id: "RD"});
+    ok(sd.source === "runaway" && /8 commands were denied/.test(sd.reason) && (await G("git status", {session_id: "RD"})).effective === "pass",
+       `runaway: a storm through the gate stops what is not read-only (${sd.reason})`);
     CONFIG.mode = "shadow";
-    for (let i = 0; i < 11; i++) await G("sleep 2", {session_id: "RS"});
+    for (let i = 0; i < 21; i++) await G("sleep 2", {session_id: "RS"});
     ok((await G("sleep 2", {session_id: "RS"})).effective === "pass" && runawayTrips().some(t => t.session === "RS" && t.dry), "runaway: shadow logs the stop and blocks nothing");
     CONFIG.mode = "enforce";
     CONFIG.runaway = runawaySettings({}, "off");
     for (let i = 0; i < 11; i++) await G("sleep 3", {session_id: "RO"});
     ok((await G("sleep 3", {session_id: "RO"})).effective === "pass" && !readRunaway("RO"), "runaway: REFLEX_RUNAWAY=off turns it off");
-    ok(runawaySettings({enabled: false}).enabled === false && runawaySettings({loop: {repeats: 20}}).loop.repeats === 20 && runawaySettings({loop: {repeats: 20}}).loop.failures === 5,
+    ok(runawaySettings({enabled: false}).enabled === false && runawaySettings(false).enabled === false && runawaySettings(false, "on").enabled === true &&
+       runawaySettings({loop: {repeats: 20}}).loop.repeats === 20 && runawaySettings({loop: {repeats: 20}}).loop.failures === 8,
        "runaway: config.json settings merge over the defaults");
     CONFIG.runaway = runawaySettings({loop: {repeats: "ten"}});
     ok(configurationError()?.startsWith("runaway:"), "runaway: an invalid setting is a configuration error (every command asks)");

@@ -28,7 +28,7 @@ import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join, posix, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
-import {envelopeFor, ladder, park, queueAnswer, runaway, runawayMark, runawayNote} from "./autonomy.mjs";
+import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -71,10 +71,11 @@ export const QUEUE_DEFAULTS = {ttl_hours: 24, notify: null};
 // commands or spend, or climbs in risk. Tuned on 14 days of real sessions (docs/GUIDE.md) so that
 // normal work, a long test-fix cycle included, never trips it. On unless config.json or
 // REFLEX_RUNAWAY=off turns it off; it follows the mode: shadow logs, enforce denies.
-export const RUNAWAY_DEFAULTS = {loop: {repeats: 10, failures: 5, window_minutes: 5}, storm: {denies: 8, window_minutes: 5},
+export const RUNAWAY_DEFAULTS = {loop: {repeats: 10, read_only_repeats: 20, failures: 8, window_minutes: 5}, storm: {denies: 8, window_minutes: 5},
   burn: {per_minute: 50, jev_calls: 2000, system2_calls: 150}, escalation: {steps: 4, rise: 1, at: 2.5, window_minutes: 15}};
 export function runawaySettings(saved = {}, env) {
-  const s = saved ?? {};
+  const s = saved && typeof saved === "object" ? saved : {};
+  if (env === undefined && saved === false) env = "off";
   return {...Object.fromEntries(Object.entries(RUNAWAY_DEFAULTS).map(([k, v]) => [k, {...v, ...s[k]}])),
           enabled: env === "on" ? true : env === "off" ? false : env !== undefined ? env : s.enabled ?? true};
 }
@@ -1182,17 +1183,20 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   // session, within its TTL. A deterministic deny is never lifted, not even by an approval.
   let resumed = false;
   if (CONFIG.mode === "enforce" && !background && CONFIG.queue.enabled && !(quick?.source === "rule" && quick.outcome === "deny")) {
-    const q = queueAnswer(call);
-    // a human let a command the runaway guard stopped run once: the guard steps aside, the gate does not
-    if (q?.resume) resumed = true;
-    else if (q && quick?.source !== "read-only") return finish(q, call, q.outcome === "deny" ? "deny" : allowSetting(holdAllow(q, call)).outcome === "allow" ? "allow" : "pass", {env});
+    const q = quick?.source === "read-only" ? null : queueAnswer(call);
+    if (q) return finish(q, call, q.outcome === "deny" ? "deny" : allowSetting(holdAllow(q, call)).outcome === "allow" ? "allow" : "pass", {env});
+    // a human lifted a runaway stop of this command: the guard steps aside once, the gate does not.
+    // A human's deny of the stop is a deny.
+    const r = queueAnswer(runawayCall(call));
+    if (r?.resume) resumed = true;
+    else if (r) return finish(r, call, "deny", {env});
   }
   // The runaway guard (autonomy.mjs) watches the session in the hook path, once per command. It only
   // ever adds a deny, never lifts one: a rule deny keeps its own reason. Shadow logs what it would stop.
-  const stop = background || resumed ? null : runaway(call, quick);
+  const stop = background ? null : runaway(call, quick, {resumed});
   if (stop && !stop.dry && !(quick?.source === "rule" && quick.outcome === "deny")) {
     const j = {outcome: "deny", source: "runaway", id: `runaway-${stop.signal}`, rule: `stopped: ${stop.reason}`, runaway: {signal: stop.signal}};
-    if (CONFIG.queue.enabled && stop.fresh) j.rule += `. Parked for the user as ${park(call, j, {id: "runaway"}).item.id}`;
+    if (CONFIG.queue.enabled && stop.fresh) j.rule += `. Parked for the user as ${park(runawayCall(call), j, {id: "runaway"}).item.id}`;
     trace(j, call, "deny");
     return view(j, "deny");
   }

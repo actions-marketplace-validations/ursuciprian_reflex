@@ -881,33 +881,35 @@ window, so parallel agents do not add up). Before the command runs, these signal
 
 | Signal | Trips when | Default |
 |---|---|---|
-| Loop | the same command, normalised (PR numbers, hashes, UUIDs and timestamps are slots), ran N times in the window | 10 in 5 minutes |
-| Failing loop | the same command failed N times in the window (Claude Code PostToolUseFailure, Hermes) | 5 in 5 minutes |
-| Denial storm | N commands were denied in the window: by a rule, Jev, System 2, a human in the queue, or the agent's own permission check. An ask counts in Codex, where an ask is a deny. A command parked for a human does not count | 8 in 5 minutes |
+| Loop | the same command, normalised (PR numbers, hashes, UUIDs and timestamps are slots), ran N times in the window. A read-only command has a higher bar, so polling CI or `git status` is not a loop | 10 in 5 minutes; read-only 20 |
+| Failing loop | the same command failed N times in the window (Claude Code PostToolUseFailure, Hermes). High enough that a fast TDD cycle (edit, run, fail every 45 s) does not trip | 8 in 5 minutes |
+| Denial storm | N commands were denied in the window: by a rule, Jev, System 2, or the agent's own permission check. An ask counts in Codex, where an ask is a deny. A command parked for a human does not count | 8 in 5 minutes |
 | Burn rate | N commands in the last minute | 50 |
 | Spend | Jev answers, or System 2 calls, in the session | 2000, 150 |
-| Escalation | the mean risk of the last 4 commands reached 2.5 of 3 and rose by at least 1 over the 4 before them. Risk is Jev's blast score; keyless (engine local), a rule deny is 3, a rule ask 2 and the fast lane 1 | 4 steps, 15 minutes |
+| Escalation | the mean risk of the last 4 commands that were not denied reached 2.5 of 3 and rose by at least 1 over the 4 before them. Risk is Jev's blast score. Keyless (engine local) a rule ask is 2 and the fast lane 1, so the default 2.5 needs Jev; set `escalation.at` to 2 to use it keyless (on the author's sessions that stopped 3 normal stretches of work on Reflex itself, where tamper asks are routine) | 4 steps, 15 minutes |
 
-Loop, burn and spend stop any command, read-only ones included: an agent spinning on `sleep 1` or
-`true` while it waits is the most common runaway there is. Denial storms and escalation stop only
-commands that are not read-only, so the agent can still look around and report.
+A loop and the burn rate stop any command, read-only ones included: an agent spinning on `sleep 1`
+or `true` while it waits is the most common runaway there is. Denial storms, spend and escalation
+stop only commands that are not read-only, so the agent can still look around and report.
 
 ### What the agent sees
 
 A deny with the reason and what to do next, for example:
 
 ```
-reflex (runaway): stopped: the same failing command ran 5 times in 3 minutes; change approach or ask the user, do not retry it as is
+reflex (runaway): stopped: the same failing command ran 8 times in 3 minutes; change approach or ask the user, do not retry it as is
 reflex (runaway): stopped: 8 commands were denied in 4 minutes. Do not look for another way around the gate; stop and ask the user how to proceed
 ```
 
 A denial storm is treated as a reason to stop, never to relax. The guard's own denials do not count
 towards any signal, so a stop ends by itself once the window has moved on (a loop stop applies to
-that command only). A human can lift it sooner:
+that command only). The spend caps hold for the rest of the session. A human can lift a stop sooner:
 
-- with the approval queue on, the first stop of each episode is parked (`reflex queue list`);
-  `reflex queue approve <id>` lets that exact command past the guard once, and the rest of the gate
-  still judges it;
+- with the approval queue on, the first stop of each episode (per command, for a loop) is parked
+  under its own key (`reflex queue list`, session id ending in `#runaway`). `reflex queue approve
+  <id>` lets that exact command past the guard once and restarts the session's spend counts; the rest
+  of the gate still judges the command, so the approval is never an approval of the command itself.
+  `reflex queue deny <id>` keeps it denied;
 - `reflex runaway reset <session id>` (or `--all`) forgets a session's window, and the Jev and
   System 2 counts with it. An agent running it is a tamper ask, like `reflex queue approve`.
 
@@ -924,7 +926,7 @@ In `~/.config/reflex/config.json`; any field left out keeps its default:
 {
   "runaway": {
     "enabled": true,
-    "loop": {"repeats": 10, "failures": 5, "window_minutes": 5},
+    "loop": {"repeats": 10, "read_only_repeats": 20, "failures": 8, "window_minutes": 5},
     "storm": {"denies": 8, "window_minutes": 5},
     "burn": {"per_minute": 50, "jev_calls": 2000, "system2_calls": 150},
     "escalation": {"steps": 4, "rise": 1, "at": 2.5, "window_minutes": 15}
@@ -932,26 +934,26 @@ In `~/.config/reflex/config.json`; any field left out keeps its default:
 }
 ```
 
-`REFLEX_RUNAWAY=off` (or `on`) overrides it for one session. An invalid value is a configuration
+`"runaway": false` turns it off; `REFLEX_RUNAWAY=off` (or `on`) overrides it for one session. An invalid value is a configuration
 error, and every command asks, as with any other invalid setting.
 
 ### Agent loop detection measured on real sessions
 
 `reflex replay` runs the guard over your own transcripts and prints how many sessions it would have
-stopped and why. On 30 days of the author's sessions (27,731 commands in 382 sessions, Claude Code,
-Codex and pi), the defaults stop 8 sessions:
+stopped and why. On 30 days of the author's sessions (27,819 commands in 383 sessions, Claude Code,
+Codex and pi), the defaults stop 5 sessions:
 
-- 7 subagents of one long benchmark session, 13 stops, all loops: agents waiting on a remote job by
-  calling `sleep 1`, `true` or `echo ok` hundreds of times (823 `sleep 1` in one of them), and one
-  polling the same remote log 10 times in 4 minutes;
+- 4 subagents of one long benchmark session, 10 stops, all loops: agents waiting on a remote job by
+  calling `sleep 1`, `true` or `echo ok` hundreds of times (823 `sleep 1` in one of them), 20 times
+  in one to five minutes, and one reading the same remote log 20 times in 5 minutes;
 - 1 Codex session, 2 storm stops, from repeated reads of secret files that Codex would have turned
   into denies.
 
-No test-fix cycle, build, review or deploy session tripped it. Stricter settings (8 repeats, 4
-failures, 5 denies, 35 a minute) still stopped only the same benchmark session; looser than that
-(6 repeats, 3 denies, 25 a minute) started to stop normal polling and parallel bursts. An escalation
-threshold of 2 stopped 3 normal stretches of work on Reflex itself, where tamper asks are routine;
-2.5 stops none.
+No test-fix cycle, build, review or deploy session tripped it. With a read-only command held to the
+same bar as any other (10) and 5 failures, the same history stopped 7 subagents of that one session,
+but synthetic cases showed the risk: CI polling every 25 seconds and a TDD cycle failing every 45
+seconds both tripped, so read-only repeats need 20 and failures 8. Looser than 10 repeats (6), 8
+denies (3) or 50 a minute (25) started to stop normal polling and parallel bursts on real sessions.
 
 ### Cost and limits
 
