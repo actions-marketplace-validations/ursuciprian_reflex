@@ -54,28 +54,33 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   per-binding exceptions (`F=notes.txt; sed -n 1p "$F"`) are gone. The one word kept is a
   double-quoted `$name` inside a word that starts with a literal path, such as
   `gh api "repos/$R/pulls"`, and never for sed or awk. printf then still reads options in its first
-  word only.
+  word only, and a first word with an expansion is not read.
 - awk is read-only only when its program text has no `@`, `|`, `>`, `PROCINFO` or `ENVIRON` and none
   of the words `system`, `getline`, `close` or `fflush` (`awk '/closed/'` still reads), and there is
-  no `-f` or `-i`. A `>` comparison now asks too.
+  no `-f` or `-i`. A `>` comparison now asks too. awkSafe is the only awk check.
 - sort and tree `-o`, fd `-x` and yq `-i` / `-s` are caught clustered or with the value attached
-  (`sort -ro out`, `sort -oout`, `fd -xrm`).
+  (`sort -ro out`, `sort -oout`, `fd -xrm`). A sort long option is read the way getopt_long reads
+  it: any prefix of `--output`, `--compress-program`, `--random-source` or `--temporary-directory`
+  (`--o=out`) is not read-only. `tree -R` (which writes with `-H`) is not read-only either.
 - The rules read brace sequences (`ma{i..i}n`), nested lists and several braces per word, with quotes
   kept, so the force-push rules still deny. A word that would expand past 256 words (1,024 in all)
-  is read as an unknown ref instead; `for i in {1..300}` is not an ask.
+  asks, unless a deny rule fires. A word whose braces are only sequences, at least one numeric, is
+  counted and not expanded (no ref or option comes of it), so `for i in {1..300}` is not an ask.
 - Over 32 KB the deny rules run before the size ask, on overlapping windows and in every spelling,
   on the same views precheck reads (a command that only writes notes is not read for shell rules),
   until the deadline: a large command never turns a deny into an ask.
 - `precheck` shares one deadline across the spellings it recurses into, and scans each local script
   once per call, so the total stays under the hook timeout.
-- `shell-startup` (rules-v18) also catches `tee` with several files and a startup file copied into
-  the home directory (`~`, `~/`, `~/.`, `$HOME`, `$HOME/`). Both parts are linear: 32 KB of `tee` is
-  checked in well under 50 ms.
+- `shell-startup` (rules-v19) also catches `tee` with several files and a startup file copied into a
+  directory (a last word ending in `/` or `/.`, or `~`, `$HOME`). Every part starts from the file
+  name or the destination and looks back a bounded distance, so 32 KB of `tee` checks in under
+  50 ms and 32 KB of `cat .zshrc` in under 10 ms.
 - The user fast lane and the report's fast-lane candidates drop git's global options before the
   always-human and rule checks (`rulesHit`, shared with `alwaysHuman`).
 - An escaped `\(` in `find . \( -name a -o -name b \)` no longer trips the zsh glob-qualifier guard.
 - In a nested worktree, cd targets, path words and short options with an attached value (`-Cdir`,
-  `-tdir`, `-ofile`) are resolved with `realpathSync` before they count as staying inside it. A
+  `-tdir`, `-ofile`: the value after one to three flag letters, at most PATH_MAX long) are resolved
+  with `realpathSync` before they count as staying inside it. A
   symlink out of it, a path that cannot be resolved, or a check past the deadline restores the
   checkout view. Real paths are cached per call, so 8 KB of cds checks in well under 500 ms.
 
