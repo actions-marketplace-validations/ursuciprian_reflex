@@ -26,6 +26,7 @@ import {createHash, randomUUID} from "node:crypto";
 import {execFileSync, spawn, spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join, posix, resolve} from "node:path";
+import {isatty} from "node:tty";
 import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
@@ -109,7 +110,8 @@ export const PLUGIN = process.argv.includes("--plugin");
 const CODEX_PLUGIN = PLUGIN && process.argv.some(a => /^--codex(-|$)/.test(a));
 // Standing down, read the input first: an agent writing a large tool result must not get EPIPE.
 if (PLUGIN && (CODEX_PLUGIN ? settingsHooksInstalled(CODEX_HOOKS, "codex") : settingsHooksInstalled())) {
-  if (!process.stdin.isTTY) try { readFileSync(0); } catch { /* nothing to read */ }
+  // isatty, not process.stdin.isTTY: touching process.stdin makes a pipe non-blocking and the read fails with EAGAIN
+  if (!isatty(0)) try { readFileSync(0); } catch { /* nothing to read */ }
   process.exit(0);
 }
 // With no saved engine the gate starts where a fresh `reflex setup` does: local, no key needed, or
