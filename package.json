@@ -41,7 +41,10 @@
     "pre-tool-use",
     "pi",
     "oh-my-pi",
-    "hermes"
+    "hermes",
+    "terraform",
+    "kubectl",
+    "infrastructure-as-code"
   ],
   "license": "MIT",
   "author": "Ciprian Ursu",

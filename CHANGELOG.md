@@ -6,6 +6,38 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Plan-aware infra gate (`infra.mjs`): `terraform apply <planfile>` is judged by what the saved plan
+  will change. The hook reads the plan with `terraform show -json` in the command's directory
+  (`-chdir=` and a leading `cd` are followed), with a 4 s timeout, a sanitized environment (no cloud
+  credentials, `TF_VAR_*` or tokens) and `CHECKPOINT_DISABLE=1`; it never runs `terraform plan` or
+  `terraform apply`. It counts create, update, delete and replace. A plan with any delete or replace
+  is denied (`infra.destroy: "ask"` softens it), with the addresses in the reason and stateful types
+  named first. A clean plan is allow-eligible (keyless: pass) when the command is only the apply,
+  and asks in production with the counts in the reason. An apply without a plan file asks with the
+  fix (`terraform plan -out=tfplan`), and so does a plan file that is missing, not a plan, stale
+  (older than its `.tf`, `.tfvars`, lock or local state files), or that `terraform show` could not
+  read in time. `infra.require_plan_in_prod` makes a missing plan in production a deny.
+- Optional `infra.kubectl_diff` (off by default, it calls the API server): `kubectl apply` is
+  checked with `kubectl diff`, and `kubectl delete|replace|patch` with `--dry-run=server -o name`.
+  Deletes of namespaces, PVCs, PVs, statefulsets and CRDs follow `infra.destroy`; other deletes ask.
+  A command with its own `--dry-run`, `--raw`, `--` or `-f -` is never run; on any failure kubectl
+  commands are judged as before.
+- Decisions and trace lines the plan gate spoke to carry `plan: {create, update, delete, replace,
+  stateful, digest}`. The digest is part of the approval queue key and the Jev cache key.
+- Team policy `infra` section, stricter only: `{"destroy": "deny", "require_plan_in_prod": true}`.
+- `reflex doctor` and `reflex status` show the infra settings and where `terraform` and `kubectl`
+  were found.
+- Golden cases for applies without a readable plan; `infra.mjs --selfcheck` with fixture plans
+  (`setup/tool-gate/plans/`), a fake `terraform` and a fake `kubectl` on `PATH`.
+
+### Changed
+
+- `terraform apply` without a saved plan is now a rule ask in every mode (it went to Jev or, keyless,
+  asked as uncovered). With the Jev engine in enforce mode, Jev still judges it and a deny it finds
+  stands. The ladder golden case for a dev apply without a plan now expects a human.
+
 ## [0.14.0] - 2026-09-28
 
 ### Added
