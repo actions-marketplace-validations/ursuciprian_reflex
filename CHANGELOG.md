@@ -6,6 +6,8 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-28
+
 ### Added
 
 - A demo GIF at the top of the README (`assets/demo.gif`): a real Claude Code session with the
@@ -654,7 +656,8 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/ursuciprian/reflex/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/ursuciprian/reflex/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/ursuciprian/reflex/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/ursuciprian/reflex/compare/v0.10.0...v0.11.0
