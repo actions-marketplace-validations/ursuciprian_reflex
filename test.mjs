@@ -1169,4 +1169,104 @@ try {
     assert.equal(snapshot(), s0, "audit writes nothing");
     console.log("freeze, notify and audit checks OK");
   }
+  // Reflex fails closed (hook.mjs, failsafe.mjs): an error while a hook loads, or an unhandled
+  // rejection, answers each agent in its own contract. The pre-execution gate asks (Codex: deny with
+  // exit 2), shadow logs and passes, off passes without loading, and the other hooks only warn.
+  {
+    const fdir = join(scratch, "failsafe");
+    mkdirSync(fdir, {recursive: true});
+    const fenv = (extra = {}) => ({...clean, HOME: fdir, XDG_CONFIG_HOME: join(fdir, "config"), REFLEX_DATA_DIR: join(fdir, "data"), REFLEX_ENGINE: "local", ...extra});
+    const bash = {tool_name: "Bash", tool_input: {command: "touch /tmp/reflex-failsafe-probe"}, session_id: "fc", cwd: fdir};
+    const hookRun = (script, args, extra, input = bash, dir = root) => spawnSync(process.execPath, [join(dir, "hook.mjs"), join(dir, script), ...args],
+      {encoding: "utf8", input: typeof input === "string" ? input : JSON.stringify(input), env: fenv(extra), timeout: 30000, detached: true});
+    const parse = r => { try { return JSON.parse(r.stdout || "{}"); } catch { return {unparsed: r.stdout}; } };
+    // Per agent flag: [script, flag, input, check(r, strict)]
+    const pre = [
+      ["--claude", bash, (r, strict) => { assert.equal(r.status, 0, r.stderr); const o = parse(r);
+        assert.equal(o.hookSpecificOutput?.permissionDecision, strict ? "ask" : undefined, `claude: ${r.stdout}`);
+        assert.match(strict ? o.hookSpecificOutput.permissionDecisionReason : o.systemMessage, /^reflex error: .*; a human must review/); }],
+      ["--codex", bash, (r, strict) => { assert.equal(r.status, strict ? 2 : 0, r.stderr); const o = parse(r);
+        assert.equal(o.hookSpecificOutput?.permissionDecision, strict ? "deny" : undefined, `codex: ${r.stdout}`);
+        if (strict) assert.match(r.stderr, /reflex error: .*a human must review/); }],
+      ["--hermes", {tool_name: "terminal", tool_input: {command: "touch x"}}, (r, strict) => { assert.equal(r.status, 0); const o = parse(r);
+        assert.deepEqual(strict ? [o.action, /^reflex:error:/.test(o.rule_key)] : o, strict ? ["approve", true] : {}, `hermes: ${r.stdout}`); }],
+      ["--decide", {agent: "pi", command: "touch x", cwd: fdir}, (r, strict) => { assert.equal(r.status, 0);
+        assert.deepEqual([parse(r).effective, parse(r).source], [strict ? "ask" : "pass", "error"], `decide: ${r.stdout}`); }],
+    ];
+    for (const crash of ["load", "reject"]) for (const [flag, input, check] of pre) {
+      check(hookRun("gate.mjs", [flag, "--mode", "enforce"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}, input), true);
+      // a simulated crash is always strict, even in shadow: the test switch can only make a hook stricter
+      check(hookRun("gate.mjs", [flag, "--mode", "shadow"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}, input), true);
+      // mode off: nothing is loaded, so nothing can crash
+      const off = hookRun("gate.mjs", [flag, "--mode", "off"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}, input);
+      assert.ok(off.status === 0 && !/ask|deny|approve|error/.test(off.stdout), `off passes: ${flag} ${off.stdout}`);
+    }
+    // Without REFLEX_TEST=1 the switch does nothing.
+    assert.equal(hookRun("gate.mjs", ["--decide", "--mode", "enforce"], {REFLEX_TEST_CRASH: "load"}, {agent: "pi", command: "git status", cwd: fdir}).stdout.includes('"source":"error"'), false);
+    // A subagent spawn is subgoal dedup, which never blocks: it passes on a crash too.
+    assert.equal(parse(hookRun("gate.mjs", ["--claude", "--mode", "enforce"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}, {tool_name: "Agent", tool_input: {prompt: "x"}})).hookSpecificOutput, undefined);
+    // Post-execution and prompt hooks never block a result: exit 0 and a warning.
+    for (const [script, flag] of [["gate.mjs", "--claude-post"], ["gate.mjs", "--codex-post"], ["guard.mjs", "--claude"], ["guard.mjs", "--codex"],
+                                  ["guard.mjs", "--claude-prompt"], ["instructions.mjs", "--claude"]]) {
+      const r = hookRun(script, [flag, "--mode", "enforce"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"});
+      const o = parse(r);
+      assert.ok(r.status === 0 && /reflex error/.test(o.systemMessage) && !o.hookSpecificOutput?.permissionDecision && o.decision !== "block", `${script} ${flag} warns: ${r.stdout}`);
+      if (script === "guard.mjs" && ["--claude", "--codex"].includes(flag)) assert.match(o.hookSpecificOutput.additionalContext, /could not check this tool result/);
+    }
+    const scan = parse(hookRun("guard.mjs", ["--scan"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}, {texts: ["x"]}));
+    assert.ok(scan.effective === "warn" && /did not check this result/.test(scan.note), "guard --scan warns");
+    // A malformed hook input, read after the gate loaded, asks too.
+    assert.equal(parse(hookRun("gate.mjs", ["--claude", "--mode", "enforce"], {}, "not json")).hookSpecificOutput?.permissionDecision, "ask");
+    // reflex-sh: an ask with no terminal refuses (126); shadow runs the command.
+    const sh = (mode, crash = "load") => spawnSync(join(root, "bin/reflex-sh"), ["-c", "echo ran"], {encoding: "utf8", env: fenv({REFLEX_MODE: mode, REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}), detached: true, timeout: 30000});
+    let r = sh("enforce");
+    assert.ok(r.status === 126 && !r.stdout.includes("ran") && /reflex error/.test(r.stderr), `reflex-sh refuses: ${r.status} ${r.stderr}`);
+    r = sh("off");
+    assert.ok(r.status === 0 && r.stdout.includes("ran"), "reflex-sh off runs bash");
+    // Real crashes, in a copy of the checkout: a syntax error in an imported module (an import error)
+    // and a throw at the top level of gate.mjs.
+    for (const [name, file, patch] of [["import", "freeze.mjs", s => `${s}\nthis is not javascript\n`],
+                                       ["throw", "gate.mjs", s => s.replace("export const CONFIG = {", "throw new Error('top-level boom');\nexport const CONFIG = {")]]) {
+      const copy = join(fdir, name);
+      cpSync(root, copy, {recursive: true, filter: p => !/\/(\.git|node_modules)(\/|$)/.test(p.slice(root.length))});
+      writeFileSync(join(copy, file), patch(readFileSync(join(copy, file), "utf8")));
+      const e = {REFLEX_DATA_DIR: join(copy, "data")};
+      assert.equal(parse(hookRun("gate.mjs", ["--claude", "--mode", "enforce"], e, bash, copy)).hookSpecificOutput?.permissionDecision, "ask", `${name}: claude asks`);
+      const c = hookRun("gate.mjs", ["--codex", "--mode", "enforce"], e, bash, copy);
+      assert.ok(c.status === 2 && parse(c).hookSpecificOutput?.permissionDecision === "deny", `${name}: codex blocks`);
+      const shadow = hookRun("gate.mjs", ["--claude", "--mode", "shadow"], e, bash, copy);
+      assert.ok(shadow.status === 0 && !parse(shadow).hookSpecificOutput && /shadow mode: not blocked/.test(parse(shadow).systemMessage), `${name}: shadow does not block`);
+      const log = readFileSync(join(copy, "data/health/errors.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
+      assert.deepEqual(log.map(l => [l.flag, l.mode, l.outcome]), [["--claude", "enforce", "ask"], ["--codex", "enforce", "ask"], ["--claude", "shadow", "pass"]], `${name}: logged`);
+      // reflex status (from the working checkout) shows it as an error.
+      const doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: fenv(e)}).stdout);
+      assert.ok(doc.hook_errors.gate === 3 && doc.errors.some(x => /Reflex hook errors? in the last 24 h.*shadow mode a broken gate checks nothing/.test(x)), `${name}: status: ${JSON.stringify(doc.hook_errors)}`);
+    }
+    // A bad config value asks through the entry, in shadow too, and never echoes the file's content.
+    mkdirSync(join(fdir, "config/reflex"), {recursive: true});
+    const secret = ["sk", "ant", "api03", "A".repeat(40)].join("-");
+    for (const bad of ['{"freeze": [{"from": "2026-13-45", "outcome": "deny"}]}', `{"mode": "enforce", "token": "${secret}"`, '{"mode": "enforc"}']) {
+      writeFileSync(join(fdir, "config/reflex/config.json"), bad);
+      for (const mode of bad.includes("enforc\"") ? [[]] : [[], ["--mode", "shadow"]]) {   // a --mode flag wins over a mistyped saved mode
+        const cr = hookRun("gate.mjs", ["--claude", ...mode], {});
+        assert.equal(parse(cr).hookSpecificOutput?.permissionDecision, "ask", `bad config ${bad} ${mode}: ${cr.stdout}`);
+        assert.ok(!cr.stdout.includes(secret) && !cr.stderr.includes(secret), "no secret in the answer");
+        assert.ok(hookRun("gate.mjs", ["--codex", ...mode], {}).stdout.includes('"deny"'), `bad config, codex: ${bad}`);
+      }
+    }
+    assert.ok(!readFileSync(join(fdir, "data/health/errors.jsonl"), "utf8").includes(secret), "no secret in the error log");
+    rmSync(join(fdir, "config/reflex/config.json"));
+    // opencode: a failed or non-JSON gate result asks (enforce), and never blocks in shadow.
+    const oc = `import assert from 'node:assert/strict';
+      const {Reflex} = await import(${JSON.stringify(join(root, "adapters/opencode.js"))});
+      const hooks = await Reflex({directory: ${JSON.stringify(fdir)}});
+      const run = () => hooks['tool.execute.before']({tool: 'bash', sessionID: 's', callID: 'c'}, {args: {command: 'touch x'}});
+      if (process.argv[1] === 'ask') await assert.rejects(run, /reflex error: .*a human must review.*cannot open an approval dialog/);
+      else await run();`;
+    const ocRun = (arg, extra) => spawnSync(process.execPath, ["--input-type=module", "-e", oc, arg], {encoding: "utf8", env: fenv({...extra, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`}), timeout: 30000});
+    success(ocRun("ask", {REFLEX_MODE: "enforce", REFLEX_GATE: join(fdir, "gone/gate.mjs")}));             // the gate cannot start
+    success(ocRun("ask", {REFLEX_MODE: "enforce", REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}));            // it crashes while loading
+    success(ocRun("pass", {REFLEX_MODE: "shadow", REFLEX_GATE: join(fdir, "gone/gate.mjs")}));
+    console.log("fail-closed checks OK");
+  }
 } finally { rmSync(scratch, {recursive: true, force: true}); }
