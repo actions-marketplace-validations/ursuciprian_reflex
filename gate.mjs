@@ -1293,6 +1293,9 @@ const GIT_GLOBAL = new RegExp(String.raw`\bgit((?:\s+(?:-[cC]\s*${GIT_VALUE}|--(
   String.raw`--(?:exec-path|list-cmds)=${GIT_VALUE}|-[pP]|--(?:no-pager|paginate|bare|exec-path|no-replace-objects|no-lazy-fetch|no-optional-locks|no-advice|` +
   String.raw`literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs)(?=\s)))+)(?=\s)`, "g");
 export const gitPlain = s => s.replace(GIT_GLOBAL, "git");
+// checkRules on the command as written and with git's global options dropped (git -C x push is git
+// push): for the checks outside precheck (always-human, fast-lane candidates).
+export const rulesHit = (haystack, rules, bare = haystack) => checkRules(haystack, rules, bare) ?? checkRules(gitPlain(haystack), rules, gitPlain(bare));
 const ruleSpelling = s => {
   const v = gitPlain((joinQuotes(s) ?? s).replace(/(^|[\s;&|(`]|\$\()\/(usr\/)?bin\/(?=[\w.-]+(\s|$))/g, "$1").replace(TIMEOUT_OPTS, "timeout"));
   return v !== s ? v : null;
@@ -2303,7 +2306,10 @@ async function selfcheck() {
   ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin x{1..9999}") === "command-size",
      "brace sequences and several braces per word are expanded for the rules; too many words ask");
   { const t0 = Date.now(); redact("echo " + "'a' ".repeat(40) + "done > gen.txt; make build"); ok(Date.now() - t0 < 500, "redact: a run of quoted words is linear"); }
-  ok(pw("git -C /repo push --mirror") === "push-mirror" && pw("git -P --no-pager push origin --mirror") === "push-mirror", "git global options, push --mirror");
+  { const human = {rules: load("escalation.json").always_human.rules};
+    ok(rulesHit("git -C . reset --hard", human)?.id === "destructive-delete" && !checkRules("git -C . reset --hard", human) && !rulesHit("git -C . status", human),
+       "always-human checks outside precheck (fast lane, report candidates) drop git's global options"); }
+  ok(pw("git -C /repo push --mirror") === "push-mirror" &&pw("git -P --no-pager push origin --mirror") === "push-mirror", "git global options, push --mirror");
   for (const c of ["git push -f -o merge_request.target=main origin feat/x", "git push -f --push-option=target=main origin feat/x", "git push -f origin feat/x -o ci.skip=main"])
     ok(pw(c) === null, `a push option is not a ref: ${c}`);
   const big = "git push -f origin " + "main>".repeat(8000), t1 = Date.now();
