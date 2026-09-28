@@ -6,6 +6,13 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A demo GIF at the top of the README (`assets/demo.gif`): real `reflex check`, `reflex scan` and
+  `reflex replay` output with the local engine. It is recorded with VHS from `docs/demo/demo.tape`,
+  in a scratch `HOME` and `REFLEX_DATA_DIR` built by `docs/demo/setup.sh` with a synthetic
+  transcript; `docs/demo/README.md` explains how to re-render it.
+
 ## [0.13.0] - 2026-09-28
 
 ### Added

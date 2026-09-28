@@ -6,6 +6,12 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" alt="Reflex blocking a force push to main and a prompt injection in Claude Code" width="900">
+</p>
+
+<p align="center"><sub>Real <code>reflex check</code>, <code>reflex scan</code> and <code>reflex replay</code> output with the local engine, in a scratch home with a synthetic transcript. <a href="docs/demo/README.md">How it is recorded</a>.</sub></p>
+
 **Reflex is an open-source pre-execution risk gate and prompt injection guard for AI coding agents
 such as Claude Code, Codex CLI, opencode and pi.** It hooks into each agent (Claude Code hooks,
 Codex hooks, pi and oh-my-pi extensions, an opencode plugin, Hermes hooks) and decides for every
