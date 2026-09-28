@@ -238,11 +238,12 @@ const UNSAFE_FLAGS = new RegExp([
   String.raw`\bawk\b.*(system|getline|@include|@load)`, String.raw`\bawk\b[^']*'[^']*[|>][^']*'`, String.raw`\bawk\b[^"]*"[^"]*[|>][^"]*"`,
   String.raw`--pre\b`, String.raw`--(upload|receive)-pack`, String.raw`--hostname-bin\b`,
   String.raw`--post-renderer`, String.raw`--compress-program`, String.raw`\b(git|sort)\b[^|;&]*--output\b`, String.raw`--ext-diff`,
-  String.raw`\s-f(print0?|printf|ls)\b`, String.raw`\s-ok(dir)?\b`, String.raw`\bfd\b.*\s-[a-zA-Z]*[xX]\b`,
-  String.raw`\b(sort|tree)\b[^|;&]*\s-o\b`, String.raw`--show-token`,
+  String.raw`\s-f(print0?|printf|ls)\b`, String.raw`\s-ok(dir)?\b`, String.raw`\bfd\b.*\s-[a-zA-Z]*[xX]`,
+  // -o clustered or with its value attached (-ro, -uo, -oFILE)
+  String.raw`\b(sort|tree)\b[^|;&]*\s-[a-zA-Z]*o`, String.raw`--show-token`,
   // a program from a file (awk and sed -f, gawk -i/-E/-l), yq writing in place or split files
   String.raw`\b[gm]?awk\b[^|;&]*\s(-[a-zA-Z]*[fEilL]|--(file|exec|include|load|source))`,
-  String.raw`\byq\b[^|;&]*\s(-[a-zA-Z]*[is]\b|--(inplace|split-exp))`,
+  String.raw`\byq\b[^|;&]*\s(-[a-zA-Z]*[is]|--(inplace|split-exp))`,
 ].join("|"));
 // Every prefix of an ip object that ip.c resolves to it (address comes before addrlabel, route before
 // rule, neighbor before ntable, link before l2tp), and every prefix of list or lst.
@@ -533,13 +534,12 @@ const AWK_LONG = ["file", "exec", "include", "load", "source", "profile", "prett
 // -W takes a long option as its value (-W dump-variables=f). The program text is checked as the
 // shell passes it (sys''tem, $'\x73ystem'): no @ (gawk @include, @load, indirect calls), system,
 // getline, | or > (pipes and redirects, and > as a comparison too), close, fflush, PROCINFO or ENVIRON.
-const AWK_UNSAFE = /[@|>]|system|getline|close|fflush|PROCINFO|ENVIRON/;
+const AWK_UNSAFE = /[@|>]|\b(system|getline|close|fflush)\b|PROCINFO|ENVIRON/;
 const awkLong = name => !name || AWK_LONG.some(o => o.startsWith(name.split("=")[0]));
 function awkSafe(args) {
   let program = false, dd = false;
   for (let i = 0; i < args.length; i++) {
     const v = args[i].value;
-    if (/\b(system|getline)\b|@include|@load/.test(v)) return false;
     if (dd || v === "-" || !v.startsWith("-")) { if (!program) { program = true; if (AWK_UNSAFE.test(v)) return false; } dd = true; continue; }
     if (v === "--") { dd = true; continue; }
     if (v.startsWith("--")) { if (awkLong(v.slice(2))) return false; continue; }
@@ -580,10 +580,10 @@ function argsUnsafe(raw, head) {
   }
   if (words[k].raw.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "") !== head) return true;
   const args = words.slice(k + 1);
-  // printf reads options (-v) in its first word only; the rest is data
-  if (head === "printf") return !!args[0] && (args[0].exps.length > 0 || /^-\w*v/.test(args[0].value));
   if (args.some(w => /[*?[]/.test(maskQuotes(w.raw, "_").replace(/\\./g, "__")))) return true;
   if (args.some(w => w.exps.length && !pathWord(w, head))) return true;
+  // printf reads options (-v) in its first word only
+  if (head === "printf") return !!args[0] && /^-\w*v/.test(args[0].value);
   if (head === "sed") return !sedSafe(args);
   if (head === "awk") return !awkSafe(args);
   return false;
@@ -2115,7 +2115,7 @@ async function selfcheck() {
      !readOnly("echo x # '\ntouch x\n# '") && readOnly("ls # it's a comment\ncat f") && readOnly("ssh h 'uptime' < /dev/null"),
      "backslash-newline joins, $'…' and # comments are masked, stdin from /dev/null");
   ok(readOnly("ssh -n -p 2222 -l ops -i ~/.ssh/id_ed25519 -oBatchMode=yes -tt h 'df -h'") && readOnly(`ssh h "grep -c \\"x\\" /var/log/syslog"`) &&
-     readOnly("for h in web-1 web-2; do printf '%s: ' $h; ssh ops@$h 'uptime' 2>&1 | tail -1; done") && readOnly(`for h in a b; do echo "$h: $(ssh $h 'nproc')"; done`),
+     readOnly("for h in web-1 web-2; do echo $h; ssh ops@$h 'uptime' 2>&1 | tail -1; done") && readOnly(`for h in a b; do echo "$h: $(ssh $h 'nproc')"; done`),
      "ssh: allowed options, escaped double quotes, a loop over literal hosts");
   ok(readOnly("ssh h 'systemctl is-active api; journalctl -u api -n 20 --no-pager; free -g; ip -br addr'") && readOnly("docker exec -t api tail -n 50 /var/log/app.log") &&
      !readOnly("journalctl --vacuum-time=1d") && !readOnly("ip -batch cmds") && !readOnly("ip route add default via 10.0.0.1") && !readOnly("systemctl restart api") &&
@@ -2234,6 +2234,9 @@ async function selfcheck() {
   // option-sensitive tool's words (a binding or -- is no exception)
   ok(readOnly("awk '{print $2}' f") && !readOnly("awk '{print ENVIRON[\"HOME\"]}' f") && !readOnly("awk 'BEGIN{close(\"x\")}'"), "awk: program text without @ system getline | > close fflush PROCINFO ENVIRON");
   ok(readOnly("find . \\( -name a -o -name b \\)") && !readOnly("find . \\( -name a \\) f(+x)"), "find: an escaped ( is no zsh glob qualifier");
+  ok(readOnly("awk '/closed/' f") && !readOnly("awk 'BEGIN{fflush()}'"), "awk: function names as whole words");
+  ok(!readOnly("printf '%s' *") && !readOnly("printf '%s' $X") && readOnly("printf '%s\\n' x"), "printf: the glob and expansion guard comes first");
+  ok(!readOnly("sort -ro out f") && !readOnly("sort -oout f") && !readOnly("fd x -xrm") && !readOnly("yq -s.a f") && readOnly("sort -r f"), "short output flags clustered or with a value attached");
   ok(readOnly('gh api "repos/$R/pulls"') && !readOnly('F=notes.txt; sed -n 1p "$F"') && !readOnly("sed -n 1p src/*.md") && !readOnly("xxd -- *"),
      "option-sensitive tools: a quoted $name after a literal path only");
 
