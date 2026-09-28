@@ -760,7 +760,7 @@ try {
     const redos = String.raw`[\s\S]?`.repeat(24) + String.raw`[\s\S]{24}\x00`;
     for (const p of [redos, String.raw`[\s\S]{0,60}`.repeat(6), String.raw`(\w)\1`, "(?=a)b", "(", "x".repeat(501)]) assert.ok(regexError(p), `rejected: ${p}`);
     for (const p of [String.raw`\bkubectl\b.*\bdelete\b`, "a.*a.*b", "(a+)+b", String.raw`\bDROP\s+(table|schema)\b`, "clusters/main-eu"]) assert.equal(regexError(p), null, p);
-    write({version: 1, rules: [{id: "slow", outcome: "deny", before_read_only: true, rule: "slow", all: ["a.*a.*a.*b"]},
+    write({version: 1, rules: [{id: "slow", outcome: "deny", before_read_only: true, context: false, rule: "slow", all: ["a.*a.*a.*b"]},
       {id: "caps", outcome: "deny", rule: "caps", all: [String.raw`\bTERRAFORM\s+Destroy\b`]}]});
     // measure what the team patterns add, not precheck's own cost on 30 KB (slow CI runners vary)
     const hostile = "a".repeat(30000), timed = cwd => { const t = Date.now(); precheck(hostile, cwd, {}); return Date.now() - t; };
