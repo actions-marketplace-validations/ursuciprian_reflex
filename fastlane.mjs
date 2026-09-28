@@ -12,6 +12,7 @@ import {readFileSync} from "node:fs";
 import {homedir} from "node:os";
 import {dirname, isAbsolute, join, resolve} from "node:path";
 import {checkRules, load, localScripts, maskQuotes, readOnly, stripDataHeredocs} from "./gate.mjs";
+import {teamEscalation, teamFastLane} from "./team.mjs";
 
 export const FASTLANE_FILE = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "reflex/fastlane.json");
 
@@ -127,8 +128,9 @@ function npmrcRedirects(cwd) {
 }
 /** True when the user fast lane passes the command: every segment read-only, bundled fast lane or a
  *  user pattern for this directory, no DENY word, no `cd`, every local script it runs read in full and
- *  free of DENY words, and nothing in the always-human class. precheck calls it last, after the rules. */
-export function userFastPass(command, cwd, env = {}, entries = loadFastLane().entries) {
+ *  free of DENY words, and nothing in the always-human class. precheck calls it last, after the rules.
+ *  A trusted team policy's fast lane (team.mjs) adds its entries, scoped to its repository. */
+export function userFastPass(command, cwd, env = {}, entries = [...loadFastLane().entries, ...teamFastLane(cwd)]) {
   if (!entries.length || !cwd || !isAbsolute(cwd)) return false;
   cwd = resolve(cwd);
   const mine = entries.filter(e => inside(cwd, e.cwd));
@@ -142,5 +144,5 @@ export function userFastPass(command, cwd, env = {}, entries = loadFastLane().en
   if (localScripts(command, cwd).some(s => !scriptOk(s))) return false;
   if (npmrcRedirects(cwd)) return false;
   const bare = stripDataHeredocs(command), haystack = [bare, `cwd=${cwd}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].join(" ");
-  return !checkRules(haystack, {rules: load("escalation.json").always_human.rules}, bare);
+  return !checkRules(haystack, {rules: teamEscalation(load("escalation.json"), cwd, command).always_human.rules}, bare);
 }

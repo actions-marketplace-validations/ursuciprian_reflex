@@ -31,6 +31,7 @@ import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
+import {teamMode, teamRules} from "./team.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env;
@@ -935,7 +936,7 @@ function roughPipelines(c) {
 // directory, a parent of one, a directory named reflex, the checkout, the Reflex data or config
 // directory (or a parent), or one only a variable names. Elsewhere an argument such as
 // ursuciprian/reflex (gh -R) is not a path and is left unresolved.
-const CD_WATCH = /(^|\/)(\.claude(\/(settings|hooks)\b.*)?|\.codex(\/(hooks|rules|config)\b.*)?|\.hermes(\/.*)?|\.config(\/(reflex|opencode)\b.*)?|\.local(\/state(\/.*)?)?|\.(pi|omp)(\/agent(\/.*)?)?|opencode(\/.*)?|reflex(\/.*)?)\/?$|\$|^~\/?$/i;
+const CD_WATCH = /(^|\/)(\.claude(\/(settings|hooks)\b.*)?|\.codex(\/(hooks|rules|config)\b.*)?|\.hermes(\/.*)?|\.config(\/(reflex|opencode)\b.*)?|\.local(\/state(\/.*)?)?|\.(pi|omp)(\/agent(\/.*)?)?|opencode(\/.*)?|\.?reflex(\/.*)?)\/?$|\$|^~\/?$/i;
 const cdWatched = d => CD_WATCH.test(d) || [HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => (d + "/").startsWith(p + "/") || p.startsWith(d.replace(/\/$/, "") + "/"));
 // A cd, pushd or popd the directory tracking below reads writes nothing itself: its effect is the
 // resolved paths, each set on a line of its own so a rule cannot match across it and the command
@@ -1370,7 +1371,8 @@ const wordSpelling = s => {
   return out !== s ? out : null;
 };
 function precheckAs(command, cwd, env) {
-  const rules = load("rules.json");
+  // plus the repo's team policy (.reflex/policy.json, team.mjs): its rules only add asks and denies
+  const rules = teamRules(load("rules.json"), cwd, command);
   // The shell deletes a backslash-newline: `git push --force \⏎ origin main` is one line.
   command = command.replace(/\\\n/g, "");
   // Rules see the raw command (redaction could hide the very marker a rule looks for, such as
@@ -1401,8 +1403,11 @@ function precheckAs(command, cwd, env) {
       /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(command.replace(/["'\\]/g, "")) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
       (inRepo && /\bCDPATH=/.test(command)) ||
-      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
+      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
+  // A repo's team policy (.reflex/) and the user's trust in it (team.mjs): a human's call.
+  if (/\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b/.test(command.replace(/["'\\]/g, "")) || /(^|[\s\/=:>])\.reflex(?=[\/\s;&|)]|$)/.test(writes))
+    hold(ruled({outcome: "ask", rule: "changes a team policy (.reflex/) or trusts one (reflex trust)", id: "tamper"}));
   // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
   if (/\bsuggest\b[^\n;&|]*\s--write\b/.test(command.replace(/["'\\]/g, "")))
     hold(ruled({outcome: "ask", rule: "widens the fast lane (reflex suggest --write)", id: "tamper"}));
@@ -1789,11 +1794,14 @@ export async function decideSafe(call, opts) {
     writeFileSync(join(dir, `${call.agent}.json`), JSON.stringify({at: new Date().toISOString(), gate: HERE,
       mode: CONFIG.mode, engine: CONFIG.engine, allow: CONFIG.allow}), {mode: 0o600});
   } catch { /* diagnostics must not change a decision */ }
+  // A team policy's mode floor (team.mjs) holds for this call only.
+  const mode = CONFIG.mode;
+  CONFIG.mode = teamMode(mode, call.cwd);
   try { return await decide(call, opts); } catch (e) {
     console.error(`reflex: ${e.message}`);
     const fallback = CONFIG.mode === "enforce" && !call.subgoal ? (safeFallback() ?? "ask") : "pass";
     return {effective: fallback, decision: "error", reason: `reflex error (${e.message.slice(0, 80)}), fallback ${fallback}`, source: "error"};
-  }
+  } finally { CONFIG.mode = mode; }
 }
 // A policy "allow" under REFLEX_ALLOW: kept only when on and enforcing, logged as would_allow while
 // it is watched, otherwise the plain pass the gate has always given.

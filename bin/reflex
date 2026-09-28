@@ -12,6 +12,8 @@
 //   reflex runaway [list|reset <session>|reset --all]  sessions the runaway guard stopped; lift a stop
 //   reflex check "<cmd>" [--cwd dir] [--intent text]   judge one command
 //   reflex scan <file|-> [--rewrite]                  judge text for prompt injection (exit 0 pass, 1 warn, 2 block)
+//   reflex policy [dir] | reflex policy init [dir]     this repo's team policy (.reflex/policy.json) | write a starter
+//   reflex trust [dir] | reflex trust --revoke [dir]   let this repo's team fast lane apply (hash-bound, terminal only)
 //   reflex report [...]                                what the gate has been doing
 //   reflex replay [claude|codex|opencode|pi|all] [--since 7d] [--engine local|jev|laya] [--json]
 //                                                      what the gate would have done with past sessions (nothing runs)
@@ -340,6 +342,7 @@ switch (cmd) {
     if (r.error) console.error(`reflex: ${r.error.message}`);
     process.exit(r.status ?? 1);
   }
+  case "trust": case "policy": process.exit(run("team.mjs", [cmd, ...args]));
   case "report": process.exit(run("report.mjs", args));
   case "replay": case "bench": case "suggest": process.exit(run("replay.mjs", [cmd, ...args]));
   case "queue": case "envelope": case "checkpoints": case "runaway": process.exit(run("autonomy.mjs", [cmd, ...args]));

@@ -115,10 +115,11 @@ const AGENTS = {
     stripOurs(s.hooks);
     // The agent must not quietly edit its own gate or its settings; a human confirms each change.
     // ~/.config/reflex holds personal instruction fragments, injected into every repo's sessions.
+    // A repo's .reflex/ holds its team policy and instruction fragments: a human edits them.
     // Edit(path) rules cover every file-editing tool; Claude Code ignores Write(path) rules and warns
     // about them, so earlier installs' Write(...) entries are removed here too.
     const paths = [REPO, process.env.REFLEX_DATA_DIR ?? join(process.env.XDG_STATE_HOME ?? join(HOME, ".local/state"), "reflex"), dirname(USER_CONFIG_FILE)]
-      .map(d => `${d.replace(HOME, "~")}/**`).concat(["~/.claude/settings*.json"]);
+      .map(d => `${d.replace(HOME, "~")}/**`).concat(["~/.claude/settings*.json", "**/.reflex/**"]);
     const guard = paths.map(p => `Edit(${p})`), legacy = paths.map(p => `Write(${p})`);
     s.permissions ??= {};
     s.permissions.ask = (s.permissions.ask ?? []).filter(r => !guard.includes(r) && !legacy.includes(r));
