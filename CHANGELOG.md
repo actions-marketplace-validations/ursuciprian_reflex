@@ -6,6 +6,34 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Team policy: a repository can commit `.reflex/policy.json`, and every teammate's Reflex applies it
+  while an agent works there. It adds rules (the `rules.json` shape, ask or deny; a team deny is
+  checked before the bundled rules, a team ask after them), always-human patterns, production
+  markers (a matching command that is not read-only asks) and a mode floor (`enforce` raises shadow;
+  off stays off). It has no key that removes or relaxes anything, and an unknown key makes it
+  invalid. Patterns are checked so they finish in time (no backreferences, no nested repetition, one
+  unbounded repetition each, 64 per file), and a command over 8 KB asks in a repo with team rules.
+  The file is read only at the repository root (the nearest `.git`), never from a parent directory,
+  and never through a symlink.
+- `reflex trust [dir]` and `reflex trust --revoke [dir]`: a team policy's `fastlane` entries apply
+  only while the user trusts that exact file. Trust records the repository and the file's sha256 in
+  `~/.config/reflex/trusted.json`; any change to the file drops it until it is trusted again. It
+  needs a terminal and refuses inside an agent session. Team fast lane entries are validated like
+  `fastlane.json` and never pass over a deny, a secret read, the tamper check, a prod marker or the
+  always-human class. An invalid file never loosens; its valid stricter parts still apply.
+- `reflex policy [dir]` shows a repository's team policy; `reflex policy init [dir]` writes a starter
+  with stricter examples only and never overwrites.
+- `reflex status` and `reflex doctor` show the team policy of the current directory: path, trust,
+  hash and what it adds; doctor warns when it is invalid or changed since it was trusted.
+
+### Changed
+
+- Tamper check: a shell command that writes under `.reflex/`, or runs `reflex trust` or
+  `reflex policy init`, asks a human. `reflex setup` adds `Edit(**/.reflex/**)` to Claude Code's ask
+  rules.
+
 ## [0.13.0] - 2026-09-28
 
 ### Added

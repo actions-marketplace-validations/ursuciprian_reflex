@@ -171,6 +171,8 @@ reflex run "command" --cwd /path/to/work                               # human t
 reflex setup --mode enforce                                            # start enforcing
 reflex setup --profile autonomous                                      # System 2 and the approval queue
 reflex queue                                                           # what waits for a human
+reflex policy init                                                     # team policy: a starter .reflex/policy.json for this repo
+reflex trust .                                                         # let this repo's team fast lane apply (your terminal only)
 reflex uninstall
 ```
 
@@ -257,6 +259,9 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   trims large tool outputs per request.
 - `reflex report`, a Prometheus Pushgateway export and a Grafana dashboard (`dashboards/reflex.json`).
 - `reflex doctor` and `reflex status` to check that hooks are installed and firing.
+- [Team policy](docs/GUIDE.md#team-policy-share-reflex-rules-across-a-repo): team guardrails for AI coding agents in a
+  committed `.reflex/policy.json` (extra rules, always-human patterns, prod markers, a mode floor), applied by every
+  teammate's Reflex in Claude Code, Codex and the other agents. It only tightens; its fast lane needs `reflex trust .`.
 
 ## How a command is decided
 

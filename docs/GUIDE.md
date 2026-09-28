@@ -10,6 +10,7 @@
    - [Suggest: fewer permission prompts](#suggest-fewer-permission-prompts)
    - [Calibrated allow](#calibrated-allow)
 4. [Changing behaviour](#changing-behaviour)
+   - [Team policy: share Reflex rules across a repo](#team-policy-share-reflex-rules-across-a-repo)
 5. [Metrics](#metrics)
 6. [Data handling](#data-handling)
 7. [Safety properties and limits](#safety-properties-and-limits)
@@ -569,6 +570,77 @@ and [confidence](https://docs.typesafe.ai/confidence).
 
 **Is the read-only list missing a command your team runs constantly?** Add it to `READ_ONLY` or
 `READ_ONLY_SUB` in `gate.mjs`, with a self-check assertion for a harmless and a harmful variant.
+
+### Team policy: share Reflex rules across a repo
+
+Team guardrails for AI coding agents belong with the code they protect. A repository can commit
+`.reflex/policy.json`, and every teammate's Reflex applies it while Claude Code, Codex CLI,
+opencode, pi or Hermes works in that repository. It works like Claude Code team settings in a
+checked-in `.claude/settings.json`, with one difference: a team policy can only make Reflex
+stricter, unless each teammate trusts it.
+
+`reflex policy init` writes a starter with stricter examples only:
+
+```json
+{
+  "version": 1,
+  "mode": "enforce",
+  "rules": [
+    {"id": "drop-table", "outcome": "deny", "shell": true, "rule": "drops a database, schema or table",
+     "all": ["\\bdrop\\s+(database|schema|table)\\b"]},
+    {"id": "migrations", "outcome": "ask", "shell": true, "rule": "runs database migrations",
+     "all": ["\\b(db:migrate|alembic\\supgrade|prisma\\smigrate\\sdeploy)\\b"]}
+  ],
+  "always_human": [{"id": "billing", "rule": "calls the billing service", "all": ["\\bbilling-api\\b"]}],
+  "prod": ["\\bacme-live\\b", "clusters/main-eu\\b"]
+}
+```
+
+What each part does. All of them apply as soon as the file is in the repository:
+
+| Key | Effect |
+|---|---|
+| `rules` | Extra rules in the `rules.json` shape, outcome `ask` or `deny`. A team deny is checked before the bundled rules, so it wins over a bundled ask; a team ask is checked after them, so it never hides a bundled deny. |
+| `always_human` | Extra patterns for the [always-human class](#the-always-human-class): System 2 never approves a match. |
+| `prod` | Production markers. A command whose text or context (`cwd=`, `aws_profile=`, `kube_context=`, `tf_workspace=`, `git_branch=`) matches, and that is not read-only, asks a human. |
+| `mode` | A floor: `enforce` turns shadow into enforce for commands in this repository. `off` stays off: that switch stays with the user. |
+| `fastlane` | Command shapes that pass without a prompt (`[{"pattern": "^make\\s+lint$"}]`). This loosens, so it needs trust (below). |
+
+The file has no key that removes a rule, raises a threshold or turns off the injection guard, the
+runaway guard or the tamper check, and an unknown key makes it invalid. Patterns are
+case-insensitive, at most 500 characters, and are checked so that they finish in time on any
+command: no backreferences or lookbehind, no repeated group that holds a quantifier or an
+alternation, at most one `*`, `+` or `{n,}` per pattern (use several `all` patterns instead), and 64
+patterns per file. Team patterns read commands of up to 8 KB; a larger command asks.
+
+**Trust, for the fast lane only.** `reflex trust .` shows the file, its sha256 and every fast lane
+entry, and asks you to type `trust` on the terminal. It records the repository path and the hash in
+`~/.config/reflex/trusted.json`. Any change to the file, from a teammate's commit or from an agent,
+changes the hash, and the fast lane stays off until you review it and run `reflex trust .` again.
+`reflex trust --revoke .` removes the trust. Team fast lane entries are held to the same checks as
+[fastlane.json](#suggest-fewer-permission-prompts): anchored patterns with no wildcard, scoped to
+the repository, never a denied word, never over a deny, a secret read, the tamper check, a prod
+marker or the always-human class.
+
+**Where it is read.** Only at the repository root: the nearest directory holding `.git`, as for
+[conditional instructions](#conditional-instructions). A `.reflex/` above the repository (`/tmp`, a
+shared home) is never read, and outside a repository there is no team policy. The file must be a
+regular file (not a symlink) of at most 64 KB.
+
+**What an agent cannot do.** Editing anything under `.reflex/` from the shell, and running `reflex
+trust` or `reflex policy init`, are tamper asks: a human confirms. `reflex setup` also adds
+`Edit(**/.reflex/**)` to Claude Code's ask rules, so its file tools prompt too. `reflex trust`
+itself refuses without a terminal and inside an agent session (`CLAUDECODE`, `CODEX_SANDBOX`,
+`REFLEX_AGENT`), so run it in your own terminal.
+
+**Invalid files.** A file that does not validate never loosens anything, trusted or not. Its valid
+stricter parts still apply, entry by entry, and `reflex doctor` lists each problem.
+
+**Seeing it.** `reflex status` and `reflex doctor` show the team policy of the directory they run
+in: its path, whether you trust it, its hash, and what it adds. `reflex policy` prints the same for
+one repository. Decisions record it too: a rule from the team policy says `(team policy)`, and the
+policy version reads `rules-v16+team-<hash>`. `reflex check --cwd <dir>` and `reflex replay` judge
+each command with the team policy of its own working directory.
 
 ## Metrics
 
