@@ -100,7 +100,7 @@ See: [README: opencode plugin](../README.md#opencode-plugin), [docs/SETUP.md: op
 ## How do I stop an AI agent from destroying infrastructure with terraform apply?
 
 Reflex judges a `terraform apply` by its saved plan. When the agent runs `terraform apply tfplan`,
-the hook reads the plan with `terraform show -json tfplan` (local, no provider API calls, a 4 s
+the hook reads the plan with `terraform show -json tfplan` (local, no provider API calls, a 3 s
 timeout, no cloud credentials in its environment) and counts creates, updates, deletes and
 replaces. Any delete or replace is denied, with the addresses in the reason and stateful types such
 as `aws_db_instance`, `aws_s3_bucket` and `google_sql_database_instance` named first. A clean plan

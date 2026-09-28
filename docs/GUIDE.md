@@ -678,7 +678,7 @@ programs and can take minutes. The hook only reads a saved plan the agent alread
 `cd dir &&` are followed). `terraform show` reads the plan file locally: it starts the provider
 binaries in `.terraform` only to read their schemas (as `terraform validate` does, which the fast
 lane already passes) and configures no provider, so it makes no provider API calls. It runs with a
-strict timeout (`infra.timeout_ms`, 4 s by default, so the whole hook stays inside its 10 s), a
+strict timeout (`infra.timeout_ms`, 3 s by default and 4 s at most, so the whole hook stays inside its 10 s), a
 sanitized environment (no `AWS_*`, `GOOGLE_*`, `ARM_*`, `TF_VAR_*` or tokens; only `PATH`, `HOME`,
 the locale and Terraform's data and plugin directories) and `CHECKPOINT_DISABLE=1`, so Terraform
 does not call HashiCorp's version service either. The `terraform` binary comes from an absolute
@@ -707,7 +707,24 @@ A plan's deny is a rule outcome: it holds in shadow and enforce mode, and no app
 lifts it. A plan's ask goes to a human, never to System 2. With the Jev engine in enforce mode, Jev
 still judges the command under the ask, and a deny Jev finds stands. A clean plan passes on its own
 only when the command is nothing but `cd` steps and the apply: `terraform apply tfplan && ./deploy.sh`
-gets the counts in its trace, and the rest is judged as usual.
+gets the counts in its trace, and the rest is judged as usual. It also needs the apply to run exactly
+the plan that was read, so none of these pass (they keep the counts, and the usual judge decides):
+
+- a binary other than `terraform` from `PATH` (`./terraform`, `bin/../terraform`);
+- an assignment, `env`, `sudo`, `nice` or `exec` in front (`PATH=.`, `TF_CLI_ARGS_apply=-destroy`,
+  `env --chdir=/`), or `TF_CLI_ARGS*` in the hook's own environment;
+- an option outside `-auto-approve`, `-input=false`, `-no-color`, `-compact-warnings`, `-json`,
+  `-lock-timeout=`, `-parallelism=` (`--destroy`, `-target`, `-state-out`, an option Terraform adds later);
+- a `..` in the plan path, `-chdir` or a `cd` (it resolves through symlinks for Terraform);
+- a `cd` in a pipe, behind `&` or before `||` (it does not carry over; the directory is unknown and
+  the apply asks);
+- a plan that runs code at apply: a provisioner, a deferred `external` or `http` data source read,
+  or action invocations.
+
+Production is read in the directory the command runs in, the physical one too (a `current` symlink
+to `envs/prod`), and the team policy of that directory counts as well as the one the command started in.
+The hook budget: when the rules and the plan read took more than 5 s, Jev is not waited for as
+well, and the command asks.
 
 **Decision JSON and trace.** Every decision the plan gate spoke to carries the counts:
 
@@ -731,7 +748,11 @@ terraform apply tfplan            # judged by what tfplan will change
 because it calls the API server), `kubectl apply` is checked with `kubectl diff` and the same
 arguments, and `kubectl delete|replace|patch` with `--dry-run=server -o name` added at the end.
 Both use the current kube context (or the command's `--context`), the same timeout, and never a flag
-that writes: a command with its own `--dry-run`, `--raw`, `--` or `-f -` is not run at all. `kubectl
+that writes: `--dry-run=server -o name` goes right after the verb, so an option of the command left
+waiting for a value cannot take it, and a command with its own `--dry-run`, `--raw`, `--`, `-f -` or
+`-o` is not run at all. Nor is one that names its own `--kubeconfig`, `--server` or `--token`, or runs
+with a `KUBECONFIG` inside its working directory: an agent's kubeconfig could carry an exec credential
+plugin, and an agent's server would receive your credentials. `kubectl
 diff` exits 0 for no differences, 1 for differences and above 1 on an error. Deletes of namespaces,
 PVCs, PVs, statefulsets or CRDs follow `infra.destroy` (deny by default); other deletes ask with the
 count; changes without deletes only add the counts. Off, or on any failure, kubectl commands are
@@ -741,7 +762,7 @@ destructive ones.
 **Configuration.** In `~/.config/reflex/config.json`:
 
 ```json
-{"infra": {"enabled": true, "destroy": "deny", "require_plan_in_prod": false, "kubectl_diff": false, "timeout_ms": 4000}}
+{"infra": {"enabled": true, "destroy": "deny", "require_plan_in_prod": false, "kubectl_diff": false, "timeout_ms": 3000}}
 ```
 
 A team policy can only make it stricter (`.reflex/policy.json`):
