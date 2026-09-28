@@ -21,60 +21,51 @@
 // after the rules, the tamper check and the always-human class, like the user fast lane.
 // An invalid file never loosens (doctor says why); its valid stricter parts still apply.
 //
-// The file is read from the repository root only: the nearest directory holding .git, as the
-// instruction layer finds it. A .reflex above the repo (/tmp, a shared home) is never read.
+// Stricter parts are read from every enclosing repository root (the nearest directory holding .git,
+// and any repository around it), so a `.git` an agent creates in a subdirectory cannot shed the
+// policy of the repository it sits in; the fast lane comes from the nearest root only. A root, and
+// its policy file, count only when owned by the current user (git's safe.directory idea), so another
+// account cannot plant /tmp/.git and /tmp/.reflex. A .reflex in a directory without .git is never read.
 //
 //   reflex trust [dir] | reflex trust --revoke [dir] | reflex policy [dir] | reflex policy init [dir]
 import {createHash} from "node:crypto";
 import {closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, writeFileSync, writeSync} from "node:fs";
 import {homedir} from "node:os";
-import {dirname, isAbsolute, join, resolve} from "node:path";
+import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
+import {setFlagsFromString} from "node:v8";
 import {broad, compilePattern, patternError} from "./fastlane.mjs";
 
 export const TRUST_FILE = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "reflex/trusted.json");
 const MAX_FILE = 64 * 1024, MAX_PATTERNS = 64;
-// Team patterns run over commands of at most this size; a larger one asks (see teamRules).
-export const TEAM_BYTES = 8 * 1024;
+const owned = st => process.getuid === undefined || st.uid === process.getuid();
 
-/** The repository root for cwd: the nearest directory holding .git, or null outside a repo. */
-export function repoRoot(cwd) {
-  if (typeof cwd !== "string" || !isAbsolute(cwd)) return null;
+/** Repository roots around cwd, nearest first: directories holding a .git this user owns. */
+export function repoRoots(cwd) {
+  if (typeof cwd !== "string" || !cwd) return [];
+  const out = [];
   for (let d = resolve(cwd); ; d = dirname(d)) {
-    if (existsSync(join(d, ".git"))) return d;
-    if (dirname(d) === d) return null;
+    try { if (owned(lstatSync(join(d, ".git")))) out.push(d); } catch { /* not a root */ }
+    if (dirname(d) === d) return out;
   }
 }
+export const repoRoot = cwd => repoRoots(cwd)[0] ?? null;
 
-// A pattern someone else wrote runs in every teammate's hook, so it must finish in time on a command
-// an agent chose: no backreference or lookbehind, no repeated group holding a quantifier or an
-// alternation, and at most one unbounded repetition (two nested scans of 8 KB take minutes).
-// ponytail: a syntactic check, not a proof of linear time; with the 8 KB cap one scan is ~25 ms.
-const unboundedAt = (p, i) => p[i] === "*" || p[i] === "+" || (p[i] === "{" && /^\{\d*,\}/.test(p.slice(i)));
+// A pattern someone else wrote runs in every teammate's hook on a command an agent chose, and a hook
+// that times out lets the command run. So team patterns run on V8's linear-time engine (the `l`
+// flag): a pattern it cannot run in linear time (lookarounds, backreferences, large bounded repeats)
+// is rejected. That engine has no `i` flag, so the pattern's literal letters and the text are lowercased.
+try { setFlagsFromString("--enable-experimental-regexp-engine"); } catch { /* then every team pattern is rejected: fail closed */ }
+const lower = p => p.replace(/\\[\s\S]|[\s\S]/g, m => m.length === 2 ? m : m.toLowerCase());
+const compileTeam = p => new RegExp(lower(p), "l");
 export function regexError(p) {
   if (typeof p !== "string" || !p || p.length > 500) return "must be a string of 1 to 500 characters";
   try { new RegExp(p, "i"); } catch (e) { return `does not compile (${e.message})`; }
-  if (/\\[1-9]|\\k<|\(\?<[=!]/.test(p)) return "must not use backreferences or lookbehind";
-  let cls = false, unbounded = 0;
-  const groups = [];
-  for (let i = 0; i < p.length; i++) {
-    const ch = p[i];
-    if (ch === "\\") { i++; continue; }
-    if (cls) { if (ch === "]") cls = false; continue; }
-    if (ch === "[") cls = true;
-    else if (ch === "(") groups.push({q: false});
-    else if (ch === "|") { if (groups.length) groups.at(-1).q = true; }
-    else if (ch === ")") {
-      const g = groups.pop() ?? {q: false};
-      if (g.q && (unboundedAt(p, i + 1) || p[i + 1] === "{")) return "must not repeat a group that holds a quantifier or an alternation";
-      if (g.q && groups.length) groups.at(-1).q = true;
-    } else if (unboundedAt(p, i) || ch === "{") {
-      if (unboundedAt(p, i)) unbounded++;
-      if (groups.length) groups.at(-1).q = true;
-    }
-  }
-  return unbounded > 1 ? "must use at most one unbounded repetition (*, + or {n,}); split it into several `all` patterns" : null;
+  try { compileTeam(p); } catch { return "cannot run in linear time: no lookarounds, backreferences or large bounded repeats such as {0,64} (use * or +)"; }
+  return null;
 }
+// checkRules calls `test` when a rule has one.
+const linear = r => { const res = r.all.map(compileTeam); return {...r, test: text => { const t = text.toLowerCase(); return res.every(re => re.test(t)); }}; };
 
 const RULE_KEYS = new Set(["id", "outcome", "rule", "all", "applies_to", "context", "shell", "writes", "whole_script", "before_read_only", "note"]);
 const HUMAN_KEYS = new Set(["id", "rule", "all", "context", "note"]);
@@ -114,19 +105,19 @@ export function parseTeam(text) {
   for (const [i, r] of list("rules", 50).entries()) {
     const why = ruleError(r, false);
     if (why) out.errors.push(`rules ${i + 1}: ${why}`);
-    else if (spend(r.all.length, `rules ${i + 1}`)) out.rules.push({...Object.fromEntries(Object.entries(r).filter(([k]) => k !== "note")), id: `team:${r.id}`, rule: `${r.rule} (team policy)`});
+    else if (spend(r.all.length, `rules ${i + 1}`)) out.rules.push(linear({...Object.fromEntries(Object.entries(r).filter(([k]) => k !== "note")), id: `team:${r.id}`, rule: `${r.rule} (team policy)`}));
   }
   for (const [i, r] of list("always_human", 50).entries()) {
     const why = ruleError(r, true);
     if (why) out.errors.push(`always_human ${i + 1}: ${why}`);
-    else if (spend(r.all.length, `always_human ${i + 1}`)) out.always_human.push({id: `team:${r.id}`, rule: `${r.rule} (team policy)`, all: r.all, ...(r.context !== undefined && {context: r.context})});
+    else if (spend(r.all.length, `always_human ${i + 1}`)) out.always_human.push(linear({id: `team:${r.id}`, rule: `${r.rule} (team policy)`, all: r.all, ...(r.context !== undefined && {context: r.context})}));
   }
   // A production marker: a command (or its cwd, profile, kube context, workspace, branch) that
   // matches is production. One that is not read-only asks, and a rule's ask always goes to a human.
   for (const [i, m] of list("prod", 20).entries()) {
     const why = regexError(m);
     if (why) out.errors.push(`prod ${i + 1}: pattern ${why}`);
-    else if (spend(1, `prod ${i + 1}`)) out.rules.push({id: "team:prod", outcome: "ask", shell: true, rule: "production, by a marker in the team policy", all: [m]});
+    else if (spend(1, `prod ${i + 1}`)) out.rules.push(linear({id: "team:prod", outcome: "ask", shell: true, rule: "production, by a marker in the team policy", all: [m]}));
   }
   if (doc.mode !== undefined && !["shadow", "enforce"].includes(doc.mode)) out.errors.push('mode must be "shadow" or "enforce" (a floor: it can only raise the mode)');
   else out.mode = doc.mode ?? null;
@@ -148,63 +139,72 @@ export function readTrust(file = TRUST_FILE) {
   } catch { return {version: 1, repos: {}}; }
 }
 
-const parsed = new Map();
-/** The team policy that applies in cwd, or null when its repo has none. Never throws. */
+// One root's file: null when there is none, else what it adds and its problems.
+const parsed = new Map(), empty = {rules: [], always_human: [], mode: null, fastlane: []};
+function readOne(root) {
+  const file = join(root, ".reflex/policy.json");
+  let text;
+  try {
+    // A regular file this user owns in a real directory: a symlink could point anywhere, a FIFO would hang the hook.
+    const dir = lstatSync(join(root, ".reflex"));
+    if (!dir.isDirectory()) { if (dir.isSymbolicLink()) throw new Error(".reflex is a symlink"); return null; }
+    const st = lstatSync(file);
+    if (!st.isFile()) throw new Error("not a regular file");
+    if (!owned(st)) throw new Error("not owned by you");
+    if (st.size > MAX_FILE) throw new Error(`larger than ${MAX_FILE / 1024} KB`);
+    text = readFileSync(file, "utf8");
+  } catch (e) {
+    return e.code === "ENOENT" ? null : {root, file, sha256: null, ...empty, errors: [e.message]};
+  }
+  const hash = sha256(text);
+  if (!parsed.has(hash)) parsed.set(hash, parseTeam(text));
+  return {root, file, sha256: hash, ...parsed.get(hash)};
+}
+
+/** The team policy that applies in cwd, or null when no enclosing repository has one. Never throws. */
 export function teamPolicy(cwd) {
   try {
-    const root = repoRoot(cwd);
-    if (!root) return null;
-    const file = join(root, ".reflex/policy.json"), none = {rules: [], always_human: [], mode: null, fastlane: []};
-    let text;
-    try {
-      // A regular file in a real directory: a symlink could point anywhere, a FIFO would hang the hook.
-      const dir = lstatSync(join(root, ".reflex"));
-      if (!dir.isDirectory()) throw Object.assign(new Error(".reflex is not a directory"), {code: dir.isSymbolicLink() ? "LINK" : "NOTDIR"});
-      const st = lstatSync(file);
-      if (!st.isFile()) throw new Error("not a regular file");
-      if (st.size > MAX_FILE) throw new Error(`larger than ${MAX_FILE / 1024} KB`);
-      text = readFileSync(file, "utf8");
-    } catch (e) {
-      if (e.code === "ENOENT" || e.code === "NOTDIR") return null;
-      return {root, file, sha256: null, trust: "untrusted", active_fastlane: false, errors: [e.message], ...none};
-    }
-    const hash = sha256(text);
-    let p = parsed.get(hash);
-    if (!p) parsed.set(hash, p = parseTeam(text));
-    const saved = readTrust().repos[realRoot(root)]?.sha256;
-    const trust = saved === hash ? "trusted" : saved ? "changed" : "untrusted";
-    const active = trust === "trusted" && !p.errors.length && !broad(root);
-    return {root, file, sha256: hash, trust, active_fastlane: active, errors: p.errors, rules: p.rules, always_human: p.always_human, mode: p.mode,
-            fastlane: active ? p.fastlane.map(pattern => ({pattern, cwd: root, re: compilePattern(pattern), team: true})) : [], fastlane_count: p.fastlane.length};
+    const roots = repoRoots(cwd), found = roots.map(readOne).filter(Boolean);
+    if (!found.length) return null;
+    const [t] = found, saved = readTrust().repos[realRoot(t.root)]?.sha256;
+    const trust = t.sha256 && saved === t.sha256 ? "trusted" : saved ? "changed" : "untrusted";
+    // loosening: only the nearest root's own file, trusted as it is now, valid, not home or /
+    const active = t.root === roots[0] && trust === "trusted" && !t.errors.length && !broad(t.root);
+    return {root: t.root, file: t.file, sha256: t.sha256, trust, active_fastlane: active,
+      inherited: found.slice(1).map(f => f.file), tag: (found.length > 1 ? sha256(found.map(f => f.sha256).join()) : t.sha256 ?? "unreadable").slice(0, 8),
+      errors: found.flatMap((f, i) => f.errors.map(e => i ? `${f.file}: ${e}` : e)),
+      rules: found.flatMap(f => f.rules), always_human: found.flatMap(f => f.always_human),
+      mode: found.some(f => f.mode === "enforce") ? "enforce" : found.find(f => f.mode)?.mode ?? null,
+      fastlane: active ? t.fastlane.map(pattern => ({pattern, cwd: t.root, re: compilePattern(pattern), team: true})) : [],
+      fastlane_count: t.fastlane.length, fastlane_patterns: t.fastlane};
   } catch (e) {
-    return {root: null, file: null, sha256: null, trust: "untrusted", active_fastlane: false, errors: [`team policy: ${e.message}`], rules: [], always_human: [], mode: null, fastlane: []};
+    return {root: null, file: null, sha256: null, trust: "untrusted", active_fastlane: false, inherited: [], tag: "error", errors: [`team policy: ${e.message}`], ...empty};
   }
 }
 
-// Merged into what the gate loads. A command over TEAM_BYTES gets one ask in place of the team's
-// patterns, so a large command can neither stall the hook nor slip past them.
-const sizeRule = {id: "team:size", outcome: "ask", before_read_only: true, rule: `command too large for the team policy's rules (over ${TEAM_BYTES / 1024} KB)`, all: ["[\\s\\S]"]};
 /** rules.json with the team's rules: its denies first (a deny wins over a bundled ask), its asks last (never in front of a bundled deny). */
-export function teamRules(rules, cwd, command = "") {
+export function teamRules(rules, cwd) {
   const t = teamPolicy(cwd);
   if (!t?.rules.length) return rules;
-  const extra = command.length > TEAM_BYTES ? [sizeRule] : t.rules;
-  return {...rules, version: `${rules.version}+team-${t.sha256.slice(0, 8)}`,
-          rules: [...extra.filter(r => r.outcome === "deny"), ...rules.rules, ...extra.filter(r => r.outcome !== "deny")]};
+  return {...rules, version: `${rules.version}+team-${t.tag}`,
+          rules: [...t.rules.filter(r => r.outcome === "deny"), ...rules.rules, ...t.rules.filter(r => r.outcome !== "deny")]};
 }
 /** escalation.json with the team's always-human patterns added. */
-export function teamEscalation(esc, cwd, command = "") {
+export function teamEscalation(esc, cwd) {
   const t = teamPolicy(cwd);
-  if (!t?.always_human.length) return esc;
-  return {...esc, always_human: {...esc.always_human, rules: [...esc.always_human.rules, ...(command.length > TEAM_BYTES ? [sizeRule] : t.always_human)]}};
+  return t?.always_human.length ? {...esc, always_human: {...esc.always_human, rules: [...esc.always_human.rules, ...t.always_human]}} : esc;
 }
 /** The mode for a call in cwd: the team's floor raises shadow to enforce; off stays off. */
 export const teamMode = (mode, cwd) => mode === "shadow" && teamPolicy(cwd)?.mode === "enforce" ? "enforce" : mode;
 /** Fast-lane entries from a trusted, valid team policy (userFastPass shape), else none. */
 export const teamFastLane = cwd => teamPolicy(cwd)?.fastlane ?? [];
+// A glob the shell expands to .reflex: a path segment that starts with a literal dot, as a leading
+// dot is never matched by a wildcard (`rm -rf .ref*`, `mv .r[e]flex x`; not `rm -rf *`).
+export const globsReflex = text => (text.match(/[^\s;&|<>()'"`=]*[*?[][^\s;&|<>()'"`]*/g) ?? []).some(w => w.split("/").some(seg =>
+  seg.startsWith(".") && /[*?[]/.test(seg) && (() => { try { return new RegExp(`^${seg.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`).test(".reflex"); } catch { return true; } })()));
 
-/** Record trust in root's current policy file. The CLI confirms on a terminal first. */
-export function trustRepo(root, hash, file = TRUST_FILE) {
+// Trust in root's current file. Only the CLI calls it, after a human confirms on a terminal.
+function trustRepo(root, hash, file = TRUST_FILE) {
   const d = readTrust(file);
   if (hash) d.repos[realRoot(root)] = {sha256: hash, at: new Date().toISOString()};
   else delete d.repos[realRoot(root)];
@@ -237,10 +237,12 @@ function describe(t) {
     `adds: rules ${t.rules.filter(r => r.id !== "team:prod").length}, always-human ${t.always_human.length}, prod markers ${t.rules.filter(r => r.id === "team:prod").length}` +
     `, mode floor ${t.mode ?? "none"}`,
     `fast lane: ${t.fastlane_count ?? 0} entr${t.fastlane_count === 1 ? "y" : "ies"}, ${t.active_fastlane ? "active" : "inactive"}`,
-    ...t.errors.map(e => `invalid: ${e}`)];
+    ...t.inherited.map(f => `also applies (stricter parts): ${f}`), ...t.errors.map(e => `invalid: ${e}`)];
 }
-// A human's answer on the terminal. An agent's shell has no terminal, and the gate asks before an
-// agent runs `reflex trust` at all; an agent session's environment is refused outright.
+// A human's answer on the terminal. The gate asks before an agent runs `reflex trust` at all, an agent
+// shell usually has no terminal, and an agent session's environment is refused. ponytail: speed bumps,
+// not a boundary: a same-user agent that runs arbitrary code can fake a terminal (script(1)) or write
+// trusted.json itself, the same limit as fastlane.json; the tamper rules are the control.
 function confirm(question) {
   if (process.env.CLAUDECODE || process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED || process.env.REFLEX_AGENT)
     die("reflex trust runs in your own terminal, not from an agent session", 2);
@@ -269,15 +271,15 @@ function main(argv) {
   const t = teamPolicy(root);
   if (cmd === "policy") {
     if (!t) return say(`no team policy in ${root} (reflex policy init writes a starter)`);
-    return argv.includes("--json") ? console.log(JSON.stringify({...t, fastlane: undefined, rules: t.rules.map(r => r.id)}, null, 1)) : describe(t).forEach(l => say(l));
+    return argv.includes("--json") ? console.log(JSON.stringify({...t, fastlane: undefined, rules: t.rules.map(r => r.id), always_human: t.always_human.map(r => r.id)}, null, 1)) : describe(t).forEach(l => say(l));
   }
   if (cmd === "trust" && rest.includes("--revoke")) { trustRepo(root, null); return say(`${root}: trust removed; its team fast lane is off`); }
   if (cmd !== "trust") die("usage: reflex trust [dir] | reflex trust --revoke [dir] | reflex policy [dir] [--json] | reflex policy init [dir]");
-  if (!t) die(`no team policy in ${root}`);
+  if (!t || t.root !== root) die(`no team policy in ${root}`);
   if (t.errors.length || !t.sha256) { describe(t).forEach(l => console.error(l)); die("fix the team policy before trusting it"); }
   if (broad(root)) die(`${root} is your home or /; a team fast lane there would cover every project`);
   describe(t).forEach(l => say(l));
-  for (const p of parseTeam(readFileSync(t.file, "utf8")).fastlane) say(`  fast lane: ${p}`);
+  for (const p of t.fastlane_patterns) say(`  fast lane: ${p}`);   // from the text that was hashed
   if (!confirm(`Trust this file for ${root}? Its fast lane then passes these commands without a prompt. Type "trust" to confirm: `)) die("not trusted");
   trustRepo(root, t.sha256);
   say(`trusted ${t.sha256.slice(0, 12)} for ${root}. Any change to the file drops the trust until you run reflex trust again.`);

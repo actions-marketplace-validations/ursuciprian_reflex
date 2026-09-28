@@ -608,10 +608,10 @@ What each part does. All of them apply as soon as the file is in the repository:
 
 The file has no key that removes a rule, raises a threshold or turns off the injection guard, the
 runaway guard or the tamper check, and an unknown key makes it invalid. Patterns are
-case-insensitive, at most 500 characters, and are checked so that they finish in time on any
-command: no backreferences or lookbehind, no repeated group that holds a quantifier or an
-alternation, at most one `*`, `+` or `{n,}` per pattern (use several `all` patterns instead), and 64
-patterns per file. Team patterns read commands of up to 8 KB; a larger command asks.
+case-insensitive, at most 500 characters, 64 per file, and run on V8's linear-time regular
+expression engine, because a hook that times out lets the command run and the command is the
+agent's choice. A pattern that engine cannot run in linear time is rejected: lookaheads,
+backreferences and large bounded repeats such as `{0,64}` (use `*` or `+` instead).
 
 **Trust, for the fast lane only.** `reflex trust .` shows the file, its sha256 and every fast lane
 entry, and asks you to type `trust` on the terminal. It records the repository path and the hash in
@@ -622,16 +622,32 @@ changes the hash, and the fast lane stays off until you review it and run `refle
 the repository, never a denied word, never over a deny, a secret read, the tamper check, a prod
 marker or the always-human class.
 
-**Where it is read.** Only at the repository root: the nearest directory holding `.git`, as for
-[conditional instructions](#conditional-instructions). A `.reflex/` above the repository (`/tmp`, a
-shared home) is never read, and outside a repository there is no team policy. The file must be a
-regular file (not a symlink) of at most 64 KB.
+**Where it is read.** At repository roots only: directories holding a `.git`, as for
+[conditional instructions](#conditional-instructions). The stricter parts come from every
+repository root around the working directory, so a nested checkout, a submodule or a `.git` an
+agent creates in a subdirectory still gets the policy of the repository it sits in. The fast lane
+comes from the nearest root only. A root and its policy file count only when your user owns them
+(as with git's `safe.directory`), so another account cannot plant `/tmp/.git` and
+`/tmp/.reflex/policy.json`. A `.reflex/` in a directory without `.git` is never read, and outside a
+repository there is no team policy. The file must be a regular file (not a symlink) of at most 64 KB.
 
-**What an agent cannot do.** Editing anything under `.reflex/` from the shell, and running `reflex
-trust` or `reflex policy init`, are tamper asks: a human confirms. `reflex setup` also adds
-`Edit(**/.reflex/**)` to Claude Code's ask rules, so its file tools prompt too. `reflex trust`
-itself refuses without a terminal and inside an agent session (`CLAUDECODE`, `CODEX_SANDBOX`,
-`REFLEX_AGENT`), so run it in your own terminal.
+**What an agent is stopped from doing, and the limits.** These are tamper asks, so a human
+confirms them in every mode: a shell command that writes under `.reflex/` (also through a glob such
+as `.ref*`, or naming `policy.json` in a repository with a team policy), and a command or a local
+script it runs that calls `reflex trust`, `reflex policy init` or `team.mjs`, or names
+`trusted.json`. `reflex setup` also adds `Edit(**/.reflex/**)` to Claude Code's ask rules, so its
+file tools prompt too. `reflex trust` refuses without a terminal and inside an agent session
+(`CLAUDECODE`, `CODEX_SANDBOX`, `REFLEX_AGENT`); run it in your own terminal. Those two checks are
+speed bumps, not a boundary. The limits are the same as for `fastlane.json`:
+
+- An agent running as your user that gets arbitrary code past the gate (a command hidden behind
+  `$var` in shadow mode, a program that is not a shell script) can write `trusted.json` itself or
+  fake a terminal. The hash still binds trust to the file you reviewed.
+- The file tools of Codex, opencode and pi are not gated, and neither is Claude Code's when it runs
+  the plugin without `reflex setup`: those can edit `.reflex/policy.json`. The policy is the file in
+  the working tree, so git operations that rewrite the tree (`git checkout <branch>`,
+  `git checkout <rev> -- .`, `git apply`, unpacking an archive) change it like any other file.
+  Protect `.reflex/` in code review (CODEOWNERS, branch protection), as you would CI settings.
 
 **Invalid files.** A file that does not validate never loosens anything, trusted or not. Its valid
 stricter parts still apply, entry by entry, and `reflex doctor` lists each problem.

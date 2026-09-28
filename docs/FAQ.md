@@ -294,9 +294,10 @@ teammate's Reflex applies it while Claude Code, Codex CLI or another supported a
 repository: extra ask and deny rules, always-human patterns, production markers and a mode floor
 such as `enforce`. These team guardrails for AI coding agents can only make Reflex stricter. A team
 fast lane, the one part that loosens, applies only after each teammate runs `reflex trust .` in
-their own terminal, and only while the file keeps the hash they trusted. An agent that edits
-`.reflex/` or runs `reflex trust` gets a tamper ask, and a `.reflex/` above the repository root is
-never read.
+their own terminal, and only while the file keeps the hash they trusted. An agent shell command
+that edits `.reflex/` or runs `reflex trust` gets a tamper ask, and a `.reflex/` in a directory
+without `.git` is never read. Other agents' file tools are not gated, so protect `.reflex/` in code
+review as you would CI settings.
 
 See: [GUIDE: team policy](GUIDE.md#team-policy-share-reflex-rules-across-a-repo).
 

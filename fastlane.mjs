@@ -144,5 +144,5 @@ export function userFastPass(command, cwd, env = {}, entries = [...loadFastLane(
   if (localScripts(command, cwd).some(s => !scriptOk(s))) return false;
   if (npmrcRedirects(cwd)) return false;
   const bare = stripDataHeredocs(command), haystack = [bare, `cwd=${cwd}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].join(" ");
-  return !rulesHit(haystack, {rules: teamEscalation(load("escalation.json"), cwd, command).always_human.rules}, bare);
+  return !rulesHit(haystack, {rules: teamEscalation(load("escalation.json"), cwd).always_human.rules}, bare);
 }

@@ -13,10 +13,11 @@ All notable changes to Reflex are documented here. The format follows
   checked before the bundled rules, a team ask after them), always-human patterns, production
   markers (a matching command that is not read-only asks) and a mode floor (`enforce` raises shadow;
   off stays off). It has no key that removes or relaxes anything, and an unknown key makes it
-  invalid. Patterns are checked so they finish in time (no backreferences, no nested repetition, one
-  unbounded repetition each, 64 per file), and a command over 8 KB asks in a repo with team rules.
-  The file is read only at the repository root (the nearest `.git`), never from a parent directory,
-  and never through a symlink.
+  invalid. Team patterns run on V8's linear-time regular expression engine (patterns it cannot run
+  that way are rejected), so a policy cannot stall the hook into its timeout. Stricter parts come
+  from every repository root around the working directory (a `.git` created in a subdirectory does
+  not shed them), the fast lane from the nearest root only; roots and files must be owned by the
+  user, a `.reflex` without `.git` is never read, and a symlinked file is refused.
 - `reflex trust [dir]` and `reflex trust --revoke [dir]`: a team policy's `fastlane` entries apply
   only while the user trusts that exact file. Trust records the repository and the file's sha256 in
   `~/.config/reflex/trusted.json`; any change to the file drops it until it is trusted again. It
@@ -30,9 +31,11 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Changed
 
-- Tamper check: a shell command that writes under `.reflex/`, or runs `reflex trust` or
-  `reflex policy init`, asks a human. `reflex setup` adds `Edit(**/.reflex/**)` to Claude Code's ask
-  rules.
+- Tamper check: a shell command that writes under `.reflex/` (also through a `.ref*` style glob, or
+  naming `policy.json` where a team policy applies), or a command or local script that calls
+  `reflex trust`, `reflex policy init` or `team.mjs` or names `trusted.json`, asks a human.
+  `reflex setup` adds `Edit(**/.reflex/**)` to Claude Code's ask rules. A team policy's rules can
+  bring their own test (`checkRules` calls `rule.test` when present).
 
 ### Fixed
 

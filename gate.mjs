@@ -31,7 +31,7 @@ import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
-import {teamMode, teamRules} from "./team.mjs";
+import {globsReflex, teamMode, teamPolicy, teamRules} from "./team.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env;
@@ -847,7 +847,8 @@ export function checkRules(haystack, rules, bare = haystack, views = {}) {
     if (view === false) continue;
     const [h, b] = view ?? [haystack, bare];
     const text = r.context === false ? b : h;
-    if (r.all.every(p => rx(p).test(text))) return {outcome: r.outcome, rule: r.rule, id: r.id};
+    // a team policy's rule brings its own linear-time test (team.mjs)
+    if (r.test ? r.test(text) : r.all.every(p => rx(p).test(text))) return {outcome: r.outcome, rule: r.rule, id: r.id};
   }
   return null;
 }
@@ -1332,6 +1333,8 @@ const SEVERITY = {deny: 2, ask: 1};
 // `run`: one budget for the whole call, shared by every spelling precheck recurses into, and the
 // local scripts already scanned, so each is scanned once.
 const COMMAND_BYTES = 32 * 1024, PRECHECK_MS = 3000;
+// Granting trust in a team policy (team.mjs), by the CLI or by its file or function.
+const TEAM_TAMPER = /\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b|\bteam\.mjs\b|\btrusted\.json\b|\btrustRepo\b/;
 export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now() + PRECHECK_MS, scan: Date.now() + SCAN_MS, scripts: new Set()}) {
   const size = n => ({outcome: "ask", rule: `command too large to check (${n})`, id: "command-size", source: "rule", policy_version: load("rules.json").version});
   if (command.length > COMMAND_BYTES) return largeDeny(command, cwd, env, run.deadline) ?? size(`over ${COMMAND_BYTES / 1024} KB`);
@@ -1418,7 +1421,7 @@ const wordSpelling = s => {
 };
 function precheckAs(command, cwd, env, run, alt = false) {
   // plus the repo's team policy (.reflex/policy.json, team.mjs): its rules only add asks and denies
-  const rules = teamRules(load("rules.json"), cwd, command);
+  const rules = teamRules(load("rules.json"), cwd);
   // The shell deletes a backslash-newline: `git push --force \⏎ origin main` is one line.
   command = command.replace(/\\\n/g, "");
   // Rules see the raw command (redaction could hide the very marker a rule looks for, such as
@@ -1452,7 +1455,9 @@ function precheckAs(command, cwd, env, run, alt = false) {
       (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // A repo's team policy (.reflex/) and the user's trust in it (team.mjs): a human's call.
-  if (/\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b/.test(command.replace(/["'\\]/g, "")) || /(^|[^\w.-])\.reflex(?=[^\w.-]|$)/.test(writes))
+  // A glob that expands to .reflex counts, and so does naming policy.json where a team policy applies.
+  if (TEAM_TAMPER.test(command.replace(/["'\\]/g, "")) || /(^|[^\w.-])\.reflex(?=[^\w.-]|$)/.test(writes) || globsReflex(writes) ||
+      (/\bpolicy\.json\b/.test(writes) && teamPolicy(cwd)))
     hold(ruled({outcome: "ask", rule: "changes a team policy (.reflex/) or trusts one (reflex trust)", id: "tamper"}));
   // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
   if (/\bsuggest\b[^\n;&|]*\s--write\b/.test(command.replace(/["'\\]/g, "")))
@@ -1472,7 +1477,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
   const late = () => Date.now() > run.scan;
   for (const s of localScripts(command, cwd).filter(s => s.body && !run.scripts.has(s.path))) {
     run.scripts.add(s.path);
-    if (s.body.includes(HERE) || s.body.includes(CONFIG.data))
+    if (s.body.includes(HERE) || s.body.includes(CONFIG.data) || TEAM_TAMPER.test(s.body.replace(/["'\\]/g, "")))
       { hold(ruled({outcome: "ask", rule: `touches the Reflex gate, its setup or its logs (in ${s.path})`, id: "tamper"})); continue; }
     const {lines} = scriptLines(s.body), all = lines.join("\n");
     let sh = checkRules(all + ctx, whole, all);
