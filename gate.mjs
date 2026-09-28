@@ -1312,23 +1312,59 @@ export function precheck(command, cwd, env, depth = 0) {
   // shell passes them (wordSpelling); a rule on any of them counts, the most severe wins
   let best = own;
   for (const alt of depth < 2 ? [ruleSpelling(c), wordSpelling(c)] : []) {
-    const other = alt ? precheck(alt, cwd, env, depth + 1) : null;
+    const other = alt === TOO_MANY ? size(`over ${BRACE_WORDS * 4} words after brace expansion`) : alt ? precheck(alt, cwd, env, depth + 1) : null;
     if (other?.source === "rule" && !(best?.source === "rule" && (SEVERITY[best.outcome] ?? 0) >= (SEVERITY[other.outcome] ?? 0))) best = other;
   }
   if (depth === 0 && Date.now() - t0 > PRECHECK_MS && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
   return best;
 }
+// Brace expansion as the shell does it, on a word's raw text: lists ({a,b}, nested), sequences
+// ({1..3}, {a..c}, {01..9..2}) and any number per word. Quoted or escaped braces and ${…} are text.
+// Each result keeps its quotes, so the rules read it with the other spellings. null: over BRACE_WORDS.
+const BRACE_WORDS = 256, TOO_MANY = Symbol("braces");
+function braceSeq([, x, y, step]) {
+  const num = /\d/.test(x);
+  if (num !== /\d/.test(y)) return undefined;
+  const a = num ? +x : x.charCodeAt(0), b = num ? +y : y.charCodeAt(0), st = Math.abs(+step || 1) || 1;
+  const n = Math.floor(Math.abs(b - a) / st) + 1, pad = num && /(^|\s)-?0\d/.test(x + " " + y) ? Math.max(x.length, y.length) : 0;
+  if (n > BRACE_WORDS) return null;
+  return Array.from({length: n}, (_, i) => {
+    const v = a + (b >= a ? i : -i) * st;
+    return num ? (v < 0 ? "-" : "") + String(Math.abs(v)).padStart(pad - (v < 0 ? 1 : 0), "0") : String.fromCharCode(v);
+  });
+}
+function braceWords(raw) {
+  const out = [], todo = [raw];
+  while (todo.length) {
+    const r = todo.pop();
+    let m = maskQuotes(r, "_").replace(/\\[\s\S]/g, "__"), hit = null;
+    for (let g; !hit && (g = /\{([^{}]*)\}/.exec(m)); ) {
+      const at = g.index + 1, end = g.index + g[0].length - 1, cuts = [...g[1].matchAll(/,/g)].map(c => at + c.index);
+      const q = /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$/.exec(g[1]);
+      const alts = m[g.index - 1] === "$" ? undefined : cuts.length ? [at, ...cuts.map(c => c + 1)].map((b, i) => r.slice(b, cuts[i] ?? end)) : q ? braceSeq(q) : undefined;
+      if (alts === null) return null;
+      if (alts) hit = [g.index, end + 1, alts];
+      else m = m.slice(0, g.index) + "_" + g[1] + "_" + m.slice(end + 1);   // {x}, ${x}: text
+    }
+    if (!hit) { out.push(r); continue; }
+    for (const x of hit[2].reverse()) todo.push(r.slice(0, hit[0]) + x + r.slice(hit[1]));
+    if (todo.length + out.length > BRACE_WORDS) return null;
+  }
+  return out;
+}
 // The command with each word the shell reads differently from its text written plainly: escapes
-// and $'…' decoded (`ma\\in`, `$'ma\\x69n'`, `-\\f`, `pu\\sh`), a {a,b} brace list expanded into its
-// words (`m{a,}in` is `main min`). Only words whose value needs no quoting. null when nothing changes.
+// and $'…' decoded (`ma\\in`, `$'ma\\x69n'`, `-\\f`, `pu\\sh`, only words whose value needs no
+// quoting), brace lists and sequences expanded into their words (`m{a,}in` is `main min`,
+// `ma{i..i}n` is `main`). null when nothing changes; TOO_MANY past BRACE_WORDS * 4 expanded words in all.
 const wordSpelling = s => {
   const words = shellWords(s);
   if (!words) return null;
-  let out = s;
+  let out = s, n = 0;
   for (const w of [...words].reverse()) {
-    const m = maskQuotes(w.raw, "_"), brace = /^([^{}]*)\{([^{}]*,[^{}]*)\}([^{}]*)$/.exec(w.raw);
+    const m = maskQuotes(w.raw, "_"), b = /[{}]/.test(m) ? braceWords(w.raw) : [w.raw];
+    if (b === null || (b.length > 1 && (n += b.length) > BRACE_WORDS * 4)) return TOO_MANY;
     let v = null;
-    if (brace && m === w.raw && !/[\\$'"`]/.test(w.raw)) v = brace[2].split(",").map(x => brace[1] + x + brace[3]).join(" ");
+    if (b.length > 1 || b[0] !== w.raw) v = b.join(" ");
     else if (!w.exps.length && /\\|\$'/.test(m) && /^[^\s'"`$;&|<>()\\{}*?[\]#]*$/.test(w.value)) v = w.value;
     if (v !== null) out = out.slice(0, w.start) + v + out.slice(w.end);
   }
@@ -2240,6 +2276,8 @@ async function selfcheck() {
     "git --work-tree=$(pwd) push -f origin main", "git -C $((1)) push -f origin main", "git -C `pwd` push -f origin main", "git -C ${D} push -f origin main",
     "git -C $(git rev-parse --show-toplevel) push -f origin main"]) ok(pw(c) === "force-push-main", `force push main, an expanded git option value: ${c}`);
   ok(pw("git -C $(pwd) push --mirror") === "push-mirror" && pw("git -C $(pwd) push -f") === "force-push-unknown-branch", "expanded git -C: mirror, unknown branch");
+  ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin x{1..9999}") === "command-size",
+     "brace sequences and several braces per word are expanded for the rules; too many words ask");
   { const t0 = Date.now(); redact("echo " + "'a' ".repeat(40) + "done > gen.txt; make build"); ok(Date.now() - t0 < 500, "redact: a run of quoted words is linear"); }
   ok(pw("git -C /repo push --mirror") === "push-mirror" && pw("git -P --no-pager push origin --mirror") === "push-mirror", "git global options, push --mirror");
   for (const c of ["git push -f -o merge_request.target=main origin feat/x", "git push -f --push-option=target=main origin feat/x", "git push -f origin feat/x -o ci.skip=main"])
