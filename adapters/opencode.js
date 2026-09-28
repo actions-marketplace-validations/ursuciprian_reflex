@@ -13,12 +13,32 @@
 // the raw CallToolResult, so its content[].text): block replaces the offending text, warn appends
 // a note. chat.message checks each prompt for pasted credentials; a block throws, which is the only
 // way a plugin can stop a message in opencode 1.4 (it surfaces as an error).
+//
+// The same file is the opencode npm plugin ("plugin": ["@ursuciprian/reflex"] in opencode.json;
+// package.json "main" points here). Unfilled, it runs the gate next to it with `node` from PATH (opencode
+// itself runs on Bun), and the mode and allow come from ~/.config/reflex/config.json as for any
+// hook without flags. It stands down when `reflex setup` wrote the plugin file into opencode's global
+// plugins directory and that file's gate exists, so no call is judged twice.
 import {spawnSync} from "node:child_process";
+import {existsSync, readFileSync} from "node:fs";
+import {homedir} from "node:os";
+import {join} from "node:path";
+import {fileURLToPath} from "node:url";
 
-const GATE = process.env.REFLEX_GATE ?? "__REFLEX_GATE__";
-const NODE = process.env.REFLEX_NODE ?? "__REFLEX_NODE__";
-const MODE = process.env.REFLEX_MODE ?? "__REFLEX_MODE__";
-const ALLOW = process.env.REFLEX_ALLOW ?? "__REFLEX_ALLOW__";
+const FILLED = "__REFLEX_GATE__".endsWith("gate.mjs");   // install.mjs replaced the placeholders
+const XDG = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+const saved = key => { try { return JSON.parse(readFileSync(join(XDG, "reflex/config.json"), "utf8"))[key]; } catch { return undefined; } };
+const GATE = process.env.REFLEX_GATE ?? (FILLED ? "__REFLEX_GATE__" : fileURLToPath(new URL("../gate.mjs", import.meta.url)));
+const NODE = process.env.REFLEX_NODE ?? (FILLED ? "__REFLEX_NODE__" : "node");
+const MODE = process.env.REFLEX_MODE ?? (FILLED ? "__REFLEX_MODE__" : saved("mode") ?? "shadow");
+const ALLOW = process.env.REFLEX_ALLOW ?? (FILLED ? "__REFLEX_ALLOW__" : saved("allow") ?? "off");
+// The file `reflex setup --agent opencode` writes, where opencode loads it, with a gate that still
+// exists (a stale file gates nothing, so the npm plugin keeps running). Not exported: opencode calls
+// every exported function as a plugin.
+function setupPluginLive(file = join(XDG, "opencode/plugins/reflex.js")) {
+  try { const gate = readFileSync(file, "utf8").match(/"(\/[^"]*\/gate\.mjs)"/)?.[1]; return !!gate && existsSync(gate); }
+  catch { return false; }
+}
 const INSTRUCTIONS = GATE.replace(/gate\.mjs$/, "instructions.mjs");
 const GUARD = GATE.replace(/gate\.mjs$/, "guard.mjs");
 // 0: the default; with System 2 on, install.mjs writes how long a gate call may take (Jev plus the judge).
@@ -77,7 +97,7 @@ function gate(flag, payload, script = GATE) {
   return r.stdout;
 }
 
-export const Reflex = async ({directory, client}) => ({
+export const Reflex = async ({directory, client}) => !FILLED && setupPluginLive() ? {} : ({
   "chat.message": async (input, output) => {
     const prompt = (output.parts ?? []).filter(p => p.type === "text" && !p.synthetic).map(p => p.text).join("\n");
     if (!prompt.trim()) return;

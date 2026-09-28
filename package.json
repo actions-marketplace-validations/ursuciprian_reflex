@@ -7,9 +7,12 @@
     "coding-agents",
     "claude-code",
     "claude-code-hooks",
+    "claude-code-plugin",
     "codex",
     "codex-cli",
+    "codex-plugin",
     "opencode",
+    "opencode-plugin",
     "pre-execution-hook",
     "command-approval",
     "guardrails",
@@ -47,6 +50,7 @@
     "url": "https://github.com/ursuciprian/reflex/issues"
   },
   "type": "module",
+  "main": "adapters/opencode.js",
   "engines": {
     "node": ">=18"
   },
@@ -56,6 +60,8 @@
   "files": [
     "*.mjs",
     ".claude-plugin/",
+    ".codex-plugin/",
+    ".agents/",
     "hooks/",
     "commands/",
     "skills/",
