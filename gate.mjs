@@ -21,11 +21,11 @@
 // "allow" (skip the agent's own prompt) is opt-in twice, REFLEX_ALLOW=on and enforce mode, and
 // only for a fresh Jev answer that clears the policy's allow gate.
 import {appendFileSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
-        openSync, readSync, writeSync, closeSync, rmSync, readdirSync, fstatSync} from "node:fs";
+        openSync, readSync, writeSync, closeSync, rmSync, readdirSync, fstatSync, lstatSync, realpathSync, symlinkSync} from "node:fs";
 import {createHash, randomUUID} from "node:crypto";
 import {execFileSync, spawn, spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
-import {dirname, join, posix, resolve} from "node:path";
+import {basename, dirname, join, posix, resolve} from "node:path";
 import {isatty} from "node:tty";
 import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
@@ -1267,15 +1267,35 @@ function nestedCheckout(cwd) {
 // Does the command stay in the nested checkout `root`, as far as its text shows? Not when it climbs
 // out (..), names the previous directory or the directory stack ($OLDPWD, cd -, popd, pushd ±N), or
 // changes to a directory this cannot resolve inside root (an expansion, ~, an absolute path elsewhere).
+// Symlinks are resolved (a link in root can point at the checkout): each cd target, and each word
+// that names a path in root (from cwd or from a cd target), must resolve inside root. A path that
+// cannot be resolved (a word with an expansion, a link realpath refuses) restores the checkout view.
 function staysNested(command, cwd, root) {
   const t = command.replace(/["'\\]/g, "");
   // CDPATH changes where a relative cd goes; a symlink made in the command can point anywhere
   if (/(^|[\s/=:])\.\.([\s/;&|)]|$)/.test(t) || /\b(OLDPWD|DIRSTACK|CDPATH)\b/.test(t) || /\bln\b[^;&|\n]*\s(-[a-zA-Z]*s|--symbolic)\b/.test(t)) return false;
+  let real;
+  try { real = realpathSync(root); } catch { return false; }
+  // the real path of p, through its deepest part that exists: inside root's real path?
+  const inside = p => {
+    const tail = [];
+    for (let d = p; ; tail.unshift(basename(d)), d = dirname(d)) {
+      try { lstatSync(d); } catch { if (dirname(d) === d) return false; continue; }
+      try { return (join(realpathSync(d), ...tail) + "/").startsWith(real + "/"); } catch { return false; }
+    }
+  };
+  const bases = [cwd];
   for (const m of t.matchAll(/(?<![\w.\/-])(cd|pushd|popd|chdir)(?![\w.\/-])((?:\s+-[LPe@]+)*)(?:\s+--)?(?:\s+([^\s;&|<>()]+))?/g)) {
     const d = m[3];
-    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/")) return false;
+    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/") || !inside(resolve(cwd, d))) return false;
+    bases.push(resolve(cwd, d));
   }
-  return true;
+  const words = shellWords(command);
+  if (!words || words.some(w => w.exps.length)) return false;
+  return words.every(w => [w.value, w.value.replace(/^[^=]*=/, "")].every(v => bases.every(b => {
+    const p = resolve(b, v);
+    return !(p + "/").startsWith(root + "/") || inside(p);
+  })));
 }
 
 // A quoted part of a word: quotes with no space, operator, escape or expansion inside, next to other
@@ -2443,6 +2463,10 @@ async function selfcheck() {
     for (const c of ["cd sub && sed -i '' s/a/b/ ../gate.mjs"]) ok(pw(c, nested) === "tamper", `nested checkout, climbs out: ${c}`);
     for (const c of ["cd sub && sed -i '' s/a/b/ gate.mjs", "sed -i '' s/a/b/ setup/tool-gate/rules.json"])
       ok(pw(c, nested) !== "tamper", `nested checkout, stays inside: ${c}`);
+    symlinkSync(HERE, join(nested, "up"));
+    symlinkSync(join(nested, "sub"), join(nested, "in"));
+    ok(pw("sed -i '' s/a/b/ up/gate.mjs", nested) === "tamper" && pw("cd up && sed -i '' s/a/b/ gate.mjs", nested) === "tamper" &&
+       pw("sed -i '' s/a/b/ in/gate.mjs", nested) !== "tamper", "nested checkout: symlinks are resolved, one out of it restores the checkout view");
   } finally { rmSync(nested, {recursive: true, force: true}); }
 
   // policy
