@@ -23,11 +23,51 @@ try {
     [process.execPath, ["policy.mjs"]], [process.execPath, ["gate.mjs", "--selfcheck"]],
     [process.execPath, ["instructions.mjs", "--selfcheck"]], [process.execPath, ["install.mjs", "--selfcheck"]],
     [process.execPath, ["guard.mjs", "--selfcheck"]], [process.execPath, ["judge2.mjs", "--selfcheck"]], [process.execPath, ["autonomy.mjs", "--selfcheck"]],
-    [process.execPath, ["context.mjs", "--selfcheck"]], [process.execPath, ["router/server.mjs", "--selfcheck"]],
+    [process.execPath, ["context.mjs", "--selfcheck"]], [process.execPath, ["router/server.mjs", "--selfcheck"]], [process.execPath, ["infra.mjs", "--selfcheck"]],
     ["python3", ["routing/reflex_router.py", "--selfcheck"]],
   ]) {
     const r = spawnSync(program, args, {cwd: root, env, stdio: "inherit", timeout: 60000});
     assert.equal(r.status, 0, `${program} ${args.join(" ")} failed: ${r.error ?? r.status}`);
+  }
+  // The plan-aware infra gate through the agent contract: a fake terraform on PATH, a user config and
+  // a team policy that is stricter. The decision JSON and the trace carry the counts.
+  {
+    const box = join(scratch, "infra"), bin = join(box, "bin"), repo = join(box, "repo"), cfg = join(box, "config"), data = join(box, "data");
+    for (const d of [bin, join(repo, ".git"), join(repo, ".reflex"), join(cfg, "reflex"), join(repo, "envs/prod")]) mkdirSync(d, {recursive: true});
+    writeFileSync(join(bin, "terraform"), `#!/bin/sh\necho "$*" >> "${join(box, "calls.log")}"\n[ "$1" = show ] || exit 9\ntail -n +2 "$4"\n`, {mode: 0o755});
+    const plan = (dir, name, fixture) => writeFileSync(join(dir, name), `PK\x03\x04\n${readFileSync(join(root, "setup/tool-gate/plans", `${fixture}.json`), "utf8")}`);
+    plan(repo, "destroy.plan", "destroy"); plan(repo, "clean.plan", "clean"); plan(join(repo, "envs/prod"), "tfplan", "clean");
+    writeFileSync(join(cfg, "reflex/config.json"), JSON.stringify({infra: {destroy: "ask"}}));
+    const ienv = {...env, PATH: `${bin}:${process.env.PATH}`, XDG_CONFIG_HOME: cfg, REFLEX_DATA_DIR: data, REFLEX_ENGINE: "local", REFLEX_MODE: "enforce"};
+    const decideIn = (command, cwd = repo, e = ienv) => JSON.parse(success(invoke("gate.mjs", ["--decide"], {env: e, input: JSON.stringify({agent: "test", command, cwd})})));
+    let d = decideIn("terraform apply destroy.plan");
+    assert.ok(d.effective === "ask" && /plan destroys 1: aws_instance.old/.test(d.reason) && d.plan.delete === 1, `user config infra.destroy ask: ${JSON.stringify(d)}`);
+    writeFileSync(join(repo, ".reflex/policy.json"), JSON.stringify({version: 1, infra: {destroy: "deny", require_plan_in_prod: true}}));
+    d = decideIn("terraform apply destroy.plan");
+    assert.ok(d.effective === "deny" && d.source === "rule" && d.plan.delete === 1, `a team policy forces deny: ${JSON.stringify(d)}`);
+    d = decideIn("terraform apply clean.plan");
+    assert.ok(d.effective === "pass" && d.source === "plan" && d.plan.create === 1 && /verified saved plan/.test(d.reason), `a clean plan, keyless: pass: ${JSON.stringify(d)}`);
+    d = decideIn("terraform apply clean.plan", repo, {...ienv, REFLEX_MODE: "shadow"});
+    assert.equal(d.effective, "pass");
+    assert.equal(decideIn("terraform -chdir=envs/prod apply tfplan").effective, "ask", "production: a clean plan asks");
+    d = decideIn("terraform -chdir=envs/prod apply -auto-approve");
+    assert.ok(d.effective === "deny" && /without a saved plan/.test(d.reason), `team: a saved plan is required in production: ${JSON.stringify(d)}`);
+    d = decideIn("terraform apply -auto-approve", repo, {...ienv, REFLEX_MODE: "shadow"});
+    assert.ok(d.effective === "ask" && /terraform plan -out=tfplan/.test(d.reason), "no plan asks in every mode, with the fix");
+    const traced = readFileSync(join(data, "trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)).filter(t => t.plan);
+    assert.ok(traced.some(t => t.decision === "deny" && t.plan.delete === 1) && traced.some(t => t.plan.create === 1), "the trace has the counts");
+    // the Jev engine: a clean plan goes to the usual judge, with the counts in its state; Jev down is its fallback
+    d = decideIn("terraform apply clean.plan", repo, {...ienv, REFLEX_ENGINE: "jev", TYPESAFE_API_KEY: "test-key"});
+    assert.ok(d.source === "fallback" && d.effective === "ask" && d.plan.create === 1, `jev: the policy decides, not the plan: ${JSON.stringify(d)}`);
+    const jevState = JSON.parse(readFileSync(join(data, "trace.jsonl"), "utf8").trim().split("\n").at(-1)).state;
+    assert.equal(jevState.call.plan.create, 1, "Jev's state carries the counts");
+    assert.ok(readFileSync(join(box, "calls.log"), "utf8").trim().split("\n").every(l => /^show -json -no-color \//.test(l)), "the hook only ever ran terraform show");
+    // the Claude Code hook shape
+    const hook = JSON.parse(success(invoke("gate.mjs", ["--claude"], {env: ienv, input: JSON.stringify({tool_name: "Bash", tool_input: {command: "terraform apply destroy.plan"}, cwd: repo, session_id: "S"})})));
+    assert.equal(hook.hookSpecificOutput.permissionDecision, "deny");
+    // doctor names the binaries
+    const doc = JSON.parse(success(invoke("status.mjs", ["--json"], {env: ienv, cwd: repo})));
+    assert.ok(doc.infra.terraform === join(bin, "terraform") && doc.infra.destroy === "deny" && doc.infra.require_plan_in_prod === true, JSON.stringify(doc.infra));
   }
   // engine laya against a stub Laya server (no model, no download, no network): the Jev request
   // shape, no key sent, the configured checkpoint named, and an outage handled like a Jev outage.
