@@ -20,6 +20,8 @@
 // mode Jev runs in a detached background process, so the agent never waits for it.
 // "allow" (skip the agent's own prompt) is opt-in twice, REFLEX_ALLOW=on and enforce mode, and
 // only for a fresh Jev answer that clears the policy's allow gate.
+// First: failsafe.mjs answers the agent (ask, or block where it cannot ask) on any error after this.
+import {hookFailure} from "./failsafe.mjs";
 import {appendFileSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
         openSync, readSync, writeSync, closeSync, rmSync, readdirSync, fstatSync, lstatSync, realpathSync, symlinkSync} from "node:fs";
 import {createHash, randomUUID} from "node:crypto";
@@ -3039,10 +3041,9 @@ const argv = process.argv.slice(2);
 const flag = f => argv.includes(f);
 const opt = n => { const i = argv.indexOf(n); return i > -1 ? argv[i + 1] : undefined; };
 const main = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-const guarded = fn => Promise.resolve().then(fn).catch(e => console.error(`reflex: ${e.message}`));
+// An error a hook does not handle goes to failsafe.mjs: the pre-execution hooks ask, the others warn.
+const guarded = fn => Promise.resolve().then(fn).catch(hookFailure);
 
-// A broken gate must never block the agent silently: errors go to stderr and the process exits 0,
-// so the agent's own permission rules still apply.
 if (!main) { /* imported as a library */ }
 else if (flag("--selfcheck")) await selfcheck();
 else if (flag("--claude")) await guarded(async () => claudePre(readStdin()));
@@ -3071,7 +3072,8 @@ else if (flag("--sh")) {
     if (verdict === "deny") { console.error(`${d.reason}\nrefused; a human can run it directly if it is intended.`); process.exit(126); }
   }
   const r = spawnSync(bash, args, {stdio: "inherit"});
-  if (command) record({agent: ENV.REFLEX_AGENT ?? "shell", event: "ran", exit_code: r.status});
+  // It ran: nothing after this may fail into failsafe.mjs, which would run it again.
+  if (command) try { record({agent: ENV.REFLEX_AGENT ?? "shell", event: "ran", exit_code: r.status}); } catch { /* the log only */ }
   process.exit(r.status ?? 1);
 }
 else if (flag("--check")) {

@@ -86,12 +86,16 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
   } else if (files[name]) try {
     const file = files[name], source = readFileSync(file, "utf8");
     if (["claude", "codex"].includes(name)) {
-      const expected = `${quote(saved.node)} ${quote(gate)} --${name} --mode ${saved.mode} --allow ${saved.allow}`;
+      // Through hook.mjs (fails closed); the form before it still gates, but a crash while it loads passes.
+      const entry = [`${quote(saved.node)} ${quote(join(saved.root, "hook.mjs"))} `, `${quote(saved.node)} `];
+      const expected = entry.map(e => `${e}${quote(gate)} --${name} --mode ${saved.mode} --allow ${saved.allow}`);
       const matcher = name === "claude" ? "Bash|Task|Agent" : "^(Bash|spawn_agent)$";
-      item.configured = (JSON.parse(source).hooks?.PreToolUse ?? []).some(g => g.matcher === matcher &&
-        g.hooks?.some(h => h.type === "command" && h.command === expected));
-      const post = `${quote(saved.node)} ${quote(guard)} --${name} --mode ${saved.mode}`;
-      item.guard = (JSON.parse(source).hooks?.PostToolUse ?? []).some(g => g.hooks?.some(h => h.type === "command" && h.command === post));
+      const pre = (JSON.parse(source).hooks?.PreToolUse ?? []).flatMap(g => g.matcher === matcher ? g.hooks ?? [] : []).filter(h => h.type === "command");
+      item.configured = pre.some(h => expected.includes(h.command));
+      if (item.configured && !pre.some(h => h.command === expected[0]))
+        warnings.push(`${name}: the hooks in ${file} predate the fail-closed entry (hook.mjs): an error while Reflex loads would let the command run. Re-run reflex setup --agents ${name}.`);
+      const post = entry.map(e => `${e}${quote(guard)} --${name} --mode ${saved.mode}`);
+      item.guard = (JSON.parse(source).hooks?.PostToolUse ?? []).some(g => g.hooks?.some(h => h.type === "command" && post.includes(h.command)));
     } else {
       item.configured = source.includes(JSON.stringify(gate)) && source.includes(JSON.stringify(saved.node)) &&
         source.includes(JSON.stringify(saved.mode)) && source.includes(JSON.stringify(saved.allow));
@@ -116,7 +120,7 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
         const input = native ? {tool_name: "Bash", tool_input: {command}, cwd: scratch, session_id: "reflex-doctor"}
           : {agent: name, command, cwd: scratch, session_id: "reflex-doctor"};
         // Input is only judged, never executed. Probe records live in a disposable directory.
-        const result = spawnSync(saved.node, [gate, native ? `--${name}` : "--decide", "--mode", saved.mode, "--allow", saved.allow], {
+        const result = spawnSync(saved.node, [...(existsSync(join(saved.root, "hook.mjs")) ? [join(saved.root, "hook.mjs")] : []), gate, native ? `--${name}` : "--decide", "--mode", saved.mode, "--allow", saved.allow], {
           encoding: "utf8", timeout: 10000, input: JSON.stringify(input),
           env: {...process.env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: scratch}});
         let effective;
@@ -275,8 +279,19 @@ if (pending.length) warnings.push(`${pending.length} item${pending.length === 1 
 const trips = runawayTrips(Date.now() - 36e5);
 const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
 if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
+// Hook errors (failsafe.mjs): a hook that broke and answered ask, block, pass (shadow) or a warning instead of a decision.
+const errorsFile = join(CONFIG.data, "health", "errors.jsonl");
+let hookErrors = [];
+try { hookErrors = readFileSync(errorsFile, "utf8").split("\n").flatMap(l => { try { const e = JSON.parse(l); return Date.parse(e.at) > Date.now() - 864e5 ? [e] : []; } catch { return []; } }); }
+catch { /* no hook has failed */ }
+const hook_errors = {last_day: hookErrors.length, gate: hookErrors.filter(e => e.script === "gate.mjs" && !/post|prompted|record|bg/.test(e.flag)).length, last: hookErrors.at(-1) ?? null, file: errorsFile};
+if (hook_errors.last) {
+  const l = hook_errors.last, ago = Math.round((Date.now() - Date.parse(l.at)) / 60e3);
+  (hook_errors.gate ? errors : warnings).push(`${hookErrors.length} Reflex hook error${hookErrors.length === 1 ? "" : "s"} in the last 24 h, ${hook_errors.gate} in the pre-execution gate; last ${ago} min ago: ${l.script} ${l.flag} (${l.mode} mode) answered ${l.outcome}: ${l.error}.` +
+    `${hookErrors.some(e => e.outcome === "pass" && e.mode === "shadow") ? " In shadow mode a broken gate checks nothing, deterministic rules included." : ""} Log: ${errorsFile}.`);
+}
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, freeze, notify, agents, errors, warnings};
+  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, hook_errors, team_policy, freeze, notify, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);

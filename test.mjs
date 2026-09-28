@@ -823,8 +823,8 @@ try {
     const installed = read(join(home, ".claude/settings.json")).hooks;
     assert.deepEqual(shape(hooks), shape(installed), "hooks.json events, matchers, flags and timeouts match install.mjs");
     for (const h of Object.values(hooks).flat().flatMap(g => g.hooks)) {
-      assert.match(h.command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/(gate|guard|instructions)\.mjs" --[\w-]+ --plugin$/, h.command);
-      assert.ok(existsSync(join(root, h.command.match(/\}\/(\w+\.mjs)/)[1])));
+      assert.match(h.command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hook\.mjs" "\$\{CLAUDE_PLUGIN_ROOT\}\/(gate|guard|instructions)\.mjs" --[\w-]+ --plugin$/, h.command);
+      for (const [, f] of h.command.matchAll(/\}\/(\w+\.mjs)/g)) assert.ok(existsSync(join(root, f)), f);
     }
     for (const c of ["status", "report", "replay", "check", "queue", "suggest"]) assert.ok(existsSync(join(root, "commands", `${c}.md`)), `/reflex:${c}`);
     for (const f of ["commands/suggest.md", "commands/queue.md", "commands/report.md", "commands/replay.md", "commands/status.md"]) {
@@ -844,7 +844,7 @@ try {
       "echo '{}' > ~/.claude/plugins/installed_plugins.json"])
       assert.notEqual(judged(c), "pass", c);
     // Run the plugin's PreToolUse command as Claude Code would. No saved config: local engine, shadow mode.
-    const pre = hooks.PreToolUse[0].hooks[0].command.replace("${CLAUDE_PLUGIN_ROOT}", root);
+    const pre = hooks.PreToolUse[0].hooks[0].command.replaceAll("${CLAUDE_PLUGIN_ROOT}", root);
     const canary = JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "git push --force origin main"}, session_id: "p", cwd: home});
     const hook = h => spawnSync("/bin/sh", ["-c", pre], {encoding: "utf8", input: canary, env: {...clean, HOME: h, XDG_CONFIG_HOME: join(h, ".config"), REFLEX_DATA_DIR: join(h, "data")}});
     const bare = join(scratch, "plugin-bare");
@@ -859,7 +859,7 @@ try {
     assert.equal(r.stdout, "", "plugin stands down when settings hooks exist");
     assert.ok(!existsSync(join(home, "data")), "a standing-down plugin hook records nothing");
     for (const h of Object.values(hooks).flat().flatMap(g => g.hooks)) {
-      const x = spawnSync("/bin/sh", ["-c", h.command.replace("${CLAUDE_PLUGIN_ROOT}", root)], {encoding: "utf8", input: canary,
+      const x = spawnSync("/bin/sh", ["-c", h.command.replaceAll("${CLAUDE_PLUGIN_ROOT}", root)], {encoding: "utf8", input: canary,
         env: {...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), REFLEX_DATA_DIR: join(home, "data")}});
       assert.ok(x.status === 0 && x.stdout === "", `stands down: ${h.command}`);
     }
@@ -900,7 +900,7 @@ try {
     })])]));
     assert.deepEqual(shape(hooks), shape(read(join(home, ".codex/hooks.json")).hooks), "hooks/codex.json events, matchers, flags and timeouts match install.mjs --agent codex");
     const all = Object.values(hooks).flat().flatMap(g => g.hooks);
-    for (const h of all) assert.match(h.command, /^node "\$PLUGIN_ROOT\/(gate|guard|instructions)\.mjs" --codex(-[\w]+)? --plugin$/, h.command);
+    for (const h of all) assert.match(h.command, /^node "\$PLUGIN_ROOT\/hook\.mjs" "\$PLUGIN_ROOT\/(gate|guard|instructions)\.mjs" --codex(-[\w]+)? --plugin$/, h.command);
     // Run the hooks as Codex does: $SHELL -lc with PLUGIN_ROOT in the environment. No saved config: local engine, shadow mode.
     const canary = JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "git push --force origin main"}, session_id: "cx", cwd: home});
     const run = (command, h, extra = {}) => spawnSync("/bin/sh", ["-c", command], {encoding: "utf8", input: canary,
