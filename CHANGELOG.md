@@ -8,6 +8,12 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Added
 
+- A demo GIF at the top of the README (`assets/demo.gif`): a real Claude Code session with the
+  Reflex plugin in a scratch repository, where the injection guard removes a hidden instruction from
+  a dependency README, a rule denies `git push --force origin main` and `terraform apply` in `prod/`
+  asks. `docs/demo/demo.tape` records it with VHS, `docs/demo/setup.sh` builds the scratch repo and
+  state under `/tmp/reflex-demo`, `docs/demo/redact.sh` covers the account line of the welcome
+  banner, and `docs/demo/README.md` explains how to re-record it.
 - Team policy: a repository can commit `.reflex/policy.json`, and every teammate's Reflex applies it
   while an agent works there. It adds rules (the `rules.json` shape, ask or deny; a team deny is
   checked before the bundled rules, a team ask after them), always-human patterns, production
