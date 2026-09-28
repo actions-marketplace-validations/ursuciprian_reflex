@@ -9,7 +9,7 @@
 //   node report.mjs --calibration           how well blast / mutates predict your approvals (ECE)
 import {existsSync, readFileSync} from "node:fs";
 import {join} from "node:path";
-import {CONFIG, checkRules, load, promptKey, setupFile} from "./gate.mjs";
+import {CONFIG, load, promptKey, rulesHit, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
 import {budgetState} from "./judge2.mjs";
 import {alwaysHuman, breaker, listItems, runawayTrips} from "./autonomy.mjs";
@@ -180,7 +180,7 @@ for (const r of trace.filter(r => ["approve", "deny"].includes(r.ladder?.judge?.
 }
 const rules = load("rules.json");
 const candidates = [...byShape].filter(([t, e]) => e.approve >= MIN_APPROVALS && !e.deny && !t.includes("<redacted>") &&
-  !alwaysHuman({source: "jev"}, {command: e.command, cwd: ""}, {}, {system1: true}) && !checkRules(e.command, rules))
+  !alwaysHuman({source: "jev"}, {command: e.command, cwd: ""}, {}, {system1: true}) && !rulesHit(e.command, rules))
   .map(([t, e]) => ({approvals: e.approve, pattern: `^${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/<(id|hex|n|ts)>/g, "\\S+")}$`}))
   .sort((a, b) => b.approvals - a.approvals);
 const items = listItems(), answered = items.filter(i => i.decided_at && Date.parse(i.decided_at) >= since);

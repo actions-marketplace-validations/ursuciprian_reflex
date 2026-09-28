@@ -21,11 +21,11 @@
 // "allow" (skip the agent's own prompt) is opt-in twice, REFLEX_ALLOW=on and enforce mode, and
 // only for a fresh Jev answer that clears the policy's allow gate.
 import {appendFileSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
-        openSync, readSync, writeSync, closeSync, rmSync, readdirSync, fstatSync} from "node:fs";
+        openSync, readSync, writeSync, closeSync, rmSync, readdirSync, fstatSync, lstatSync, realpathSync, symlinkSync} from "node:fs";
 import {createHash, randomUUID} from "node:crypto";
 import {execFileSync, spawn, spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
-import {dirname, join, posix, resolve} from "node:path";
+import {basename, dirname, join, posix, resolve} from "node:path";
 import {isatty} from "node:tty";
 import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
@@ -405,38 +405,6 @@ export function shellWords(s) {
   }
   return words;
 }
-// The names a command sets to a literal value before it uses them: `X=a`, `export X=a` and
-// `for X in a b` at the start of a command. A name set any other way (`f=$(…)`, `read f`,
-// `${f:=…}`) is unknown; so is every name when the command reads or declares variables, or sets IFS.
-const BIND_CACHE = new Map();
-function bindings(whole) {
-  if (BIND_CACHE.has(whole)) return BIND_CACHE.get(whole);
-  const vals = new Map(), bad = new Set(), mask = maskQuotes(whole, "_");
-  const add = (name, v) => v !== null && /^[\w.\/:,@%+=~-]*$/.test(v) ? vals.set(name, [...(vals.get(name) ?? []), v]) : bad.add(name);
-  let none = /\bIFS=|\b(read|declare|typeset|local|mapfile|readarray|getopts|eval|source|unset)\b|\bprintf\s+-v|(^|[;&|\n(]\s*)\.\s/.test(mask);
-  for (const m of mask.matchAll(/\$\{(\w+):?[=?]/g)) bad.add(m[1]);
-  let last = 0;
-  for (const cut of [...mask.matchAll(/&&|\|\||[;&|\n]/g), {index: whole.length, 0: ""}]) {
-    const words = shellWords(whole.slice(last, cut.index)) ?? [];
-    last = cut.index + cut[0].length;
-    let k = 0;
-    while (k < words.length && /^(do|then|else|elif|if|while|until|!|\{|export|readonly)$/.test(words[k].raw)) k++;
-    if (/^(for|select)$/.test(words[k]?.raw)) {
-      const name = words[k + 1]?.raw ?? "";
-      if (words[k + 2]?.raw !== "in") { bad.add(name); continue; }
-      for (const w of words.slice(k + 3)) add(name, w.exps.length ? null : w.value);
-      continue;
-    }
-    for (; k < words.length && /^[A-Za-z_]\w*=/.test(words[k].raw); k++) {
-      const w = words[k], name = w.raw.split("=")[0];
-      add(name, w.exps.length ? null : w.value.slice(name.length + 1));
-    }
-  }
-  const out = {vals, bad, none};
-  if (BIND_CACHE.size > 64) BIND_CACHE.clear();
-  BIND_CACHE.set(whole, out);
-  return out;
-}
 // sed as sed parses it (GNU and BSD): the options, then the script. Not read-only: in place (-i,
 // -I, --in-place), a script from a file (-f), an option not known to be safe, or a script with
 // w, W or e (after an address or not, with or without a space: BSD writes `1w/path`), or an s///
@@ -563,21 +531,22 @@ function sedScriptSafe(s) {
 // --source): any spelling, any unique prefix, a value attached or not.
 const AWK_LONG = ["file", "exec", "include", "load", "source", "profile", "pretty-print", "dump-variables", "debug"];
 // -W takes a long option as its value (-W dump-variables=f). The program text is checked as the
-// shell passes it (sys''tem, $'\x73ystem'), with UNSAFE_FLAGS' awk words: system, getline, @include,
-// @load, and a pipe or redirect in the program.
+// shell passes it (sys''tem, $'\x73ystem'): no @ (gawk @include, @load, indirect calls), system,
+// getline, | or > (pipes and redirects, and > as a comparison too), close, fflush, PROCINFO or ENVIRON.
+const AWK_UNSAFE = /[@|>]|system|getline|close|fflush|PROCINFO|ENVIRON/;
 const awkLong = name => !name || AWK_LONG.some(o => o.startsWith(name.split("=")[0]));
 function awkSafe(args) {
   let program = false, dd = false;
   for (let i = 0; i < args.length; i++) {
     const v = args[i].value;
     if (/\b(system|getline)\b|@include|@load/.test(v)) return false;
-    if (dd || v === "-" || !v.startsWith("-")) { if (!program) { program = true; if (/[|>]/.test(v)) return false; } dd = true; continue; }
+    if (dd || v === "-" || !v.startsWith("-")) { if (!program) { program = true; if (AWK_UNSAFE.test(v)) return false; } dd = true; continue; }
     if (v === "--") { dd = true; continue; }
     if (v.startsWith("--")) { if (awkLong(v.slice(2))) return false; continue; }
     for (let k = 1; k < v.length; k++) {
       const f = v[k];
       if (f === "W") { if (awkLong(k < v.length - 1 ? v.slice(k + 1) : args[++i]?.value ?? "")) return false; break; }
-      if (f === "e") { const t = k < v.length - 1 ? v.slice(k + 1) : args[++i]?.value ?? ""; if (/[|>]/.test(t)) return false; program = true; break; }
+      if (f === "e") { const t = k < v.length - 1 ? v.slice(k + 1) : args[++i]?.value ?? ""; if (AWK_UNSAFE.test(t)) return false; program = true; break; }
       if (/[Fv]/.test(f)) { if (k === v.length - 1) i++; break; }
       if (/[fEilLpodD]/.test(f)) return false;
     }
@@ -585,11 +554,16 @@ function awkSafe(args) {
   return true;
 }
 // Commands whose options or first words decide whether they write or run something: an
-// expansion among their words could turn into one (X=-i; sed $X …, gh api $(echo -X) DELETE).
-// Only a name the command itself sets to literal values none of which starts with - is read.
+// expansion among their words could turn into one (X=-i; sed $X …, gh api $(echo -X) DELETE), a
+// glob into a file named -i or into a second word (xxd in out, awk -- * runs a file name as its
+// program). So none at all: no variable, substitution, arithmetic, brace list or glob, before or
+// after --. The one exception is a double-quoted $name inside a word that starts with a literal
+// path (`"repos/$R/pulls"`): one word, never an option, and (not for sed or awk) no program text.
 const FLAG_SENSITIVE = new Set(["sed", "awk", "find", "fd", "rg", "sort", "tree", "yq", "xxd", "uniq", "date", "file", "printf",
   "git", "kubectl", "terraform", "aws", "helm", "gh", "docker", "npm", "brew", "nvidia-smi", "systemctl", "journalctl", "ip"]);
-function argsUnsafe(raw, head, whole) {
+const pathWord = (w, head) => !w.split && head !== "sed" && head !== "awk" && w.exps.every(x => x !== "?") &&
+  /^[^-\0][^\0]*\//.test(w.value.slice(0, w.value.indexOf("\0")));
+function argsUnsafe(raw, head) {
   const words = shellWords(raw);
   if (!words) return true;
   let k = 0;
@@ -605,20 +579,11 @@ function argsUnsafe(raw, head, whole) {
     } else break;
   }
   if (words[k].raw.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "") !== head) return true;
-  const args = words.slice(k + 1), b = bindings(whole);
-  // a glob that starts a word could match a file named -i or --output=x (not after --)
-  const dd = args.findIndex(w => w.raw === "--");
-  if (args.some((w, j) => (dd < 0 || j < dd) && /^[*?[]/.test(maskQuotes(w.raw, "_")))) return true;
-  // printf reads options (-v) in its first word only
+  const args = words.slice(k + 1);
+  // printf reads options (-v) in its first word only; the rest is data
   if (head === "printf") return !!args[0] && (args[0].exps.length > 0 || /^-\w*v/.test(args[0].value));
-  for (const w of args) {
-    if (!w.exps.length) continue;
-    // one word after a literal part that is no option (`"repos/$R/pulls"`) is never an option; an
-    // awk program with an expansion in it is a program nobody has read
-    if (head !== "awk" && !w.split && w.value[0] !== "\0" && !w.value.startsWith("-")) continue;
-    if (b.none || w.value.startsWith("-") || w.exps.some(x => x === "?" || b.bad.has(x) || !b.vals.has(x))) return true;
-    if (w.value[0] === "\0" && b.vals.get(w.exps[0]).some(v => v.startsWith("-"))) return true;
-  }
+  if (args.some(w => /[*?[]/.test(maskQuotes(w.raw, "_").replace(/\\./g, "__")))) return true;
+  if (args.some(w => w.exps.length && !pathWord(w, head))) return true;
   if (head === "sed") return !sedSafe(args);
   if (head === "awk") return !awkSafe(args);
   return false;
@@ -774,7 +739,8 @@ export function readOnly(cmd, extra = [], depth = 0, whole = null) {
   if (/>|`|\$\(|<\(|<<|(^|[;&|]\s*)\.\s|\bsudo\b|\btee\b|\bxargs\b|\beval\b|\bsource\b/.test(m)) return false;
   // zsh: =(cmd) runs cmd into a temporary file, and a ( right after word text is a glob qualifier
   // (*(e:cmd:), f(+func)) that runs code. Either way ( after anything but a separator is not read.
-  if (/[^\s;&|<>()]\(/.test(m)) return false;
+  // An escaped \( is a plain word (find . \( -name a -o -name b \)).
+  if (/[^\s;&|<>()]\(/.test(m.replace(/\\[\s\S]/g, "__"))) return false;
   // `&` (background) separates commands just like `;`.
   const mk = maskQuotes(c, "_"), raws = [];
   let last = 0;
@@ -795,7 +761,7 @@ export function readOnly(cmd, extra = [], depth = 0, whole = null) {
     if ((prefixes.match(/\w+=\S*/g) ?? []).some(a => !assignmentOk(a))) return false;
     // /usr/bin/grep is grep: a system directory holds the same program
     const [path, ...rest] = seg.slice(prefixes.length).split(/\s+/), head = path.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "");
-    if (FLAG_SENSITIVE.has(head) && argsUnsafe(raw, head, whole)) return false;
+    if (FLAG_SENSITIVE.has(head) && argsUnsafe(raw, head)) return false;
     if (READ_ONLY.has(head)) return true;
     if (rest.length === 1 && /^--(version|help)$/.test(rest[0]) && /^[\w.-]+$/.test(head)) return true;
     const exec = head === "docker" && rest.join(" ").match(DOCKER_EXEC);
@@ -1303,15 +1269,35 @@ function nestedCheckout(cwd) {
 // Does the command stay in the nested checkout `root`, as far as its text shows? Not when it climbs
 // out (..), names the previous directory or the directory stack ($OLDPWD, cd -, popd, pushd ±N), or
 // changes to a directory this cannot resolve inside root (an expansion, ~, an absolute path elsewhere).
+// Symlinks are resolved (a link in root can point at the checkout): each cd target, and each word
+// that names a path in root (from cwd or from a cd target), must resolve inside root. A path that
+// cannot be resolved (a word with an expansion, a link realpath refuses) restores the checkout view.
 function staysNested(command, cwd, root) {
   const t = command.replace(/["'\\]/g, "");
   // CDPATH changes where a relative cd goes; a symlink made in the command can point anywhere
   if (/(^|[\s/=:])\.\.([\s/;&|)]|$)/.test(t) || /\b(OLDPWD|DIRSTACK|CDPATH)\b/.test(t) || /\bln\b[^;&|\n]*\s(-[a-zA-Z]*s|--symbolic)\b/.test(t)) return false;
+  let real;
+  try { real = realpathSync(root); } catch { return false; }
+  // the real path of p, through its deepest part that exists: inside root's real path?
+  const inside = p => {
+    const tail = [];
+    for (let d = p; ; tail.unshift(basename(d)), d = dirname(d)) {
+      try { lstatSync(d); } catch { if (dirname(d) === d) return false; continue; }
+      try { return (join(realpathSync(d), ...tail) + "/").startsWith(real + "/"); } catch { return false; }
+    }
+  };
+  const bases = [cwd];
   for (const m of t.matchAll(/(?<![\w.\/-])(cd|pushd|popd|chdir)(?![\w.\/-])((?:\s+-[LPe@]+)*)(?:\s+--)?(?:\s+([^\s;&|<>()]+))?/g)) {
     const d = m[3];
-    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/")) return false;
+    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/") || !inside(resolve(cwd, d))) return false;
+    bases.push(resolve(cwd, d));
   }
-  return true;
+  const words = shellWords(command);
+  if (!words || words.some(w => w.exps.length)) return false;
+  return words.every(w => [w.value, w.value.replace(/^[^=]*=/, "")].every(v => bases.every(b => {
+    const p = resolve(b, v);
+    return !(p + "/").startsWith(root + "/") || inside(p);
+  })));
 }
 
 // A quoted part of a word: quotes with no space, operator, escape or expansion inside, next to other
@@ -1330,6 +1316,9 @@ const GIT_GLOBAL = new RegExp(String.raw`\bgit((?:\s+(?:-[cC]\s*${GIT_VALUE}|--(
   String.raw`--(?:exec-path|list-cmds)=${GIT_VALUE}|-[pP]|--(?:no-pager|paginate|bare|exec-path|no-replace-objects|no-lazy-fetch|no-optional-locks|no-advice|` +
   String.raw`literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs)(?=\s)))+)(?=\s)`, "g");
 export const gitPlain = s => s.replace(GIT_GLOBAL, "git");
+// checkRules on the command as written and with git's global options dropped (git -C x push is git
+// push): for the checks outside precheck (always-human, fast-lane candidates).
+export const rulesHit = (haystack, rules, bare = haystack) => checkRules(haystack, rules, bare) ?? checkRules(gitPlain(haystack), rules, gitPlain(bare));
 const ruleSpelling = s => {
   const v = gitPlain((joinQuotes(s) ?? s).replace(/(^|[\s;&|(`]|\$\()\/(usr\/)?bin\/(?=[\w.-]+(\s|$))/g, "$1").replace(TIMEOUT_OPTS, "timeout"));
   return v !== s ? v : null;
@@ -1338,42 +1327,99 @@ const SEVERITY = {deny: 2, ask: 1};
 /** Everything decided without Jev, or null when Jev has to judge. A rule that fires on the command
  * as the rules know it (ruleSpelling) counts too; the more severe of the two rule outcomes wins. */
 // Over this size a command is not checked but asked about: the rules' work grows with it, and the
-// hook's timeout must not let an unchecked command through.
+// hook's timeout must not let an unchecked command through. Only the deny rules still run, on
+// overlapping windows until the deadline, so a large command never turns a deny it shows into an ask.
 // A check that took longer than PRECHECK_MS is not trusted to pass either: it asks (a deny stands).
+// `run`: one budget for the whole call, shared by every spelling precheck recurses into, and the
+// local scripts already scanned, so each is scanned once.
 const COMMAND_BYTES = 32 * 1024, PRECHECK_MS = 3000;
 // Granting trust in a team policy (team.mjs), by the CLI or by its file or function.
 const TEAM_TAMPER = /\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b|\bteam\.mjs\b|\btrusted\.json\b|\btrustRepo\b/;
-export function precheck(command, cwd, env, depth = 0) {
-  const t0 = Date.now(), size = n => ({outcome: "ask", rule: `command too large to check (${n})`, id: "command-size", source: "rule", policy_version: load("rules.json").version});
-  if (command.length > COMMAND_BYTES) return size(`over ${COMMAND_BYTES / 1024} KB`);
-  const c = command.replace(/\\\n/g, ""), own = precheckAs(command, cwd, env);
+export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now() + PRECHECK_MS, scan: Date.now() + SCAN_MS, scripts: new Set()}) {
+  const size = n => ({outcome: "ask", rule: `command too large to check (${n})`, id: "command-size", source: "rule", policy_version: load("rules.json").version});
+  if (command.length > COMMAND_BYTES) return largeDeny(command, cwd, env, run.deadline) ?? size(`over ${COMMAND_BYTES / 1024} KB`);
+  const c = command.replace(/\\\n/g, ""), own = precheckAs(command, cwd, env, run, depth > 0);
   // the other spellings: quoted parts joined and system paths (ruleSpelling), and the words as the
   // shell passes them (wordSpelling); a rule on any of them counts, the most severe wins
   let best = own;
   for (const alt of depth < 2 ? [ruleSpelling(c), wordSpelling(c)] : []) {
-    const other = alt ? precheck(alt, cwd, env, depth + 1) : null;
+    if (Date.now() > run.deadline) break;
+    const other = alt === TOO_MANY ? size(`over ${BRACE_WORDS * 4} words after brace expansion`) : alt ? precheck(alt, cwd, env, depth + 1, run) : null;
     if (other?.source === "rule" && !(best?.source === "rule" && (SEVERITY[best.outcome] ?? 0) >= (SEVERITY[other.outcome] ?? 0))) best = other;
   }
-  if (depth === 0 && Date.now() - t0 > PRECHECK_MS && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
+  if (depth === 0 && Date.now() > run.deadline && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
   return best;
 }
+// The deny rules on a command over COMMAND_BYTES: windows of that size, half of it apart (a match up
+// to COMMAND_BYTES / 2 long is inside one), each as written and in the other spellings, until `deadline`.
+// ponytail: past the deadline the rest is not read and the command asks.
+function largeDeny(command, cwd, env, deadline) {
+  const rules = load("rules.json"), deny = {rules: rules.rules.filter(r => r.outcome === "deny")};
+  const c = stripDataHeredocs(command.replace(/\\\n/g, ""), true), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join("");
+  for (let at = 0; ; at += COMMAND_BYTES / 2) {
+    const w = c.slice(at, at + COMMAND_BYTES);
+    for (const f of [x => x, ruleSpelling, wordSpelling]) {
+      if (Date.now() > deadline) return null;
+      const v = f(w), hit = typeof v === "string" && checkRules(v + ctx, deny, v);
+      if (hit) return {outcome: hit.outcome, rule: hit.rule, id: hit.id, source: "rule", policy_version: rules.version};
+    }
+    if (at + COMMAND_BYTES >= c.length) return null;
+  }
+  return null;
+}
+// Brace expansion as the shell does it, on a word's raw text: lists ({a,b}, nested), sequences
+// ({1..3}, {a..c}, {01..9..2}) and any number per word. Quoted or escaped braces and ${…} are text.
+// Each result keeps its quotes, so the rules read it with the other spellings. null: over BRACE_WORDS.
+const BRACE_WORDS = 256, TOO_MANY = Symbol("braces");
+function braceSeq([, x, y, step]) {
+  const num = /\d/.test(x);
+  if (num !== /\d/.test(y)) return undefined;
+  const a = num ? +x : x.charCodeAt(0), b = num ? +y : y.charCodeAt(0), st = Math.abs(+step || 1) || 1;
+  const n = Math.floor(Math.abs(b - a) / st) + 1, pad = num && /(^|\s)-?0\d/.test(x + " " + y) ? Math.max(x.length, y.length) : 0;
+  if (n > BRACE_WORDS) return null;
+  return Array.from({length: n}, (_, i) => {
+    const v = a + (b >= a ? i : -i) * st;
+    return num ? (v < 0 ? "-" : "") + String(Math.abs(v)).padStart(pad - (v < 0 ? 1 : 0), "0") : String.fromCharCode(v);
+  });
+}
+function braceWords(raw) {
+  const out = [], todo = [raw];
+  while (todo.length) {
+    const r = todo.pop();
+    let m = maskQuotes(r, "_").replace(/\\[\s\S]/g, "__"), hit = null;
+    for (let g; !hit && (g = /\{([^{}]*)\}/.exec(m)); ) {
+      const at = g.index + 1, end = g.index + g[0].length - 1, cuts = [...g[1].matchAll(/,/g)].map(c => at + c.index);
+      const q = /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$/.exec(g[1]);
+      const alts = m[g.index - 1] === "$" ? undefined : cuts.length ? [at, ...cuts.map(c => c + 1)].map((b, i) => r.slice(b, cuts[i] ?? end)) : q ? braceSeq(q) : undefined;
+      if (alts === null) return null;
+      if (alts) hit = [g.index, end + 1, alts];
+      else m = m.slice(0, g.index) + "_" + g[1] + "_" + m.slice(end + 1);   // {x}, ${x}: text
+    }
+    if (!hit) { out.push(r); continue; }
+    for (const x of hit[2].reverse()) todo.push(r.slice(0, hit[0]) + x + r.slice(hit[1]));
+    if (todo.length + out.length > BRACE_WORDS) return null;
+  }
+  return out;
+}
 // The command with each word the shell reads differently from its text written plainly: escapes
-// and $'…' decoded (`ma\\in`, `$'ma\\x69n'`, `-\\f`, `pu\\sh`), a {a,b} brace list expanded into its
-// words (`m{a,}in` is `main min`). Only words whose value needs no quoting. null when nothing changes.
+// and $'…' decoded (`ma\\in`, `$'ma\\x69n'`, `-\\f`, `pu\\sh`, only words whose value needs no
+// quoting), brace lists and sequences expanded into their words (`m{a,}in` is `main min`,
+// `ma{i..i}n` is `main`). null when nothing changes; TOO_MANY past BRACE_WORDS * 4 expanded words in all.
 const wordSpelling = s => {
   const words = shellWords(s);
   if (!words) return null;
-  let out = s;
+  let out = s, n = 0;
   for (const w of [...words].reverse()) {
-    const m = maskQuotes(w.raw, "_"), brace = /^([^{}]*)\{([^{}]*,[^{}]*)\}([^{}]*)$/.exec(w.raw);
+    const m = maskQuotes(w.raw, "_"), b = /[{}]/.test(m) ? braceWords(w.raw) : [w.raw];
+    if (b === null || (b.length > 1 && (n += b.length) > BRACE_WORDS * 4)) return TOO_MANY;
     let v = null;
-    if (brace && m === w.raw && !/[\\$'"`]/.test(w.raw)) v = brace[2].split(",").map(x => brace[1] + x + brace[3]).join(" ");
+    if (b.length > 1 || b[0] !== w.raw) v = b.join(" ");
     else if (!w.exps.length && /\\|\$'/.test(m) && /^[^\s'"`$;&|<>()\\{}*?[\]#]*$/.test(w.value)) v = w.value;
     if (v !== null) out = out.slice(0, w.start) + v + out.slice(w.end);
   }
   return out !== s ? out : null;
 };
-function precheckAs(command, cwd, env) {
+function precheckAs(command, cwd, env, run, alt = false) {
   // plus the repo's team policy (.reflex/policy.json, team.mjs): its rules only add asks and denies
   const rules = teamRules(load("rules.json"), cwd);
   // The shell deletes a backslash-newline: `git push --force \⏎ origin main` is one line.
@@ -1426,9 +1472,11 @@ function precheckAs(command, cwd, env) {
   // The scripts it runs, even behind a held ask: a deny in a script still wins, before the fast lane: `npm test` is only as safe as the test script.
   const perLine = {rules: rules.rules.filter(r => on(r, "script") && !r.whole_script)};
   const whole = {rules: rules.rules.filter(r => on(r, "script") && r.whole_script)};
-  // A time budget, so a pathological script cannot outrun the hook's timeout (which would let it run).
-  const t0 = Date.now(), late = () => Date.now() - t0 > SCAN_MS;
-  for (const s of localScripts(command, cwd).filter(s => s.body)) {
+  // A time budget, so a pathological script cannot outrun the hook's timeout (which would let it run):
+  // one for the whole call, and each script scanned once whatever spelling named it.
+  const late = () => Date.now() > run.scan;
+  for (const s of localScripts(command, cwd).filter(s => s.body && !run.scripts.has(s.path))) {
+    run.scripts.add(s.path);
     if (s.body.includes(HERE) || s.body.includes(CONFIG.data) || TEAM_TAMPER.test(s.body.replace(/["'\\]/g, "")))
       { hold(ruled({outcome: "ask", rule: `touches the Reflex gate, its setup or its logs (in ${s.path})`, id: "tamper"})); continue; }
     const {lines} = scriptLines(s.body), all = lines.join("\n");
@@ -1438,7 +1486,8 @@ function precheckAs(command, cwd, env) {
     if (sh) hold(ruled({...sh, rule: `${sh.rule} (in ${s.path})`}));
     if (late()) { hold(ruled({outcome: "ask", rule: `script too large to check in time (${s.path})`, id: "script-budget"})); break; }
   }
-  if (held) return held;
+  // another spelling counts by its rules only: skip the fast lanes (and the scripts they read again)
+  if (held || alt) return held;
   if (fastPass(command, rules)) return {outcome: "pass", rule: "fast lane", source: "fast-lane", policy_version: rules.version};
   if (userFastPass(command, cwd, env)) return {outcome: "pass", rule: "fast lane (fastlane.json)", source: "fast-lane", policy_version: rules.version};
   return null;
@@ -2004,7 +2053,7 @@ async function selfcheck() {
   ok(readOnly('S=/tmp/x; ls $S 2>/dev/null; echo "=== a ==="; cat $S/f > /dev/null'), "assignment, /dev/null, echo");
   ok(readOnly('f=$(ls -t *.jsonl | head -1); tail -n 5 "$f"'), "read-only subshell");
   ok(!readOnly('T=$(security find-generic-password -s x -w); echo $T'), "subshell reading a secret");
-  ok(readOnly('for r in a b; do echo $r; aws ec2 describe-vpcs --region $r; done'), "loop of reads");
+  ok(!readOnly('for r in a b; do echo $r; aws ec2 describe-vpcs --region $r; done') && readOnly('for r in a b; do echo $r; cat $r; done'), "loop of reads: no expansion in an option-sensitive tool");
   ok(!readOnly('for h in a b; do ssh $h reboot; done'), "loop with a write");
   ok(!readOnly("cat <<EOF > f\nx\nEOF") && !readOnly("ls | xargs rm") && !readOnly("echo x | tee f"), "heredoc, xargs, tee");
   ok(readOnly("gh pr view 19 --json title") && !readOnly("gh pr merge 19"), "gh read vs merge");
@@ -2153,10 +2202,16 @@ async function selfcheck() {
     ok(!readOnly(cmd), `not read-only: ${cmd}`);
   for (const cmd of ["sed -n '/x/,/y/p' f", "sed -E 's/(a|b)+/x/2' f", "sed -e 's/a/b/' -e '/^#/d' f", "sed -n '/start/{p;q}' f", "sed 's|/usr|/opt|g' f",
     "sed '1i\\\nheader' f", "sed '$a footer' f", "sed = f | sed 'N;s/\\n/ /'", "sed --quiet -e 's/a/b/p' f", "sed 'y/abc/xyz/' f", "sed ':a;N;$!ba;s/\\n/ /g' f",
-    "sed -n '5~2p' f", "sed '0,/re/d' f", "sed -n '/a/,+3p' f", "sed 's/w/e/' f", "sed '/we/p' f", "for f in a.txt b.txt; do sed -n 1p $f; done",
-    "F=notes.txt; sed -n 1p \"$F\"", "awk -v x=1 '{print x}' f", "journalctl --cursor=abc -n 5", "docker compose config", "docker compose config --services",
+    "sed -n '5~2p' f", "sed '0,/re/d' f", "sed -n '/a/,+3p' f", "sed 's/w/e/' f", "sed '/we/p' f", "awk -v x=1 '{print x}' f", "journalctl --cursor=abc -n 5", "docker compose config", "docker compose config --services",
     "for h in a; do ssh $h 'uptime'; done; for h in b; do ssh $h 'uptime'; done", "printf '%s\\n' x"])
     ok(readOnly(cmd), `read-only: ${cmd}`);
+
+  // fourth review of #43: awk program text, an escaped ( in find, and no expansion of any kind in an
+  // option-sensitive tool's words (a binding or -- is no exception)
+  ok(readOnly("awk '{print $2}' f") && !readOnly("awk '{print ENVIRON[\"HOME\"]}' f") && !readOnly("awk 'BEGIN{close(\"x\")}'"), "awk: program text without @ system getline | > close fflush PROCINFO ENVIRON");
+  ok(readOnly("find . \\( -name a -o -name b \\)") && !readOnly("find . \\( -name a \\) f(+x)"), "find: an escaped ( is no zsh glob qualifier");
+  ok(readOnly('gh api "repos/$R/pulls"') && !readOnly('F=notes.txt; sed -n 1p "$F"') && !readOnly("sed -n 1p src/*.md") && !readOnly("xxd -- *"),
+     "option-sensitive tools: a quoted $name after a literal path only");
 
   // redaction
   const r = redact("curl -H 'Authorization: Bearer abc.def' https://u:hunter2@x.io " +
@@ -2271,8 +2326,8 @@ async function selfcheck() {
   "sort {-o,out} f", "sed -e p {-i.bak,f}", "gh api {-X,DELETE} repos/o/r", "find . {-fprint,out}", "awk {-f,prog.awk} f", "yq {-i,.a=1} f",
   "journalctl {--rotate,}", "tree {-o,out}", "docker compose config {-o,out}", "date {-s,12:00}",
   "cat =(touch out)", "sed -n p =(touch out)", "cat *(e:'touch out':)", "ls f(+func)", "cat >(touch out)", "sed -n p *", "sort *.txt"]) ok(!readOnly(cmd), `not read-only: ${cmd}`);
-  for (const cmd of ["sed 's/[^/]*$//' f", "sed -n p -- *", "sed -e 's/a/b/' -e 'p' f", "sed -l 5 -n p f", "sed -n '/[[:digit:]]/p' f", "sed 's/[]x]/y/' f",
-  "awk -F: '{print $1}' f", "awk '{print}' f", "cat *.md", "ls src/*.txt", "sed -n 1p src/*.md", "echo {a,b}", "awk -v n=1 'NR==n' f"]) ok(readOnly(cmd), `read-only: ${cmd}`);
+  for (const cmd of ["sed 's/[^/]*$//' f", "sed -e 's/a/b/' -e 'p' f", "sed -l 5 -n p f", "sed -n '/[[:digit:]]/p' f", "sed 's/[]x]/y/' f",
+  "awk -F: '{print $1}' f", "awk '{print}' f", "cat *.md", "ls src/*.txt", "echo {a,b}", "awk -v n=1 'NR==n' f"]) ok(readOnly(cmd), `read-only: ${cmd}`);
   // review of #35: the force-push-main ref ends at a redirect, comment, group or backtick; a push
   // option is not a ref; git's global options are dropped once; interpreter heredocs are data only
   // when they print literals, from an interpreter on PATH or in a system directory
@@ -2284,12 +2339,18 @@ async function selfcheck() {
     "git --work-tree=$(pwd) push -f origin main", "git -C $((1)) push -f origin main", "git -C `pwd` push -f origin main", "git -C ${D} push -f origin main",
     "git -C $(git rev-parse --show-toplevel) push -f origin main"]) ok(pw(c) === "force-push-main", `force push main, an expanded git option value: ${c}`);
   ok(pw("git -C $(pwd) push --mirror") === "push-mirror" && pw("git -C $(pwd) push -f") === "force-push-unknown-branch", "expanded git -C: mirror, unknown branch");
+  ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin x{1..9999}") === "command-size",
+     "brace sequences and several braces per word are expanded for the rules; too many words ask");
   { const t0 = Date.now(); redact("echo " + "'a' ".repeat(40) + "done > gen.txt; make build"); ok(Date.now() - t0 < 500, "redact: a run of quoted words is linear"); }
-  ok(pw("git -C /repo push --mirror") === "push-mirror" && pw("git -P --no-pager push origin --mirror") === "push-mirror", "git global options, push --mirror");
+  { const human = {rules: load("escalation.json").always_human.rules};
+    ok(rulesHit("git -C . reset --hard", human)?.id === "destructive-delete" && !checkRules("git -C . reset --hard", human) && !rulesHit("git -C . status", human),
+       "always-human checks outside precheck (fast lane, report candidates) drop git's global options"); }
+  ok(pw("git -C /repo push --mirror") === "push-mirror" &&pw("git -P --no-pager push origin --mirror") === "push-mirror", "git global options, push --mirror");
   for (const c of ["git push -f -o merge_request.target=main origin feat/x", "git push -f --push-option=target=main origin feat/x", "git push -f origin feat/x -o ci.skip=main"])
     ok(pw(c) === null, `a push option is not a ref: ${c}`);
   const big = "git push -f origin " + "main>".repeat(8000), t1 = Date.now();
-  ok(pw(big) === "command-size" && pw("git push " + "main ".repeat(6000)) === null && pw("git push -f origin " + "main>".repeat(6000)) === "force-push-main" && Date.now() - t1 < 1500, "a huge command asks, quickly");
+  ok(pw(big) === "force-push-main" && pw("git push " + "main ".repeat(6000)) === null && pw("git push -f origin " + "main>".repeat(6000)) === "force-push-main" && Date.now() - t1 < 1500,
+     "a huge command: the deny rules run before the size ask, quickly");
   for (const c of ["python3 - <<'EOF'\nimport localmod\nprint('rm -rf ~')\nEOF", "/tmp/x/python - <<'EOF'\nprint('rm -rf ~')\nEOF",
     "./python - <<'EOF'\nprint('rm -rf ~')\nEOF", "node - <<'EOF'\nimport('child_' + 'process').then(m => m['ex'+'ecSync']('rm -rf ~'))\nEOF",
     "ruby - <<'EOF'\nKernel.__send__(:sys, 'rm -rf ~')\nEOF", "perl - <<'EOF'\nopen my $f, '-|', 'rm -rf ~';\nEOF", "python3 - <<'EOF'\nlocals()['x']('rm -rf ~')\nEOF",
@@ -2306,11 +2367,12 @@ async function selfcheck() {
     "php <<'EOF'\n<?php\n// ?><?php system('rm -rf ~'); ?>\nEOF", "ruby - <<'EOF'\n#!ruby -r./x\nputs 'rm -rf ~'\nEOF", "python3 - <<'EOF'\nprint('rm -rf ~ é')\nEOF"])
     ok(pw(c) === "rm-root", `heredoc body with a comment or non-ASCII is code: ${c}`);
   ok(!stripDataHeredocs("perl - <<'EOF'\n#!/usr/bin/env -Ssh\\_-c\\_\"touch\\_D1;:\"\nprint 'x';\nEOF", true).includes("<<DATA"), "a perl #! line keeps the body in");
-  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size", "over 32 KB asks");
+  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size" && pw("rm -rf ~; echo " + "x".repeat(33 * 1024)) === "rm-root", "over 32 KB asks, unless a deny rule fires");
   { const t = Date.now(); pw("ssh -o ".repeat(4600)); ok(Date.now() - t < 3500, "32 KB of ssh -o is checked in time"); }
   for (const c of ["echo x >> ~/.zshrc", "echo x > ~/.bash_aliases", "echo 'use nix' > .envrc", "tee -a ~/.profile < /tmp/p", "sed -i '' s/a/b/ ~/.zprofile",
-    "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
-  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
+    "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f",
+    "cp dots/.zshrc ~/", "tee a.txt ~/.zshrc"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
+  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "tee a.txt b.txt", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
     "diff <(sort ~/.zshrc) x"]) ok(pw(c) !== "shell-startup", `not a shell startup write: ${c}`);
   ok(precheck("bash -n ~/.bashrc", "/w", {})?.source === "fast-lane", "bash -n stays in the fast lane");
   for (const c of ["git push -f origin ma\\in", "git push -f origin $'ma\\x69n'", "git push -f origin m{a,}in", "git push -f origin \\main", "git pu\\sh -f origin main",
@@ -2414,6 +2476,10 @@ async function selfcheck() {
     for (const c of ["cd sub && sed -i '' s/a/b/ ../gate.mjs"]) ok(pw(c, nested) === "tamper", `nested checkout, climbs out: ${c}`);
     for (const c of ["cd sub && sed -i '' s/a/b/ gate.mjs", "sed -i '' s/a/b/ setup/tool-gate/rules.json"])
       ok(pw(c, nested) !== "tamper", `nested checkout, stays inside: ${c}`);
+    symlinkSync(HERE, join(nested, "up"));
+    symlinkSync(join(nested, "sub"), join(nested, "in"));
+    ok(pw("sed -i '' s/a/b/ up/gate.mjs", nested) === "tamper" && pw("cd up && sed -i '' s/a/b/ gate.mjs", nested) === "tamper" &&
+       pw("sed -i '' s/a/b/ in/gate.mjs", nested) !== "tamper", "nested checkout: symlinks are resolved, one out of it restores the checkout view");
   } finally { rmSync(nested, {recursive: true, force: true}); }
 
   // policy
@@ -2544,6 +2610,11 @@ async function selfcheck() {
     ok(pt("python3 t.py") === null && pt("bash clean.sh") === "destroy" && pt("bash push.sh") === null, "script rules: per line, no false prod or main");
     put("td.sh", `DB=prod-orders\naws rds delete-db-instance --db-instance-identifier "$DB"\n`);
     ok(pt("bash td.sh") === "prod-destroy", "script rules: the script's own variables are expanded");
+    // one budget per call: every spelling shares the deadline, and a script is scanned once
+    { const run = {deadline: Date.now() + 3000, scan: Date.now() + 1500, scripts: new Set()};
+      ok(precheck("bash 't'd.sh", T, {}, 0, run)?.id === "prod-destroy" && run.scripts.size === 1 &&
+         precheck("ls", T, {}, 0, {deadline: 0, scan: 0, scripts: new Set()})?.id === "command-size" &&
+         precheck("rm -rf ~", T, {}, 0, {deadline: 0, scan: 0, scripts: new Set()})?.id === "rm-root", "precheck: one deadline and one scan per script per call"); }
     put("tam.sh", `echo "{}" > ~/.claude/settings.json\n`);
     put("tam2.sh", `sed -i '' s/enforce/off/ ${join(HERE, "policy.mjs")}\n`);
     ok(pt("bash tam.sh") === "tamper" && pt("bash tam2.sh") === "tamper", "script rules: a script cannot switch the gate off");

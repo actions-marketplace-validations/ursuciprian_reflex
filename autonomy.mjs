@@ -31,7 +31,7 @@ import {spawn, spawnSync} from "node:child_process";
 import {homedir, tmpdir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
-import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, checkRules, gitPlain, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
+import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, rulesHit, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
         stripDataHeredocs, taint, tainted, taintedRule} from "./gate.mjs";
 import {judge2, stubServer, template} from "./judge2.mjs";
 import {hitsOf, terms} from "./context.mjs";
@@ -53,8 +53,7 @@ export function alwaysHuman(j, call, env, {system1 = false} = {}) {
   const bare = stripDataHeredocs(String(call.command ?? ""));
   const haystack = [bare, `cwd=${call.cwd ?? ""}`, ...Object.entries(env ?? {}).map(([k, v]) => `${k}=${v}`)].join(" ");
   // and with git's global options dropped (git -C x push is git push)
-  const list = {rules: esc.rules.filter(r => !system1 || r.system1 !== false)}, plain = gitPlain(bare);
-  const hit = checkRules(haystack, list, bare) ?? checkRules(gitPlain(haystack), list, plain);
+  const hit = rulesHit(haystack, {rules: esc.rules.filter(r => !system1 || r.system1 !== false)}, bare);
   return hit && {id: hit.id, rule: hit.rule};
 }
 
