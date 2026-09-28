@@ -1270,34 +1270,58 @@ function nestedCheckout(cwd) {
 // out (..), names the previous directory or the directory stack ($OLDPWD, cd -, popd, pushd ±N), or
 // changes to a directory this cannot resolve inside root (an expansion, ~, an absolute path elsewhere).
 // Symlinks are resolved (a link in root can point at the checkout): each cd target, and each word
-// that names a path in root (from cwd or from a cd target), must resolve inside root. A path that
-// cannot be resolved (a word with an expansion, a link realpath refuses) restores the checkout view.
-function staysNested(command, cwd, root) {
+// that names a path in root (from cwd or from a cd target), must resolve inside root, and so must
+// the value of a short option with the value attached (-Cdir, -tdir, -ofile: every split after the
+// flag letters is tried). A path that cannot be resolved (a word with an expansion, a link realpath
+// refuses) or a check past run.deadline restores the checkout view. Real paths are cached per
+// directory for the call (run.real), and the first path that leaves root ends the check.
+function staysNested(command, cwd, root, run = {deadline: Date.now() + PRECHECK_MS}) {
   const t = command.replace(/["'\\]/g, "");
   // CDPATH changes where a relative cd goes; a symlink made in the command can point anywhere
   if (/(^|[\s/=:])\.\.([\s/;&|)]|$)/.test(t) || /\b(OLDPWD|DIRSTACK|CDPATH)\b/.test(t) || /\bln\b[^;&|\n]*\s(-[a-zA-Z]*s|--symbolic)\b/.test(t)) return false;
-  let real;
-  try { real = realpathSync(root); } catch { return false; }
+  const cache = run.real ??= new Map(), seen = new Map();
+  const realDir = d => {   // the real path of d, null when d does not exist, false when it cannot be read
+    if (!cache.has(d)) { let v; try { lstatSync(d); try { v = realpathSync(d); } catch { v = false; } } catch { v = null; } cache.set(d, v); }
+    return cache.get(d);
+  };
+  const real = realDir(root);
+  if (!real) return false;
   // the real path of p, through its deepest part that exists: inside root's real path?
   const inside = p => {
-    const tail = [];
-    for (let d = p; ; tail.unshift(basename(d)), d = dirname(d)) {
-      try { lstatSync(d); } catch { if (dirname(d) === d) return false; continue; }
-      try { return (join(realpathSync(d), ...tail) + "/").startsWith(real + "/"); } catch { return false; }
+    if (seen.has(p)) return seen.get(p);
+    let ok = false;
+    for (let d = p, tail = []; ; tail.unshift(basename(d)), d = dirname(d)) {
+      const r = realDir(d);
+      if (r === false) break;
+      if (r) { ok = (join(r, ...tail) + "/").startsWith(real + "/"); break; }
+      if (dirname(d) === d) break;
     }
+    seen.set(p, ok);
+    return ok;
   };
-  const bases = [cwd];
+  const late = () => Date.now() > run.deadline;
+  const bases = new Set([cwd]);
   for (const m of t.matchAll(/(?<![\w.\/-])(cd|pushd|popd|chdir)(?![\w.\/-])((?:\s+-[LPe@]+)*)(?:\s+--)?(?:\s+([^\s;&|<>()]+))?/g)) {
     const d = m[3];
-    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/") || !inside(resolve(cwd, d))) return false;
-    bases.push(resolve(cwd, d));
+    if (late() || m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/") || !inside(resolve(cwd, d))) return false;
+    bases.add(resolve(cwd, d));
   }
   const words = shellWords(command);
   if (!words || words.some(w => w.exps.length)) return false;
-  return words.every(w => [w.value, w.value.replace(/^[^=]*=/, "")].every(v => bases.every(b => {
-    const p = resolve(b, v);
-    return !(p + "/").startsWith(root + "/") || inside(p);
-  })));
+  // a cd target that does not exist holds no link: what is under it resolves as it does
+  for (const b of bases) if (b !== cwd && !realDir(b)) bases.delete(b);
+  for (const w of words) {
+    const v = w.value, paths = new Set([v, v.replace(/^[^=]*=/, "")]);
+    // -Cdir, -tdir, -ofile, -rodir: the value after any number of flag letters
+    const flags = /^-[a-zA-Z]+/.exec(v)?.[0].length ?? 0;
+    for (let k = 2; k <= flags && k < v.length; k++) paths.add(v.slice(k));
+    for (const x of paths) for (const b of bases) {
+      if (late()) return false;
+      const p = resolve(b, x);
+      if ((p + "/").startsWith(root + "/") && !inside(p)) return false;
+    }
+  }
+  return true;
 }
 
 // A quoted part of a word: quotes with no space, operator, escape or expansion inside, next to other
@@ -1443,7 +1467,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
   const ps = pipelines(command), writes = (ps ? writesView(ps, false, cwd) : `${bare} ; ${writesView(roughPipelines(bare), true, cwd)}`).replace(/["'\\]/g, "");
   // The checkout itself is protected wherever it was cloned, not only under a directory named reflex.
   // A git worktree or clone nested inside it is another checkout, unless the command climbs out (..).
-  const nested = cwd && nestedCheckout(cwd), inRepo = cwd && (cwd + "/").startsWith(HERE + "/") && !(nested && staysNested(command, cwd, nested));
+  const nested = cwd && nestedCheckout(cwd), inRepo = cwd && (cwd + "/").startsWith(HERE + "/") && !(nested && staysNested(command, cwd, nested, run));
   // ~ and $HOME are the home directory: ~/src/x/gate.mjs names the checkout wherever it was cloned
   const home = writes.replace(/(^|[\s=:>])(~|\$HOME|\$\{HOME\})(?=\/|\s|$)/g, (m, p) => p + homedir());
   if ([HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => writes.includes(p) || home.includes(p)) ||
@@ -2480,6 +2504,9 @@ async function selfcheck() {
     symlinkSync(join(nested, "sub"), join(nested, "in"));
     ok(pw("sed -i '' s/a/b/ up/gate.mjs", nested) === "tamper" && pw("cd up && sed -i '' s/a/b/ gate.mjs", nested) === "tamper" &&
        pw("sed -i '' s/a/b/ in/gate.mjs", nested) !== "tamper", "nested checkout: symlinks are resolved, one out of it restores the checkout view");
+    ok(pw("cp -tup gate.mjs", nested) === "tamper" && pw("cp -tin gate.mjs", nested) !== "tamper", "nested checkout: an attached option value is resolved too");
+    { const t = Date.now(), c = Array.from({length: 600}, (_, i) => `cd d${i} && ls x${i}`).join(" ; ").slice(0, 8192);
+      ok(pw(c, nested) !== "tamper" && Date.now() - t < 500, "nested checkout: 8 KB with many cds is checked in under 500 ms"); }
   } finally { rmSync(nested, {recursive: true, force: true}); }
 
   // policy
