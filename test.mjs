@@ -657,6 +657,126 @@ try {
     assert.ok(!/fastlane\.json\)/.test(ignored.stdout), ignored.stdout);
     console.log("suggest and user fast lane checks OK");
   }
+  // Team policy (.reflex/policy.json, team.mjs): stricter parts apply at once, the fast lane only
+  // while the user trusts that exact file, a .reflex above the repo is never read, an agent cannot
+  // edit the policy or grant trust, and check and replay judge with the policy of the command's cwd.
+  {
+    const {precheck, decideSafe, CONFIG} = await import("./gate.mjs");
+    const {alwaysHuman} = await import("./autonomy.mjs");
+    const {TRUST_FILE, parseTeam, regexError, teamPolicy, trustRepo, TEAM_BYTES} = await import("./team.mjs");
+    const home = join(scratch, "team-home"), repo = join(home, "work/api"), file = join(repo, ".reflex/policy.json");
+    mkdirSync(join(repo, ".git"), {recursive: true});
+    mkdirSync(join(repo, ".reflex"));
+    writeFileSync(join(repo, "Makefile"), "lint:\n\tshellcheck bin/run.sh\ncheck:\n\tshellcheck bin/run.sh\n");
+    const policy = {version: 1, note: "test",
+      rules: [{id: "no-tf-destroy", outcome: "deny", shell: true, rule: "terraform destroy", all: [String.raw`\bterraform\s+destroy\b`]},
+              {id: "seed-asks", outcome: "ask", shell: true, rule: "seeds the database", all: [String.raw`\bseed-db\b`]}],
+      always_human: [{id: "make-check", rule: "the check target", all: [String.raw`\bmake\s+check\b`]}],
+      prod: [String.raw`\bacme-live\b`], mode: "enforce",
+      fastlane: [{pattern: String.raw`^make\s+lint$`}, {pattern: String.raw`^make\s+check$`}, {pattern: String.raw`^make\s+deploy$`}]};
+    const write = p => writeFileSync(file, JSON.stringify(p, null, 1));
+    write(policy);
+    const pc = (c, cwd = repo, e = {}) => precheck(c, cwd, e);
+    // stricter parts apply without trust
+    assert.equal(pc("terraform destroy -auto-approve")?.outcome, "deny", "a team deny wins over the bundled destroy ask");
+    assert.equal(pc("terraform destroy -auto-approve")?.id, "team:no-tf-destroy");
+    assert.ok(pc("./seed-db --all")?.outcome === "ask" && pc("./seed-db --all").id === "team:seed-asks", "a team ask");
+    assert.ok(pc("kubectl --context acme-live rollout restart deploy/api")?.id === "team:prod", "a prod marker in the command asks");
+    assert.ok(pc("helm upgrade api ./chart", repo, {kube_context: "acme-live"})?.id === "team:prod", "a prod marker in the context asks");
+    assert.equal(pc("ls -la")?.source, "read-only", "reads still pass");
+    assert.equal(pc("git push --force origin main")?.outcome, "deny", "bundled rules still apply");
+    assert.equal(pc("terraform destroy", join(home, "work"))?.id !== "team:no-tf-destroy", true, "outside the repo: no team policy");
+    assert.ok(alwaysHuman({source: "jev", outcome: "ask"}, {command: "make check", cwd: repo}, {})?.id === "team:make-check", "team always-human patterns");
+    assert.ok(pc("x".repeat(TEAM_BYTES + 1))?.id === "team:size", "a command too large for the team patterns asks");
+    // loosening: not without trust
+    let t = teamPolicy(repo);
+    assert.ok(t.trust === "untrusted" && !t.active_fastlane && !t.fastlane.length && !t.errors.length, JSON.stringify(t.errors));
+    assert.equal(pc("make lint"), null, "the team fast lane does not apply untrusted");
+    trustRepo(repo, t.sha256);
+    assert.ok(existsSync(TRUST_FILE) && teamPolicy(repo).trust === "trusted");
+    assert.equal(pc("make lint")?.source, "fast-lane", "trusted: the team fast lane passes");
+    assert.equal(pc("make lint", home), null, "scoped to the repository");
+    assert.ok(pc("make check") === null && pc("make deploy") === null, "never over always-human or a denied word");
+    assert.equal(pc("make lint", repo, {kube_context: "acme-live"})?.id, "team:prod", "never over a prod marker");
+    assert.equal(pc("make lint; rm -rf ~")?.outcome, "deny", "never over a deny");
+    // any change drops the trust
+    write({...policy, note: "changed"});
+    t = teamPolicy(repo);
+    assert.ok(t.trust === "changed" && !t.active_fastlane && pc("make lint") === null, "a changed file is not trusted");
+    trustRepo(repo, t.sha256);
+    assert.equal(pc("make lint")?.source, "fast-lane");
+    // an invalid file never loosens, even trusted; its valid stricter parts still apply
+    write({...policy, pass: ["^rm .*$"], rules: [...policy.rules, {id: "x", outcome: "pass", rule: "r", all: ["x"]}]});
+    trustRepo(repo, teamPolicy(repo).sha256);
+    t = teamPolicy(repo);
+    assert.ok(t.trust === "trusted" && t.errors.length === 2 && !t.active_fastlane && pc("make lint") === null, JSON.stringify(t.errors));
+    assert.ok(pc("terraform destroy")?.outcome === "deny" && pc("./seed-db")?.outcome === "ask", "valid parts of an invalid file apply");
+    assert.ok(parseTeam("{").errors.length && parseTeam(JSON.stringify({version: 1, disable: {guard: true}})).errors[0].includes('unknown key "disable"'), "no key loosens");
+    for (const p of ["a.*b.*c", "(a+)+", "(a|b)*x", String.raw`(\w)\1`, "(?<=a)b", "(", "x".repeat(501)]) assert.ok(regexError(p), `rejected: ${p}`);
+    for (const p of [String.raw`\bkubectl\b.*\bdelete\b`, String.raw`\bdrop\s+(table|schema)\b`, "clusters/main-eu"]) assert.equal(regexError(p), null, p);
+    const slow = "kubectl ".repeat(1000) + "a".repeat(TEAM_BYTES - 8000 - 1), t0 = Date.now();
+    pc(slow);
+    assert.ok(Date.now() - t0 < 2000, `team patterns stay fast on a large command (${Date.now() - t0} ms)`);
+    write(policy);
+    // mode floor: shadow becomes enforce in the repo only, off stays off
+    assert.equal(CONFIG.mode, "shadow");
+    const open = {agent: "test", command: "python3 tools/build.py", session_id: "team"};
+    assert.equal((await decideSafe({...open, cwd: repo})).effective, "ask", "enforce floor: the local engine asks");
+    assert.equal((await decideSafe({...open, cwd: home})).effective, "pass", "elsewhere: shadow");
+    assert.equal(CONFIG.mode, "shadow", "the floor is per call");
+    CONFIG.mode = "off";
+    assert.equal((await decideSafe({...open, cwd: repo})).effective, "pass", "off stays off");
+    CONFIG.mode = "shadow";
+    // a .reflex above the repository root, or outside any repository, is never read
+    const planted = join(home, "shared"), inner = join(planted, "proj");
+    mkdirSync(join(planted, ".reflex"), {recursive: true});
+    writeFileSync(join(planted, ".reflex/policy.json"), JSON.stringify({version: 1, rules: [{id: "p", outcome: "deny", rule: "planted", all: ["make"]}],
+      fastlane: [{pattern: String.raw`^rmdir\s+x$`}]}));
+    mkdirSync(join(inner, ".git"), {recursive: true});
+    assert.ok(teamPolicy(inner) === null && pc("make build", inner)?.outcome !== "deny", "a planted parent .reflex is ignored inside a repo");
+    assert.ok(teamPolicy(join(planted, "notes")) === null && pc("make build", planted)?.outcome !== "deny", "and outside a repo");
+    // a symlinked policy file is not read
+    const linked = join(home, "linked");
+    mkdirSync(join(linked, ".git"), {recursive: true});
+    mkdirSync(join(linked, ".reflex"));
+    (await import("node:fs")).symlinkSync(file, join(linked, ".reflex/policy.json"));
+    t = teamPolicy(linked);
+    assert.ok(t.errors.length && !t.rules.length && !t.active_fastlane, "symlink: nothing read");
+    // tamper: an agent editing .reflex/ or granting trust is a human's call
+    for (const c of ["echo '{}' > .reflex/policy.json", "sed -i '' s/deny/ask/ .reflex/policy.json", "rm -rf .reflex", "cd .reflex && echo x > policy.json",
+      "cp /tmp/p.json .reflex/policy.json", "reflex trust .", "reflex trust --revoke .", "node team.mjs trust .", "reflex policy init", `python3 -c "open('.reflex/policy.json','w')"`])
+      assert.equal(pc(c)?.id, "tamper", c);
+    assert.equal(pc("cat .reflex/policy.json")?.source, "read-only", "reading it is fine");
+    // trust needs a human at a terminal: no terminal, or an agent session, is refused
+    const before = readFileSync(TRUST_FILE, "utf8"), tenv = {...env, HOME: home, XDG_CONFIG_HOME: dirname(dirname(TRUST_FILE))};
+    delete tenv.CLAUDECODE;
+    const noTty = spawnSync(process.execPath, [join(root, "bin/reflex"), "trust", repo], {encoding: "utf8", env: tenv, detached: true});
+    assert.ok(noTty.status === 2 && /terminal/.test(noTty.stderr), noTty.stderr);
+    const agent = spawnSync(process.execPath, [join(root, "team.mjs"), "trust", repo], {encoding: "utf8", env: {...tenv, CLAUDECODE: "1"}});
+    assert.ok(agent.status === 2 && /agent session/.test(agent.stderr), agent.stderr);
+    assert.equal(readFileSync(TRUST_FILE, "utf8"), before, "nothing trusted");
+    // check, replay and doctor use the policy of the command's cwd
+    const check = JSON.parse(spawnSync(process.execPath, [join(root, "gate.mjs"), "--check", "terraform destroy", "--cwd", repo], {encoding: "utf8", env: {...tenv, REFLEX_ENGINE: "local"}}).stdout);
+    assert.ok(check.decision === "deny" && /team policy/.test(check.rule), JSON.stringify(check));
+    const now = new Date().toISOString();
+    mkdirSync(join(home, ".claude/projects/-api"), {recursive: true});
+    writeFileSync(join(home, ".claude/projects/-api/a.jsonl"), JSON.stringify({type: "assistant", cwd: repo, timestamp: now,
+      message: {role: "assistant", content: [{type: "tool_use", id: "t1", name: "Bash", input: {command: "terraform destroy"}}]}}));
+    const replay = JSON.parse(spawnSync(process.execPath, [join(root, "bin/reflex"), "replay", "claude", "--since", "7d", "--json"],
+      {encoding: "utf8", env: {...tenv, REFLEX_ENGINE: "local", XDG_STATE_HOME: join(home, "state")}}).stdout);
+    assert.ok(replay.totals.rule_deny === 1 && replay.top_rules[0].id === "team:no-tf-destroy", JSON.stringify(replay.top_rules));
+    const doctor = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--doctor", "--json"], {cwd: repo, encoding: "utf8", env: tenv}).stdout);
+    assert.ok(doctor.team_policy?.file.endsWith("work/api/.reflex/policy.json") && doctor.team_policy.trust === "changed" && doctor.team_policy.sha256 === teamPolicy(repo).sha256 &&
+      doctor.warnings.some(w => /changed since you trusted it/.test(w)), JSON.stringify(doctor.team_policy));
+    // reflex policy init: a starter with stricter parts only, that validates
+    const fresh = join(home, "fresh");
+    mkdirSync(join(fresh, ".git"), {recursive: true});
+    success(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", fresh], {encoding: "utf8", env: tenv}));
+    const starter = parseTeam(readFileSync(join(fresh, ".reflex/policy.json"), "utf8"));
+    assert.ok(!starter.errors.length && starter.rules.length && !starter.fastlane.length, JSON.stringify(starter.errors));
+    assert.notEqual(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", fresh], {encoding: "utf8", env: tenv}).status, 0, "init never overwrites");
+    console.log("team policy checks OK");
+  }
   {
     // The Claude Code plugin: manifests in step with package.json, hooks.json in step with install.mjs.
     const pkg = read(join(root, "package.json")), plugin = read(join(root, ".claude-plugin/plugin.json"));
