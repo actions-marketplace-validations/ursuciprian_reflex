@@ -6,6 +6,8 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-28
+
 ### Added
 
 - Codex CLI plugin: `codex plugin marketplace add ursuciprian/reflex`, then
@@ -574,7 +576,8 @@ All notable changes to Reflex are documented here. The format follows
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/ursuciprian/reflex/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/ursuciprian/reflex/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/ursuciprian/reflex/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ursuciprian/reflex/compare/v0.9.0...v0.10.0
