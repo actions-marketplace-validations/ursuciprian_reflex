@@ -404,38 +404,6 @@ export function shellWords(s) {
   }
   return words;
 }
-// The names a command sets to a literal value before it uses them: `X=a`, `export X=a` and
-// `for X in a b` at the start of a command. A name set any other way (`f=$(…)`, `read f`,
-// `${f:=…}`) is unknown; so is every name when the command reads or declares variables, or sets IFS.
-const BIND_CACHE = new Map();
-function bindings(whole) {
-  if (BIND_CACHE.has(whole)) return BIND_CACHE.get(whole);
-  const vals = new Map(), bad = new Set(), mask = maskQuotes(whole, "_");
-  const add = (name, v) => v !== null && /^[\w.\/:,@%+=~-]*$/.test(v) ? vals.set(name, [...(vals.get(name) ?? []), v]) : bad.add(name);
-  let none = /\bIFS=|\b(read|declare|typeset|local|mapfile|readarray|getopts|eval|source|unset)\b|\bprintf\s+-v|(^|[;&|\n(]\s*)\.\s/.test(mask);
-  for (const m of mask.matchAll(/\$\{(\w+):?[=?]/g)) bad.add(m[1]);
-  let last = 0;
-  for (const cut of [...mask.matchAll(/&&|\|\||[;&|\n]/g), {index: whole.length, 0: ""}]) {
-    const words = shellWords(whole.slice(last, cut.index)) ?? [];
-    last = cut.index + cut[0].length;
-    let k = 0;
-    while (k < words.length && /^(do|then|else|elif|if|while|until|!|\{|export|readonly)$/.test(words[k].raw)) k++;
-    if (/^(for|select)$/.test(words[k]?.raw)) {
-      const name = words[k + 1]?.raw ?? "";
-      if (words[k + 2]?.raw !== "in") { bad.add(name); continue; }
-      for (const w of words.slice(k + 3)) add(name, w.exps.length ? null : w.value);
-      continue;
-    }
-    for (; k < words.length && /^[A-Za-z_]\w*=/.test(words[k].raw); k++) {
-      const w = words[k], name = w.raw.split("=")[0];
-      add(name, w.exps.length ? null : w.value.slice(name.length + 1));
-    }
-  }
-  const out = {vals, bad, none};
-  if (BIND_CACHE.size > 64) BIND_CACHE.clear();
-  BIND_CACHE.set(whole, out);
-  return out;
-}
 // sed as sed parses it (GNU and BSD): the options, then the script. Not read-only: in place (-i,
 // -I, --in-place), a script from a file (-f), an option not known to be safe, or a script with
 // w, W or e (after an address or not, with or without a space: BSD writes `1w/path`), or an s///
@@ -584,11 +552,16 @@ function awkSafe(args) {
   return true;
 }
 // Commands whose options or first words decide whether they write or run something: an
-// expansion among their words could turn into one (X=-i; sed $X …, gh api $(echo -X) DELETE).
-// Only a name the command itself sets to literal values none of which starts with - is read.
+// expansion among their words could turn into one (X=-i; sed $X …, gh api $(echo -X) DELETE), a
+// glob into a file named -i or into a second word (xxd in out, awk -- * runs a file name as its
+// program). So none at all: no variable, substitution, arithmetic, brace list or glob, before or
+// after --. The one exception is a double-quoted $name inside a word that starts with a literal
+// path (`"repos/$R/pulls"`): one word, never an option, and (not for sed or awk) no program text.
 const FLAG_SENSITIVE = new Set(["sed", "awk", "find", "fd", "rg", "sort", "tree", "yq", "xxd", "uniq", "date", "file", "printf",
   "git", "kubectl", "terraform", "aws", "helm", "gh", "docker", "npm", "brew", "nvidia-smi", "systemctl", "journalctl", "ip"]);
-function argsUnsafe(raw, head, whole) {
+const pathWord = (w, head) => !w.split && head !== "sed" && head !== "awk" && w.exps.every(x => x !== "?") &&
+  /^[^-\0][^\0]*\//.test(w.value.slice(0, w.value.indexOf("\0")));
+function argsUnsafe(raw, head) {
   const words = shellWords(raw);
   if (!words) return true;
   let k = 0;
@@ -604,20 +577,11 @@ function argsUnsafe(raw, head, whole) {
     } else break;
   }
   if (words[k].raw.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "") !== head) return true;
-  const args = words.slice(k + 1), b = bindings(whole);
-  // a glob that starts a word could match a file named -i or --output=x (not after --)
-  const dd = args.findIndex(w => w.raw === "--");
-  if (args.some((w, j) => (dd < 0 || j < dd) && /^[*?[]/.test(maskQuotes(w.raw, "_")))) return true;
-  // printf reads options (-v) in its first word only
+  const args = words.slice(k + 1);
+  // printf reads options (-v) in its first word only; the rest is data
   if (head === "printf") return !!args[0] && (args[0].exps.length > 0 || /^-\w*v/.test(args[0].value));
-  for (const w of args) {
-    if (!w.exps.length) continue;
-    // one word after a literal part that is no option (`"repos/$R/pulls"`) is never an option; an
-    // awk program with an expansion in it is a program nobody has read
-    if (head !== "awk" && !w.split && w.value[0] !== "\0" && !w.value.startsWith("-")) continue;
-    if (b.none || w.value.startsWith("-") || w.exps.some(x => x === "?" || b.bad.has(x) || !b.vals.has(x))) return true;
-    if (w.value[0] === "\0" && b.vals.get(w.exps[0]).some(v => v.startsWith("-"))) return true;
-  }
+  if (args.some(w => /[*?[]/.test(maskQuotes(w.raw, "_").replace(/\\./g, "__")))) return true;
+  if (args.some(w => w.exps.length && !pathWord(w, head))) return true;
   if (head === "sed") return !sedSafe(args);
   if (head === "awk") return !awkSafe(args);
   return false;
@@ -794,7 +758,7 @@ export function readOnly(cmd, extra = [], depth = 0, whole = null) {
     if ((prefixes.match(/\w+=\S*/g) ?? []).some(a => !assignmentOk(a))) return false;
     // /usr/bin/grep is grep: a system directory holds the same program
     const [path, ...rest] = seg.slice(prefixes.length).split(/\s+/), head = path.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "");
-    if (FLAG_SENSITIVE.has(head) && argsUnsafe(raw, head, whole)) return false;
+    if (FLAG_SENSITIVE.has(head) && argsUnsafe(raw, head)) return false;
     if (READ_ONLY.has(head)) return true;
     if (rest.length === 1 && /^--(version|help)$/.test(rest[0]) && /^[\w.-]+$/.test(head)) return true;
     const exec = head === "docker" && rest.join(" ").match(DOCKER_EXEC);
@@ -1991,7 +1955,7 @@ async function selfcheck() {
   ok(readOnly('S=/tmp/x; ls $S 2>/dev/null; echo "=== a ==="; cat $S/f > /dev/null'), "assignment, /dev/null, echo");
   ok(readOnly('f=$(ls -t *.jsonl | head -1); tail -n 5 "$f"'), "read-only subshell");
   ok(!readOnly('T=$(security find-generic-password -s x -w); echo $T'), "subshell reading a secret");
-  ok(readOnly('for r in a b; do echo $r; aws ec2 describe-vpcs --region $r; done'), "loop of reads");
+  ok(!readOnly('for r in a b; do echo $r; aws ec2 describe-vpcs --region $r; done') && readOnly('for r in a b; do echo $r; cat $r; done'), "loop of reads: no expansion in an option-sensitive tool");
   ok(!readOnly('for h in a b; do ssh $h reboot; done'), "loop with a write");
   ok(!readOnly("cat <<EOF > f\nx\nEOF") && !readOnly("ls | xargs rm") && !readOnly("echo x | tee f"), "heredoc, xargs, tee");
   ok(readOnly("gh pr view 19 --json title") && !readOnly("gh pr merge 19"), "gh read vs merge");
@@ -2140,10 +2104,13 @@ async function selfcheck() {
     ok(!readOnly(cmd), `not read-only: ${cmd}`);
   for (const cmd of ["sed -n '/x/,/y/p' f", "sed -E 's/(a|b)+/x/2' f", "sed -e 's/a/b/' -e '/^#/d' f", "sed -n '/start/{p;q}' f", "sed 's|/usr|/opt|g' f",
     "sed '1i\\\nheader' f", "sed '$a footer' f", "sed = f | sed 'N;s/\\n/ /'", "sed --quiet -e 's/a/b/p' f", "sed 'y/abc/xyz/' f", "sed ':a;N;$!ba;s/\\n/ /g' f",
-    "sed -n '5~2p' f", "sed '0,/re/d' f", "sed -n '/a/,+3p' f", "sed 's/w/e/' f", "sed '/we/p' f", "for f in a.txt b.txt; do sed -n 1p $f; done",
-    "F=notes.txt; sed -n 1p \"$F\"", "awk -v x=1 '{print x}' f", "journalctl --cursor=abc -n 5", "docker compose config", "docker compose config --services",
+    "sed -n '5~2p' f", "sed '0,/re/d' f", "sed -n '/a/,+3p' f", "sed 's/w/e/' f", "sed '/we/p' f", "awk -v x=1 '{print x}' f", "journalctl --cursor=abc -n 5", "docker compose config", "docker compose config --services",
     "for h in a; do ssh $h 'uptime'; done; for h in b; do ssh $h 'uptime'; done", "printf '%s\\n' x"])
     ok(readOnly(cmd), `read-only: ${cmd}`);
+
+  // review of #43, item 1: no expansion of any kind in an option-sensitive tool's words, a binding or -- no exception
+  ok(readOnly('gh api "repos/$R/pulls"') && !readOnly('F=notes.txt; sed -n 1p "$F"') && !readOnly("sed -n 1p src/*.md") && !readOnly("xxd -- *"),
+     "option-sensitive tools: a quoted $name after a literal path only");
 
   // redaction
   const r = redact("curl -H 'Authorization: Bearer abc.def' https://u:hunter2@x.io " +
@@ -2258,8 +2225,8 @@ async function selfcheck() {
   "sort {-o,out} f", "sed -e p {-i.bak,f}", "gh api {-X,DELETE} repos/o/r", "find . {-fprint,out}", "awk {-f,prog.awk} f", "yq {-i,.a=1} f",
   "journalctl {--rotate,}", "tree {-o,out}", "docker compose config {-o,out}", "date {-s,12:00}",
   "cat =(touch out)", "sed -n p =(touch out)", "cat *(e:'touch out':)", "ls f(+func)", "cat >(touch out)", "sed -n p *", "sort *.txt"]) ok(!readOnly(cmd), `not read-only: ${cmd}`);
-  for (const cmd of ["sed 's/[^/]*$//' f", "sed -n p -- *", "sed -e 's/a/b/' -e 'p' f", "sed -l 5 -n p f", "sed -n '/[[:digit:]]/p' f", "sed 's/[]x]/y/' f",
-  "awk -F: '{print $1}' f", "awk '{print}' f", "cat *.md", "ls src/*.txt", "sed -n 1p src/*.md", "echo {a,b}", "awk -v n=1 'NR==n' f"]) ok(readOnly(cmd), `read-only: ${cmd}`);
+  for (const cmd of ["sed 's/[^/]*$//' f", "sed -e 's/a/b/' -e 'p' f", "sed -l 5 -n p f", "sed -n '/[[:digit:]]/p' f", "sed 's/[]x]/y/' f",
+  "awk -F: '{print $1}' f", "awk '{print}' f", "cat *.md", "ls src/*.txt", "echo {a,b}", "awk -v n=1 'NR==n' f"]) ok(readOnly(cmd), `read-only: ${cmd}`);
   // review of #35: the force-push-main ref ends at a redirect, comment, group or backtick; a push
   // option is not a ref; git's global options are dropped once; interpreter heredocs are data only
   // when they print literals, from an interpreter on PATH or in a system directory
