@@ -2328,8 +2328,9 @@ async function selfcheck() {
   ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size" && pw("rm -rf ~; echo " + "x".repeat(33 * 1024)) === "rm-root", "over 32 KB asks, unless a deny rule fires");
   { const t = Date.now(); pw("ssh -o ".repeat(4600)); ok(Date.now() - t < 3500, "32 KB of ssh -o is checked in time"); }
   for (const c of ["echo x >> ~/.zshrc", "echo x > ~/.bash_aliases", "echo 'use nix' > .envrc", "tee -a ~/.profile < /tmp/p", "sed -i '' s/a/b/ ~/.zprofile",
-    "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
-  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
+    "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f",
+    "cp dots/.zshrc ~/", "tee a.txt ~/.zshrc"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
+  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "tee a.txt b.txt", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
     "diff <(sort ~/.zshrc) x"]) ok(pw(c) !== "shell-startup", `not a shell startup write: ${c}`);
   ok(precheck("bash -n ~/.bashrc", "/w", {})?.source === "fast-lane", "bash -n stays in the fast lane");
   for (const c of ["git push -f origin ma\\in", "git push -f origin $'ma\\x69n'", "git push -f origin m{a,}in", "git push -f origin \\main", "git pu\\sh -f origin main",
