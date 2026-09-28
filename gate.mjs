@@ -738,7 +738,8 @@ export function readOnly(cmd, extra = [], depth = 0, whole = null) {
   if (/>|`|\$\(|<\(|<<|(^|[;&|]\s*)\.\s|\bsudo\b|\btee\b|\bxargs\b|\beval\b|\bsource\b/.test(m)) return false;
   // zsh: =(cmd) runs cmd into a temporary file, and a ( right after word text is a glob qualifier
   // (*(e:cmd:), f(+func)) that runs code. Either way ( after anything but a separator is not read.
-  if (/[^\s;&|<>()]\(/.test(m)) return false;
+  // An escaped \( is a plain word (find . \( -name a -o -name b \)).
+  if (/[^\s;&|<>()]\(/.test(m.replace(/\\[\s\S]/g, "__"))) return false;
   // `&` (background) separates commands just like `;`.
   const mk = maskQuotes(c, "_"), raws = [];
   let last = 0;
@@ -2172,8 +2173,10 @@ async function selfcheck() {
     "for h in a; do ssh $h 'uptime'; done; for h in b; do ssh $h 'uptime'; done", "printf '%s\\n' x"])
     ok(readOnly(cmd), `read-only: ${cmd}`);
 
-  // review of #43, item 1: no expansion of any kind in an option-sensitive tool's words, a binding or -- no exception
+  // fourth review of #43: awk program text, an escaped ( in find, and no expansion of any kind in an
+  // option-sensitive tool's words (a binding or -- is no exception)
   ok(readOnly("awk '{print $2}' f") && !readOnly("awk '{print ENVIRON[\"HOME\"]}' f") && !readOnly("awk 'BEGIN{close(\"x\")}'"), "awk: program text without @ system getline | > close fflush PROCINFO ENVIRON");
+  ok(readOnly("find . \\( -name a -o -name b \\)") && !readOnly("find . \\( -name a \\) f(+x)"), "find: an escaped ( is no zsh glob qualifier");
   ok(readOnly('gh api "repos/$R/pulls"') && !readOnly('F=notes.txt; sed -n 1p "$F"') && !readOnly("sed -n 1p src/*.md") && !readOnly("xxd -- *"),
      "option-sensitive tools: a quoted $name after a literal path only");
 
