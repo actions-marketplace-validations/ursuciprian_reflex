@@ -28,7 +28,7 @@
 import {copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync} from "node:fs";
 import {createHash} from "node:crypto";
 import {spawn, spawnSync} from "node:child_process";
-import {homedir, tmpdir} from "node:os";
+import {homedir, tmpdir, userInfo} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, rulesHit, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
@@ -443,7 +443,9 @@ export function answer(id, verdict, {ttlHours = CONFIG.queue.ttl_hours, note} = 
   const it = readItem(id);
   if (!it) throw new Error(`no queue item ${id}`);
   if (!["pending", "approved", "denied"].includes(it.status)) throw new Error(`${id} is ${it.status}; the agent's next retry parks it again`);
-  const now = Date.now(), next = {...it, status: verdict, decided_at: iso(now), expires: iso(now + ttlHours * 3600e3), ...(note && {note: redact(note).slice(0, 300)})};
+  // who answered, for the audit export (reflex audit): the account that ran reflex queue approve or deny
+  const by = (() => { try { return userInfo().username; } catch { return process.env.USER ?? null; } })();
+  const now = Date.now(), next = {...it, status: verdict, decided_at: iso(now), decided_by: by, expires: iso(now + ttlHours * 3600e3), ...(note && {note: redact(note).slice(0, 300)})};
   writeItem(next);
   return next;
 }
