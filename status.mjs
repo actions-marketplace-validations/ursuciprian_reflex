@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Installation checks are local. A synthetic probe cannot establish that a host trusted a hook.
-import {existsSync, mkdtempSync, readFileSync, readdirSync, rmSync} from "node:fs";
+import {existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
@@ -15,8 +15,8 @@ import {FASTLANE_FILE, loadFastLane} from "./fastlane.mjs";
 const doctor = process.argv.includes("--doctor"), json = process.argv.includes("--json");
 const errors = [], warnings = [], agents = [];
 const home = homedir();
-const files = {claude: ".claude/settings.json", codex: ".codex/hooks.json", pi: ".pi/agent/extensions/reflex.ts",
-  omp: ".omp/agent/extensions/reflex.ts", opencode: ".config/opencode/plugins/reflex.js"};
+const files = {claude: join(home, ".claude/settings.json"), codex: CODEX_HOOKS, pi: join(home, ".pi/agent/extensions/reflex.ts"),
+  omp: join(home, ".omp/agent/extensions/reflex.ts"), opencode: join(process.env.XDG_CONFIG_HOME || join(home, ".config"), "opencode/plugins/reflex.js")};
 const quote = s => `"${s.replace(/(["\\`$])/g, "\\$1")}"`;
 const read = path => JSON.parse(readFileSync(path, "utf8"));
 const configuration = configurationError();
@@ -58,7 +58,7 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
   if (saved.manual || name === "hermes") {
     warnings.push(`${name}: configuration is manual; use hermes hooks list in each profile. Doctor cannot verify its YAML or trust settings.`);
   } else if (files[name]) try {
-    const file = join(home, files[name]), source = readFileSync(file, "utf8");
+    const file = files[name], source = readFileSync(file, "utf8");
     if (["claude", "codex"].includes(name)) {
       const expected = `${quote(saved.node)} ${quote(gate)} --${name} --mode ${saved.mode} --allow ${saved.allow}`;
       const matcher = name === "claude" ? "Bash|Task|Agent" : "^(Bash|spawn_agent)$";
@@ -174,7 +174,9 @@ const codexEnabled = id => {
 const ls = d => { try { return readdirSync(d); } catch { return []; } };
 const codexInstalls = ls(join(codexHome, "plugins/cache")).flatMap(m => ls(join(codexHome, "plugins/cache", m, "reflex"))
   .map(v => ({id: `reflex@${m}`, version: v, path: join(codexHome, "plugins/cache", m, "reflex", v)})));
-const codexOn = codexInstalls.filter(i => codexEnabled(i.id));
+// Codex keeps one cached copy per version; the newest per marketplace is the one it runs.
+const newer = (a, b) => b.version.localeCompare(a.version, undefined, {numeric: true});
+const codexOn = [...new Map(codexInstalls.filter(i => codexEnabled(i.id)).sort(newer).reverse().map(i => [i.id, i])).values()];
 const codex_plugin = {installed: codexInstalls, enabled: codexOn.length > 0, active: codexOn.length > 0 && !codexLive, settings_hooks: codexLive, checks: []};
 const codex_hooks = codexLive ? `reflex setup hooks in ${CODEX_HOOKS}${codexOn.length ? " (the plugin stands down)" : ""}`
   : codexOn.length ? `the Codex CLI plugin (${codexOn[0].id} ${codexOn[0].version})` : "none recorded";
@@ -188,7 +190,7 @@ for (const f of ["opencode.json", "opencode.jsonc"]) try {
 let ocSetup = false;
 try { const g = readFileSync(ocFile, "utf8").match(/"(\/[^"]*\/gate\.mjs)"/)?.[1]; ocSetup = !!g && existsSync(g); } catch { /* not there */ }
 const opencode_plugin = ocSetup ? `reflex setup plugin file ${ocFile}${ocNpm ? " (the npm plugin stands down)" : ""}`
-  : ocNpm ? `the opencode npm plugin (@ursuciprian/reflex in ${ocNpm})` : "none recorded";
+  : ocNpm ? `the opencode npm plugin (@ursuciprian/reflex in the global ${ocNpm})` : "none recorded";
 if (doctor && codex_plugin.active) for (const i of codexOn) {
   const gate = join(i.path, "gate.mjs");
   if (!existsSync(gate)) { errors.push(`Codex plugin ${i.id}: gate is missing at ${gate}. Run codex plugin add ${i.id}.`); continue; }
@@ -196,9 +198,13 @@ if (doctor && codex_plugin.active) for (const i of codexOn) {
   try {
     for (const [command, expected] of [["git status", "pass"], ["git push --force origin main", "deny"]]) {
       // judged, never executed; the probe's records go to a disposable directory
-      const r = spawnSync(process.execPath, [gate, "--codex", "--plugin"], {encoding: "utf8", timeout: 10000,
+      // the installed hook command itself, the way Codex runs it: $SHELL -lc with PLUGIN_ROOT set, so a
+      // node missing from the login shell PATH fails here as it would in Codex
+      let hook;
+      try { hook = read(join(i.path, "hooks/codex.json")).hooks.PreToolUse[0].hooks[0].command; } catch { hook = null; }
+      const r = hook ? spawnSync(process.env.SHELL || "/bin/sh", ["-lc", hook], {encoding: "utf8", timeout: 10000,
         input: JSON.stringify({tool_name: "Bash", tool_input: {command}, cwd: scratch, session_id: "reflex-doctor"}),
-        env: {...process.env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: scratch}});
+        env: {...process.env, PLUGIN_ROOT: i.path, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: scratch}}) : {status: 1, stdout: "", error: {message: "hooks/codex.json is missing or invalid"}};
       let actual;
       try { actual = JSON.parse(r.stdout.trim() || "{}").hookSpecificOutput?.permissionDecision ?? "pass"; } catch { /* invalid output fails below */ }
       const ok = r.status === 0 && actual === expected;
@@ -208,7 +214,15 @@ if (doctor && codex_plugin.active) for (const i of codexOn) {
   } finally { rmSync(scratch, {recursive: true, force: true}); }
 }
 if ((codex_plugin.active || (ocNpm && !ocSetup)) && CONFIG.judge.enabled) warnings.push("System 2 is on, but the Codex and opencode plugins give a gate call 15 s and a longer judge call fails open. Use reflex setup --agents codex,opencode, which sizes the timeout to the judge.");
-if (codex_plugin.active) warnings.push("Codex CLI plugin: Codex runs plugin hooks only after you trust them; open codex, run /hooks and trust the Reflex entries.");
+let codexSeen = null;
+try { codexSeen = read(join(CONFIG.data, "health", "codex.json")); } catch { /* no hook event yet */ }
+if (codex_plugin.active && !codexOn.some(i => { try { return codexSeen?.gate === realpathSync(i.path); } catch { return false; } }))
+  warnings.push("Codex CLI plugin: no hook event from it yet. Codex runs plugin hooks only after you trust them: open codex, run /hooks and trust the Reflex entries.");
+// Setup hooks silence the plugin even while Codex does not run them (untrusted or disabled in /hooks).
+if (codexLive && codexOn.length && !agents.find(a => a.name === "codex")?.hook_observed)
+  warnings.push(`Codex CLI: the plugin stands down for the reflex setup hooks in ${CODEX_HOOKS}, but none of them has run yet. Trust them in /hooks, or remove them (install.mjs --agent codex --uninstall) to let the plugin gate.`);
+if (doctor && ocNpm && !ocSetup && spawnSync("node", ["--version"], {stdio: "ignore", timeout: 5000}).status !== 0)
+  errors.push("opencode npm plugin: node is not on this PATH; the plugin runs the gate with node from the PATH opencode starts with, and gates nothing without it.");
 if (!agents.length && !plugin.active && !codex_plugin.active && !ocNpm) warnings.push("No agent installations recorded. Run reflex setup --agents claude,codex, or use reflex run in your own terminal.");
 // The escalation ladder. Reachability is a GET of the judge's model list: never a paid call.
 const cliJudge = CONFIG.judge.backend === "cli";

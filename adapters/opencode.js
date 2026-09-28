@@ -16,8 +16,8 @@
 //
 // The same file is the opencode npm plugin ("plugin": ["@ursuciprian/reflex"] in opencode.json;
 // package.json "main" points here). Unfilled, it runs the gate next to it with `node` from PATH (opencode
-// itself runs on Bun), and the mode and allow come from ~/.config/reflex/config.json as for any
-// hook without flags. It stands down when `reflex setup` wrote the plugin file into opencode's global
+// itself runs on Bun), and the gate reads the mode and allow on every call from the environment or
+// $XDG_CONFIG_HOME/reflex/config.json, as for any hook without flags. It stands down when `reflex setup` wrote the plugin file into opencode's global
 // plugins directory and that file's gate exists, so no call is judged twice.
 import {spawnSync} from "node:child_process";
 import {existsSync, readFileSync} from "node:fs";
@@ -30,8 +30,10 @@ const XDG = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
 const saved = key => { try { return JSON.parse(readFileSync(join(XDG, "reflex/config.json"), "utf8"))[key]; } catch { return undefined; } };
 const GATE = process.env.REFLEX_GATE ?? (FILLED ? "__REFLEX_GATE__" : fileURLToPath(new URL("../gate.mjs", import.meta.url)));
 const NODE = process.env.REFLEX_NODE ?? (FILLED ? "__REFLEX_NODE__" : "node");
-const MODE = process.env.REFLEX_MODE ?? (FILLED ? "__REFLEX_MODE__" : saved("mode") ?? "shadow");
-const ALLOW = process.env.REFLEX_ALLOW ?? (FILLED ? "__REFLEX_ALLOW__" : saved("allow") ?? "off");
+// Unfilled, no --mode/--allow is passed: the gate reads them per call, so a change applies without a restart.
+const MODE = FILLED ? process.env.REFLEX_MODE ?? "__REFLEX_MODE__" : null;
+const ALLOW = FILLED ? process.env.REFLEX_ALLOW ?? "__REFLEX_ALLOW__" : null;
+const mode = () => MODE ?? process.env.REFLEX_MODE ?? saved("mode") ?? "shadow";
 // The file `reflex setup --agent opencode` writes, where opencode loads it, with a gate that still
 // exists (a stale file gates nothing, so the npm plugin keeps running). Not exported: opencode calls
 // every exported function as a plugin.
@@ -91,7 +93,7 @@ function guardResult(input, output, directory, session_id) {
 }
 
 function gate(flag, payload, script = GATE) {
-  const args = script === GATE ? [script, flag, "--mode", MODE, "--allow", ALLOW] : [script, flag, "--mode", MODE];
+  const args = !FILLED ? [script, flag] : script === GATE ? [script, flag, "--mode", MODE, "--allow", ALLOW] : [script, flag, "--mode", MODE];
   // the guard: an 8 s Jev budget plus node start; the gate: Jev, and System 2 when it is on
   const r = spawnSync(NODE, args, {input: JSON.stringify(payload), encoding: "utf8", timeout: script === GATE ? GATE_TIMEOUT_MS : 15000});
   return r.stdout;
@@ -134,7 +136,7 @@ export const Reflex = async ({directory, client}) => !FILLED && setupPluginLive(
         cwd: output.args?.workdir || directory, session_id: await rootOf(client, input.sessionID), call_id: input.callID}));
     } catch {
       // The gate itself failed. Only block when enforcing; shadow mode must never get in the way.
-      if (MODE === "enforce") throw new Error("reflex: gate unavailable, blocked (fail-closed)");
+      if (mode() === "enforce") throw new Error("reflex: gate unavailable, blocked (fail-closed)");
       return;
     }
     // pass and allow both run: opencode has no prompt of its own here to skip.

@@ -88,7 +88,7 @@ export function runawaySettings(saved = {}, env) {
 export const CLAUDE_SETTINGS = join(ENV.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "settings.json");
 // The Codex CLI plugin (hooks/codex.json, also --plugin) does the same against the hooks file Codex
 // reads, $CODEX_HOME/hooks.json, which is the ~/.codex/hooks.json install.mjs writes unless CODEX_HOME is set.
-export const CODEX_HOOKS = join(ENV.CODEX_HOME ?? join(homedir(), ".codex"), "hooks.json");
+export const CODEX_HOOKS = join(ENV.CODEX_HOME || join(homedir(), ".codex"), "hooks.json");
 const reflexHook = agent => new RegExp(String.raw`(?:"((?:[^"\\]|\\.)*?(?:gate|guard|instructions)\.mjs)"|'([^']*?(?:gate|guard|instructions)\.mjs)'|(\S*(?:gate|guard|instructions)\.mjs))\s+--${agent}(?:-post|-prompted|-prompt)?(?=\s|$)`);
 /** Reflex hooks in an agent's hooks file: `live` scripts exist, `stale` ones do not. Plugin hooks are not counted. */
 export function settingsHooks(file = CLAUDE_SETTINGS, agent = "claude") {
@@ -107,7 +107,11 @@ export function settingsHooks(file = CLAUDE_SETTINGS, agent = "claude") {
 export const settingsHooksInstalled = (file, agent) => settingsHooks(file, agent).live.length > 0;
 export const PLUGIN = process.argv.includes("--plugin");
 const CODEX_PLUGIN = PLUGIN && process.argv.some(a => /^--codex(-|$)/.test(a));
-if (PLUGIN && (CODEX_PLUGIN ? settingsHooksInstalled(CODEX_HOOKS, "codex") : settingsHooksInstalled())) process.exit(0);
+// Standing down, read the input first: an agent writing a large tool result must not get EPIPE.
+if (PLUGIN && (CODEX_PLUGIN ? settingsHooksInstalled(CODEX_HOOKS, "codex") : settingsHooksInstalled())) {
+  if (!process.stdin.isTTY) try { readFileSync(0); } catch { /* nothing to read */ }
+  process.exit(0);
+}
 // With no saved engine the gate starts where a fresh `reflex setup` does: local, no key needed, or
 // Jev when a TypeSafe key is in the environment, or a Keychain item or an earlier install is
 // recorded. The plugin relies on this default.

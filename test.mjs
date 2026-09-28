@@ -184,7 +184,7 @@ try {
   assert.ok(result.agents.filter(a => ["claude", "codex"].includes(a.name)).every(a => a.hook_observed));
   const adapterCheck = `import assert from 'node:assert/strict'; import {readFileSync} from 'node:fs';
     const load=source=>import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
-    const {Reflex}=await load(readFileSync(${JSON.stringify(join(scratch,".config/opencode/plugins/reflex.js"))},'utf8'));
+    const {Reflex}=await load(readFileSync(${JSON.stringify(join(env.XDG_CONFIG_HOME,"opencode/plugins/reflex.js"))},'utf8'));
     const hooks=await Reflex({directory:${JSON.stringify(scratch)}});
     await hooks['tool.execute.before']({tool:'bash',sessionID:'s',callID:'safe'},{args:{command:'git status'}});
     await assert.rejects(()=>hooks['tool.execute.before']({tool:'bash',sessionID:'s',callID:'ask'},
@@ -759,7 +759,7 @@ try {
     })])]));
     assert.deepEqual(shape(hooks), shape(read(join(home, ".codex/hooks.json")).hooks), "hooks/codex.json events, matchers, flags and timeouts match install.mjs --agent codex");
     const all = Object.values(hooks).flat().flatMap(g => g.hooks);
-    for (const h of all) assert.match(h.command, /^node "\$\{PLUGIN_ROOT\}\/(gate|guard|instructions)\.mjs" --codex(-[\w]+)? --plugin$/, h.command);
+    for (const h of all) assert.match(h.command, /^node "\$PLUGIN_ROOT\/(gate|guard|instructions)\.mjs" --codex(-[\w]+)? --plugin$/, h.command);
     // Run the hooks as Codex does: $SHELL -lc with PLUGIN_ROOT in the environment. No saved config: local engine, shadow mode.
     const canary = JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "git push --force origin main"}, session_id: "cx", cwd: home});
     const run = (command, h, extra = {}) => spawnSync("/bin/sh", ["-c", command], {encoding: "utf8", input: canary,
@@ -776,6 +776,10 @@ try {
       assert.ok(x.status === 0 && x.stdout === "", `stands down: ${h.command}`);
     }
     assert.ok(!existsSync(join(home, "data")), "a standing-down Codex plugin hook records nothing");
+    // it reads its input before it exits, so Codex writing a large tool result gets no EPIPE
+    const big = spawnSync("/bin/sh", ["-c", hooks.PostToolUse[1].hooks[0].command], {encoding: "utf8", input: JSON.stringify({tool_name: "Bash", tool_response: "x".repeat(2e6)}),
+      env: {...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), REFLEX_DATA_DIR: join(home, "data"), PLUGIN_ROOT: root}});
+    assert.ok(!big.error && big.status === 0 && big.stdout === "", `large input while standing down: ${big.error?.code ?? big.status}`);
     // CODEX_HOME moves the file Codex reads, so the guard follows it; Claude Code settings do not count for Codex.
     r = run(pre, bare, {CODEX_HOME: join(home, ".codex")});
     assert.equal(r.stdout, "", "stands down for the hooks file under CODEX_HOME");

@@ -99,10 +99,10 @@ new release changes one.
 
 | Part | What it is |
 |---|---|
-| `hooks/codex.json` | the same Codex events, matchers and timeouts as `install.mjs --agent codex` (see step 3): `PreToolUse` on `^(Bash\|spawn_agent)$` (15 s), `PostToolUse` records on `^(Bash\|spawn_agent)$` (5 s), the injection guard on `PostToolUse` for `^Bash$\|^mcp__` (15 s), `UserPromptSubmit` instructions (10 s) and prompt guard (5 s). Each runs `node "${PLUGIN_ROOT}/<script>.mjs" <flag> --plugin`; a test keeps the file in step with `install.mjs` |
+| `hooks/codex.json` | the same Codex events, matchers and timeouts as `install.mjs --agent codex` (see step 3): `PreToolUse` on `^(Bash\|spawn_agent)$` (15 s), `PostToolUse` records on `^(Bash\|spawn_agent)$` (5 s), the injection guard on `PostToolUse` for `^Bash$\|^mcp__` (15 s), `UserPromptSubmit` instructions (10 s) and prompt guard (5 s). Each runs `node "$PLUGIN_ROOT/<script>.mjs" <flag> --plugin` (an environment variable Codex sets; the form works in sh, bash, zsh and fish); a test keeps the file in step with `install.mjs` |
 | `skills/reflex` | tells the agent when to use `reflex check` and `reflex replay`, and not to work around a deny |
 
-Codex also turns two of the Claude Code commands (`status`, `queue`) into skills. The `reflex` CLI
+Codex loads `skills/` by default and turns two of the Claude Code commands (`status`, `queue`) into skills (checked with Codex 0.157: they appear under `.codex-plugin/migrated-command-skills/` in the installed copy). The `reflex` CLI
 is not put on the `PATH` by Codex; install the package (`npm install -g @ursuciprian/reflex`) if you
 want those skills and `reflex status` to work. Configuration, defaults and logs are the same as for
 the Claude Code plugin above.
@@ -113,7 +113,7 @@ into `~/.codex/hooks.json`, every plugin hook exits at once without reading its 
 log line. The plugin checks the file Codex reads, `$CODEX_HOME/hooks.json` when `CODEX_HOME` is set.
 A hook whose script no longer exists does not count, and `reflex status` reports it as an error.
 `reflex status` and `reflex doctor` print which path is active (`Codex CLI hooks: ...`); doctor
-also probes the plugin's gate when the plugin is the active one. To switch to the plugin only:
+also runs the plugin's installed `PreToolUse` command through `$SHELL -lc`, as Codex does, when the plugin is the active one. Codex runs a `hooks.json` entry only after you trust it, but the plugin stands down for it either way; `reflex status` warns when setup hooks silence the plugin and none of them has run yet. To switch to the plugin only:
 `node <copy that installed them>/install.mjs --agent codex --uninstall`; to switch to setup only:
 `codex plugin remove reflex@reflex`. The plugin's gate timeout is 15 s, the same as `reflex setup`
 without System 2; with the autonomous profile use `reflex setup --profile autonomous`.
@@ -141,8 +141,9 @@ package with `node` from the `PATH` opencode was started with (opencode itself r
 needs Node.js 18+ there. It registers the same hooks as the setup file: the gate on
 `tool.execute.before` for `bash` and `task`, instructions on `chat.message` and
 `experimental.chat.system.transform`, the injection guard on `tool.execute.after` and `chat.message`.
-Mode and allow come from `REFLEX_MODE` / `REFLEX_ALLOW` or `~/.config/reflex/config.json`, else
-shadow and off. Pin a version with `"@ursuciprian/reflex@0.13.0"`; this needs a release that ships
+The gate reads the mode and allow on every call from `REFLEX_MODE` / `REFLEX_ALLOW` or
+`$XDG_CONFIG_HOME/reflex/config.json` (default `~/.config`), else shadow and off, so a change applies
+without restarting opencode. Pin a version with `"@ursuciprian/reflex@0.13.0"`; this needs a release that ships
 the plugin (0.13.0 or later).
 
 **Plugin and `reflex setup` together.** opencode loads both. When the plugin file
@@ -293,10 +294,10 @@ absolute path of the Node that ran `install.mjs`; pass `--node /path/to/node` to
 | Agent | What `install.mjs` does | After installing |
 |---|---|---|
 | Claude Code | `~/.claude/settings.json`: `PreToolUse` hook on `Bash\|Task\|Agent` (`gate.mjs --claude`; `Task\|Agent` is subgoal dedup), `PostToolUse` / `PostToolUseFailure` / `PermissionDenied` hooks on the same tools (`--claude-post`), a `PermissionRequest` hook on the same tools (`--claude-prompted`, which only records that Claude Code showed its own dialog; it never answers it), a `UserPromptSubmit` hook for conditional instructions (`instructions.mjs --claude`), the injection guard (`guard.mjs --claude` on `PostToolUse` for web, MCP, `Read` and `Bash` results; `guard.mjs --claude-prompt` on `UserPromptSubmit`), and permission rules that make Claude Code ask before editing the Reflex checkout, its logs, your personal instruction fragments (`~/.config/reflex`) or its own settings | restart sessions |
-| Codex CLI | `~/.codex/hooks.json`: `PreToolUse` + `PostToolUse` on `^(Bash\|spawn_agent)$` (`spawn_agent` is subgoal dedup), `UserPromptSubmit` (`instructions.mjs --codex`), and the injection guard (`guard.mjs --codex` on `PostToolUse` for `^Bash$\|^mcp__`, `guard.mjs --codex-prompt` on `UserPromptSubmit`) | open Codex, run `/hooks` and **trust** the Reflex hooks; untrusted hooks do not run |
+| Codex CLI | `~/.codex/hooks.json` (`$CODEX_HOME/hooks.json` when set): `PreToolUse` + `PostToolUse` on `^(Bash\|spawn_agent)$` (`spawn_agent` is subgoal dedup), `UserPromptSubmit` (`instructions.mjs --codex`), and the injection guard (`guard.mjs --codex` on `PostToolUse` for `^Bash$\|^mcp__`, `guard.mjs --codex-prompt` on `UserPromptSubmit`) | open Codex, run `/hooks` and **trust** the Reflex hooks; untrusted hooks do not run |
 | pi | `~/.pi/agent/extensions/reflex.ts` (gate on `tool_call`, instructions on `before_agent_start`, injection guard on `tool_result` and `input`) | restart pi |
 | oh-my-pi | `~/.omp/agent/extensions/reflex.ts` (same file) | restart omp |
-| opencode | `~/.config/opencode/plugins/reflex.js` (gate on `tool.execute.before`, instructions on `chat.message` + `experimental.chat.system.transform`, injection guard on `tool.execute.after` and `chat.message`) | restart opencode |
+| opencode | `~/.config/opencode/plugins/reflex.js` (under `$XDG_CONFIG_HOME` when set) (gate on `tool.execute.before`, instructions on `chat.message` + `experimental.chat.system.transform`, injection guard on `tool.execute.after` and `chat.message`) | restart opencode |
 | Hermes | prints a `hooks:` block with `pre_tool_call`, `post_tool_call` (gate records and the injection guard) and `pre_llm_call` (instructions and the guard's notes) (Hermes config is YAML, so you paste it) | add it to each profile's `config.yaml`, then `hermes hooks list` to accept it |
 
 The injection guard follows the installed mode: in shadow it only logs (`guard.jsonl`). To enforce it

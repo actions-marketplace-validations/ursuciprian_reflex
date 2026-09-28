@@ -4,8 +4,8 @@
 // backed up next to itself first.
 //
 //   node install.mjs --agent claude          Claude Code  ~/.claude/settings.json PreToolUse, PostToolUse, PermissionRequest + UserPromptSubmit hooks
-//   node install.mjs --agent codex           Codex CLI    ~/.codex/hooks.json PreToolUse, PostToolUse + UserPromptSubmit (then trust them in /hooks)
-//   node install.mjs --agent opencode        opencode     ~/.config/opencode/plugins/reflex.js (tool.execute.before/after, chat.message)
+//   node install.mjs --agent codex           Codex CLI    $CODEX_HOME/hooks.json (default ~/.codex) PreToolUse, PostToolUse + UserPromptSubmit (then trust them in /hooks)
+//   node install.mjs --agent opencode        opencode     $XDG_CONFIG_HOME/opencode/plugins/reflex.js (default ~/.config) (tool.execute.before/after, chat.message)
 //   node install.mjs --agent pi | omp        pi / oh-my-pi ~/.{pi,omp}/agent/extensions/reflex.ts (tool_call, tool_result, input, before_agent_start)
 //     --context | --no-context               add / remove reflex-context.ts, the Jev context layer (context.mjs);
 //                                            with neither, an installed context layer is refreshed and kept
@@ -58,6 +58,9 @@ function writeFile(f, text) {
   mkdirSync(dirname(f), {recursive: true});
   writeFileSync(f, text);
 }
+// Where each agent reads them: Codex from $CODEX_HOME, opencode from $XDG_CONFIG_HOME (as status.mjs checks).
+const CODEX_FILE = join(process.env.CODEX_HOME || join(HOME, ".codex"), "hooks.json");
+const OPENCODE_FILE = join(process.env.XDG_CONFIG_HOME || join(HOME, ".config"), "opencode/plugins/reflex.js");
 const has = bin => { try { execFileSync("which", [bin], {stdio: "ignore"}); return true; } catch { return false; } };
 // With System 2 on, one gate call can take Jev's 3 s plus the judge's timeout. A hook that runs out
 // of time fails open in Claude Code and Codex, so the gate hooks get that time and 30 s more; pi and
@@ -138,7 +141,7 @@ const AGENTS = {
     return `${file} (restart sessions)`;
   }},
   codex: {bin: "codex", run() {
-    const file = join(HOME, ".codex/hooks.json");
+    const file = CODEX_FILE;
     const s = readJson(file);
     s.hooks ??= {};
     stripOurs(s.hooks);
@@ -153,7 +156,7 @@ const AGENTS = {
     return `${file}${UNINSTALL ? "" : " — open Codex and trust the new hooks in /hooks, or they will not run"}`;
   }},
   opencode: {bin: "opencode", run() {
-    const file = join(HOME, ".config/opencode/plugins/reflex.js");
+    const file = OPENCODE_FILE;
     if (UNINSTALL) { rmSync(file, {force: true}); return `${file} removed`; }
     writeFile(file, fill(readFileSync(join(REPO, "adapters/opencode.js"), "utf8")));
     return `${file} (restart opencode)`;
@@ -237,7 +240,7 @@ if (argv.includes("--selfcheck")) {
   const data = join(home, "data");
   const run = (...a) => { const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...a,
     ...(!a.includes("--mode") ? ["--mode", "shadow"] : []), ...(!a.includes("--allow") ? ["--allow", "off"] : [])], {encoding: "utf8",
-    env: {...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), PATH: "/usr/bin:/bin"}}); ok(r.status === 0, `install ${a.join(" ")}: ${r.stderr}`); return r.stdout; };
+    env: {...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), CODEX_HOME: "", PATH: "/usr/bin:/bin"}}); ok(r.status === 0, `install ${a.join(" ")}: ${r.stderr}`); return r.stdout; };
   const read = f => existsSync(join(home, f)) ? readFileSync(join(home, f), "utf8") : null;
   const put = (f, text) => { mkdirSync(dirname(join(home, f)), {recursive: true}); writeFileSync(join(home, f), text); };
   const commands = j => Object.values(JSON.parse(j).hooks ?? {}).flat().flatMap(g => g.hooks.map(h => h.command));
