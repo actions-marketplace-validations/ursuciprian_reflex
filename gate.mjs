@@ -860,8 +860,10 @@ export const fastPass = (cmd, rules) => readOnly(cmd, rules.pass.map(p => new Re
 // expansion ($, `), a heredoc, a process substitution or unbalanced quotes.
 // `reflex check` only judges: the command it is given is data. (Not `node --check`, which still runs
 // -r / --import preloads, nor a file named gate.mjs, which could be anything.)
+// `cap`, `deadline`: a pipeline longer than cap, or reached after the deadline, is not read (not
+// inert), so a huge command stays linear-ish (largeDeny).
 const INERT = [/^(mkdir|touch)\s[^<>`$]*$/i, /^git\s+(add|commit)\b[^<>`$]*$/i, /^reflex\s+check(\s[^<>`$]*)?$/i];
-export function pipelines(command) {
+export function pipelines(command, cap = Infinity, deadline = Infinity) {
   const c = command.replace(/\\\n/g, "");
   if (/[$`]|<<|<\(|>\(/.test(c)) return null;
   const m = maskQuotes(c, "_");
@@ -878,7 +880,7 @@ export function pipelines(command) {
       for (let k = r.index; k < r.index + r[0].length; k++) core[k] = " ";
     }
     const rest = core.join("").trim();
-    if (rest) out.push({text: text.trim(), targets, core: rest, inert: readOnly(rest, INERT)});
+    if (rest) out.push({text: text.trim(), targets, core: rest, inert: rest.length <= cap && Date.now() <= deadline && readOnly(rest, INERT)});
     else if (targets.length) out.push({text: text.trim(), targets, core: "", inert: false});
   };
   for (const s of m.matchAll(/&&|\|\||[;\n]|(?<![<>|&])&(?![>&])/g)) { cut(s.index); last = s.index + s[0].length; }
@@ -1376,20 +1378,24 @@ export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now
 }
 // The deny rules on a command over COMMAND_BYTES: windows of that size, half of it apart (a match up
 // to COMMAND_BYTES / 2 long is inside one), each as written and in the other spellings, until `deadline`.
-// ponytail: past the deadline the rest is not read and the command asks.
+// The views are precheckAs's: "shell" rules read the command without interpreter heredocs that only
+// print, and nothing when every pipeline is inert and writes only notes; the others read it with
+// data heredocs dropped. ponytail: past the deadline the rest is not read and the command asks.
 function largeDeny(command, cwd, env, deadline) {
   const rules = load("rules.json"), deny = {rules: rules.rules.filter(r => r.outcome === "deny")};
-  const c = stripDataHeredocs(command.replace(/\\\n/g, ""), true), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join("");
+  const c = command.replace(/\\\n/g, ""), bare = stripDataHeredocs(c), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join("");
+  const code = onlyNotes(pipelines(c, 2 * COMMAND_BYTES, deadline)) ? null : stripDataHeredocs(c, true);
+  if (Date.now() > deadline) return null;
   for (let at = 0; ; at += COMMAND_BYTES / 2) {
-    const w = c.slice(at, at + COMMAND_BYTES);
+    const b = bare.slice(at, at + COMMAND_BYTES), s = code?.slice(at, at + COMMAND_BYTES);
     for (const f of [x => x, ruleSpelling, wordSpelling]) {
       if (Date.now() > deadline) return null;
-      const v = f(w), hit = typeof v === "string" && checkRules(v + ctx, deny, v);
+      const v = f(b) ?? b, sv = code === null ? null : f(s) ?? s;
+      const hit = checkRules(v + ctx, deny, v, {shell: sv === null ? false : [sv + ctx, sv]});
       if (hit) return {outcome: hit.outcome, rule: hit.rule, id: hit.id, source: "rule", policy_version: rules.version};
     }
-    if (at + COMMAND_BYTES >= c.length) return null;
+    if (at + COMMAND_BYTES >= Math.max(bare.length, code?.length ?? 0)) return null;
   }
-  return null;
 }
 // Brace expansion as the shell does it, on a word's raw text: lists ({a,b}, nested), sequences
 // ({1..3}, {a..c}, {01..9..2}) and any number per word. Quoted or escaped braces and ${…} are text.
@@ -2396,7 +2402,8 @@ async function selfcheck() {
     "php <<'EOF'\n<?php\n// ?><?php system('rm -rf ~'); ?>\nEOF", "ruby - <<'EOF'\n#!ruby -r./x\nputs 'rm -rf ~'\nEOF", "python3 - <<'EOF'\nprint('rm -rf ~ é')\nEOF"])
     ok(pw(c) === "rm-root", `heredoc body with a comment or non-ASCII is code: ${c}`);
   ok(!stripDataHeredocs("perl - <<'EOF'\n#!/usr/bin/env -Ssh\\_-c\\_\"touch\\_D1;:\"\nprint 'x';\nEOF", true).includes("<<DATA"), "a perl #! line keeps the body in");
-  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size" && pw("rm -rf ~; echo " + "x".repeat(33 * 1024)) === "rm-root", "over 32 KB asks, unless a deny rule fires");
+  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size" && pw("rm -rf ~; echo " + "x".repeat(33 * 1024)) === "rm-root" &&
+     pw("echo '- rm -rf ~ " + "x".repeat(33 * 1024) + "' >> NOTES.md") === "command-size", "over 32 KB asks, unless a deny rule fires on the views precheck reads");
   { const t = Date.now(); pw("ssh -o ".repeat(4600)); ok(Date.now() - t < 3500, "32 KB of ssh -o is checked in time"); }
   for (const c of ["echo x >> ~/.zshrc", "echo x > ~/.bash_aliases", "echo 'use nix' > .envrc", "tee -a ~/.profile < /tmp/p", "sed -i '' s/a/b/ ~/.zprofile",
     "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f",
