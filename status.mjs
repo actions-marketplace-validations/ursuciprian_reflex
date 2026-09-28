@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Installation checks are local. A synthetic probe cannot establish that a host trusted a hook.
-import {existsSync, mkdtempSync, readFileSync, rmSync} from "node:fs";
+import {existsSync, mkdtempSync, readFileSync, readdirSync, rmSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
-import {CLAUDE_SETTINGS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooks, setupFile} from "./gate.mjs";
+import {CLAUDE_SETTINGS, CODEX_HOOKS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooks, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
 import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
@@ -157,7 +157,59 @@ if (doctor && plugin.active) for (const i of userInstalls) {
     }
   } finally { rmSync(scratch, {recursive: true, force: true}); }
 }
-if (!agents.length && !plugin.active) warnings.push("No agent installations recorded. Run reflex setup --agents claude,codex, or use reflex run in your own terminal.");
+// The Codex CLI plugin: `codex plugin add reflex@<marketplace>` copies it to
+// $CODEX_HOME/plugins/cache/<marketplace>/reflex/<version> and writes [plugins."reflex@<marketplace>"]
+// enabled = true into config.toml. Its hooks stand down while `reflex setup` hooks are in hooks.json.
+const codexHome = dirname(CODEX_HOOKS), codexFound = settingsHooks(CODEX_HOOKS, "codex"), codexLive = codexFound.live.length > 0;
+for (const s of codexFound.stale) errors.push(`Codex CLI: ${CODEX_HOOKS} has a Reflex hook for ${s}, which does not exist; that hook fails and gates nothing. Re-run reflex setup --agents codex, or remove it.`);
+let codexToml = "";
+try { codexToml = readFileSync(join(codexHome, "config.toml"), "utf8"); } catch { /* no config */ }
+// ponytail: a line scan, not a TOML parser; enough for the table codex plugin add writes.
+const codexEnabled = id => {
+  const lines = codexToml.split("\n"), start = lines.findIndex(l => l.trim() === `[plugins."${id}"]`);
+  if (start < 0) return false;
+  const end = lines.findIndex((l, i) => i > start && /^\s*\[/.test(l));
+  return !lines.slice(start + 1, end < 0 ? undefined : end).some(l => /^\s*enabled\s*=\s*false\b/.test(l));
+};
+const ls = d => { try { return readdirSync(d); } catch { return []; } };
+const codexInstalls = ls(join(codexHome, "plugins/cache")).flatMap(m => ls(join(codexHome, "plugins/cache", m, "reflex"))
+  .map(v => ({id: `reflex@${m}`, version: v, path: join(codexHome, "plugins/cache", m, "reflex", v)})));
+const codexOn = codexInstalls.filter(i => codexEnabled(i.id));
+const codex_plugin = {installed: codexInstalls, enabled: codexOn.length > 0, active: codexOn.length > 0 && !codexLive, settings_hooks: codexLive, checks: []};
+const codex_hooks = codexLive ? `reflex setup hooks in ${CODEX_HOOKS}${codexOn.length ? " (the plugin stands down)" : ""}`
+  : codexOn.length ? `the Codex CLI plugin (${codexOn[0].id} ${codexOn[0].version})` : "none recorded";
+// The opencode npm plugin ("@ursuciprian/reflex" in the global opencode.json). It registers no hooks
+// while the plugin file `reflex setup` writes is in opencode's global plugins directory.
+const ocDir = join(process.env.XDG_CONFIG_HOME || join(home, ".config"), "opencode"), ocFile = join(ocDir, "plugins/reflex.js");
+let ocNpm = null;
+for (const f of ["opencode.json", "opencode.jsonc"]) try {
+  if (/"@ursuciprian\/reflex(?:@[^"]*)?"/.test(readFileSync(join(ocDir, f), "utf8"))) ocNpm = join(ocDir, f);
+} catch { /* not there */ }
+let ocSetup = false;
+try { const g = readFileSync(ocFile, "utf8").match(/"(\/[^"]*\/gate\.mjs)"/)?.[1]; ocSetup = !!g && existsSync(g); } catch { /* not there */ }
+const opencode_plugin = ocSetup ? `reflex setup plugin file ${ocFile}${ocNpm ? " (the npm plugin stands down)" : ""}`
+  : ocNpm ? `the opencode npm plugin (@ursuciprian/reflex in ${ocNpm})` : "none recorded";
+if (doctor && codex_plugin.active) for (const i of codexOn) {
+  const gate = join(i.path, "gate.mjs");
+  if (!existsSync(gate)) { errors.push(`Codex plugin ${i.id}: gate is missing at ${gate}. Run codex plugin add ${i.id}.`); continue; }
+  const scratch = mkdtempSync(join(tmpdir(), "reflex-doctor-"));
+  try {
+    for (const [command, expected] of [["git status", "pass"], ["git push --force origin main", "deny"]]) {
+      // judged, never executed; the probe's records go to a disposable directory
+      const r = spawnSync(process.execPath, [gate, "--codex", "--plugin"], {encoding: "utf8", timeout: 10000,
+        input: JSON.stringify({tool_name: "Bash", tool_input: {command}, cwd: scratch, session_id: "reflex-doctor"}),
+        env: {...process.env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: scratch}});
+      let actual;
+      try { actual = JSON.parse(r.stdout.trim() || "{}").hookSpecificOutput?.permissionDecision ?? "pass"; } catch { /* invalid output fails below */ }
+      const ok = r.status === 0 && actual === expected;
+      codex_plugin.checks.push({command, expected, actual: actual ?? null, ok});
+      if (!ok) errors.push(`Codex plugin ${i.id}: ${expected} probe failed (${r.error?.message ?? actual ?? "invalid output"}).`);
+    }
+  } finally { rmSync(scratch, {recursive: true, force: true}); }
+}
+if ((codex_plugin.active || (ocNpm && !ocSetup)) && CONFIG.judge.enabled) warnings.push("System 2 is on, but the Codex and opencode plugins give a gate call 15 s and a longer judge call fails open. Use reflex setup --agents codex,opencode, which sizes the timeout to the judge.");
+if (codex_plugin.active) warnings.push("Codex CLI plugin: Codex runs plugin hooks only after you trust them; open codex, run /hooks and trust the Reflex entries.");
+if (!agents.length && !plugin.active && !codex_plugin.active && !ocNpm) warnings.push("No agent installations recorded. Run reflex setup --agents claude,codex, or use reflex run in your own terminal.");
 // The escalation ladder. Reachability is a GET of the judge's model list: never a paid call.
 const cliJudge = CONFIG.judge.backend === "cli";
 const judge = {enabled: CONFIG.judge.enabled, backend: CONFIG.judge.backend, ...(cliJudge ? {cli: CONFIG.judge.cli, command: CONFIG.judge.command ?? null}
@@ -184,7 +236,7 @@ const trips = runawayTrips(Date.now() - 36e5);
 const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
 if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, claude_hooks: claudeHooks, plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, agents, errors, warnings};
+  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
@@ -195,6 +247,8 @@ else {
   console.log(`Queue: ${queue.enabled ? "on" : "off"}; ${queue.pending} pending of ${queue.total} · checkpoints ${CONFIG.checkpoints ? "on" : "off"}`);
   console.log(`Runaway guard: ${runaway.enabled ? `on (${CONFIG.mode === "enforce" ? "stops" : CONFIG.mode === "shadow" ? "logs only, shadow" : "off with the mode"}); ${runaway.stops_last_hour} stop${runaway.stops_last_hour === 1 ? "" : "s"} in the last hour` : "off"}`);
   console.log(`Claude Code hooks: ${claudeHooks}${plugin.checks.length ? `; plugin probes ${plugin.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);
+  console.log(`Codex CLI hooks: ${codex_hooks}${codex_plugin.checks.length ? `; plugin probes ${codex_plugin.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);
+  console.log(`opencode plugin: ${opencode_plugin}`);
   for (const a of agents) console.log(`${a.name}: ${a.configured ? "configured" : "not verified"}${a.guard ? " + guard" : ""}; ${a.mode}/${a.engine}; ${a.hook_observed ? "hook observed" : "awaiting hook event"}; ${a.version ?? "version unknown"}${a.checks.length ? `; probes ${a.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);
   for (const w of warnings) console.log(`Note: ${w}`);
   for (const e of errors) console.error(`Error: ${e}`);

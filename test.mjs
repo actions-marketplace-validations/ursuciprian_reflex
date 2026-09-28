@@ -10,7 +10,7 @@ import {fileURLToPath} from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url)), scratch = mkdtempSync(join(tmpdir(), "reflex-test-"));
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("REFLEX_") &&
-  !["TYPESAFE_API_KEY", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR"].includes(k)));
+  !["TYPESAFE_API_KEY", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"].includes(k)));
 const env = {...clean, HOME: scratch, XDG_CONFIG_HOME: join(scratch, "config"), XDG_STATE_HOME: join(scratch, "state"),
   REFLEX_PREFIX: join(scratch, "installed"), REFLEX_ENGINE: "jev", REFLEX_KEYCHAIN_SERVICE: `reflex-test-${process.pid}`,
   REFLEX_API_URL: "http://127.0.0.1:9/v1/systemone"};
@@ -699,6 +699,7 @@ try {
     for (const c of ["reflex report --push http://x.invalid", "reflex replay claude --engine jev", "reflex suggest claude --write --yes",
       "reflex queue approve abc", "reflex check 'x'; rm -rf /", "reflex check \"$(rm -rf ~)\"",
       "claude plugin disable reflex@reflex", "claude plugin uninstall reflex@reflex", "claude plugin marketplace remove reflex",
+      "codex plugin remove reflex@reflex", "codex plugin marketplace remove reflex",
       "echo '{}' > ~/.claude/plugins/installed_plugins.json"])
       assert.notEqual(judged(c), "pass", c);
     // Run the plugin's PreToolUse command as Claude Code would. No saved config: local engine, shadow mode.
@@ -737,5 +738,103 @@ try {
     const doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: penv}).stdout);
     assert.ok(doc.plugin.settings_hooks && !doc.plugin.active && /reflex setup hooks/.test(doc.claude_hooks), "status names the active path");
     console.log("claude code plugin checks OK");
+  }
+  {
+    // The Codex CLI plugin: .codex-plugin/plugin.json + hooks/codex.json, in step with package.json and install.mjs.
+    const pkg = read(join(root, "package.json")), plugin = read(join(root, ".codex-plugin/plugin.json"));
+    const market = read(join(root, ".agents/plugins/marketplace.json")), hooks = read(join(root, "hooks/codex.json")).hooks;
+    assert.equal(plugin.name, "reflex");
+    assert.equal(plugin.version, pkg.version, ".codex-plugin/plugin.json version matches package.json");
+    assert.equal(plugin.license, pkg.license);
+    assert.equal(plugin.hooks, "./hooks/codex.json", "Codex reads its own hooks file, not the Claude Code hooks/hooks.json");
+    assert.deepEqual(market.plugins.map(p => [p.name, p.source?.path ?? p.source]), [["reflex", "./"]], "Codex marketplace lists the plugin at the repo root");
+    for (const f of [".codex-plugin/", ".agents/"]) assert.ok(pkg.files.includes(f), `npm files include ${f}`);
+    const home = join(scratch, "codex-plugin-home");
+    mkdirSync(join(home, ".codex"), {recursive: true});
+    const penv = {...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(home, "state")};
+    success(spawnSync(process.execPath, [join(root, "install.mjs"), "--agent", "codex", "--mode", "shadow", "--allow", "off"], {cwd: root, encoding: "utf8", env: penv}));
+    const shape = hs => Object.fromEntries(Object.entries(hs).map(([ev, groups]) => [ev, groups.map(g => [g.matcher ?? null, g.hooks.map(h => {
+      const [, script, flag] = h.command.match(/(gate|guard|instructions)\.mjs"?\s+(--[\w-]+)/) ?? [];
+      return [h.type, script, flag, h.timeout];
+    })])]));
+    assert.deepEqual(shape(hooks), shape(read(join(home, ".codex/hooks.json")).hooks), "hooks/codex.json events, matchers, flags and timeouts match install.mjs --agent codex");
+    const all = Object.values(hooks).flat().flatMap(g => g.hooks);
+    for (const h of all) assert.match(h.command, /^node "\$\{PLUGIN_ROOT\}\/(gate|guard|instructions)\.mjs" --codex(-[\w]+)? --plugin$/, h.command);
+    // Run the hooks as Codex does: $SHELL -lc with PLUGIN_ROOT in the environment. No saved config: local engine, shadow mode.
+    const canary = JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "git push --force origin main"}, session_id: "cx", cwd: home});
+    const run = (command, h, extra = {}) => spawnSync("/bin/sh", ["-c", command], {encoding: "utf8", input: canary,
+      env: {...clean, HOME: h, XDG_CONFIG_HOME: join(h, ".config"), REFLEX_DATA_DIR: join(h, "data"), PLUGIN_ROOT: root, ...extra}});
+    const pre = hooks.PreToolUse[0].hooks[0].command, bare = join(scratch, "codex-plugin-bare");
+    mkdirSync(bare, {recursive: true});
+    let r = run(pre, bare);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput?.permissionDecision, "deny", "Codex plugin hook denies the canary");
+    assert.deepEqual(((({mode, engine}) => [mode, engine]))(read(join(bare, "data/health/codex.json"))), ["shadow", "local"], "no config: local engine, shadow mode");
+    // Double-hook guard: with `reflex setup` hooks in ~/.codex/hooks.json every plugin hook exits at once, silent and unlogged.
+    for (const h of all) {
+      const x = run(h.command, home);
+      assert.ok(x.status === 0 && x.stdout === "", `stands down: ${h.command}`);
+    }
+    assert.ok(!existsSync(join(home, "data")), "a standing-down Codex plugin hook records nothing");
+    // CODEX_HOME moves the file Codex reads, so the guard follows it; Claude Code settings do not count for Codex.
+    r = run(pre, bare, {CODEX_HOME: join(home, ".codex")});
+    assert.equal(r.stdout, "", "stands down for the hooks file under CODEX_HOME");
+    const claudeOnly = join(scratch, "codex-plugin-claude");
+    mkdirSync(join(claudeOnly, ".claude"), {recursive: true});
+    cpSync(join(scratch, "plugin-home/.claude/settings.json"), join(claudeOnly, ".claude/settings.json"));
+    assert.equal(JSON.parse(run(pre, claudeOnly).stdout).hookSpecificOutput?.permissionDecision, "deny", "Claude Code setup hooks do not silence the Codex plugin");
+    // A stale hooks file (its gate is gone) gates nothing, so the plugin keeps running.
+    const stale = join(scratch, "codex-plugin-stale");
+    mkdirSync(join(stale, ".codex"), {recursive: true});
+    writeFileSync(join(stale, ".codex/hooks.json"), JSON.stringify({hooks: {PreToolUse: [{matcher: "^Bash$", hooks: [{type: "command",
+      command: `"/usr/bin/node" "${join(stale, "gone/gate.mjs")}" --codex --mode shadow --allow off`}]}]}}));
+    assert.equal(JSON.parse(run(pre, stale).stdout).hookSpecificOutput?.permissionDecision, "deny", "stale Codex hooks: the plugin still gates");
+    // status: which path is active
+    const cache = join(stale, ".codex/plugins/cache/reflex/reflex", pkg.version);
+    mkdirSync(cache, {recursive: true});
+    cpSync(join(root, "gate.mjs"), join(cache, "gate.mjs"));
+    writeFileSync(join(stale, ".codex/config.toml"), `[plugins."reflex@reflex"]\nenabled = true\n`);
+    let doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: {...penv, HOME: stale}}).stdout);
+    assert.ok(doc.codex_plugin.active && /Codex CLI plugin/.test(doc.codex_hooks) && doc.errors.some(e => /hooks\.json has a Reflex hook/.test(e)), `status: plugin active, stale hook flagged: ${doc.codex_hooks}`);
+    writeFileSync(join(stale, ".codex/config.toml"), `[plugins."reflex@reflex"]\nenabled = false\n`);
+    doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: {...penv, HOME: stale}}).stdout);
+    assert.ok(!doc.codex_plugin.active, "status: a disabled Codex plugin is not active");
+    mkdirSync(join(home, ".codex/plugins/cache/reflex/reflex", pkg.version), {recursive: true});
+    cpSync(join(cache, "gate.mjs"), join(home, ".codex/plugins/cache/reflex/reflex", pkg.version, "gate.mjs"));
+    writeFileSync(join(home, ".codex/config.toml"), `[plugins."reflex@reflex"]\nenabled = true\n`);
+    doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: penv}).stdout);
+    assert.ok(doc.codex_plugin.settings_hooks && !doc.codex_plugin.active && /reflex setup hooks.*stands down/.test(doc.codex_hooks), `status names the active Codex path: ${doc.codex_hooks}`);
+    console.log("codex cli plugin checks OK");
+  }
+  {
+    // The opencode npm plugin: package.json "main" is the same adapter reflex setup fills in, run unfilled.
+    const pkg = read(join(root, "package.json"));
+    assert.equal(pkg.main, "adapters/opencode.js", "opencode loads the package main as its server plugin");
+    assert.ok(pkg.files.includes("adapters/"));
+    const home = join(scratch, "opencode-plugin-home"), bare = join(scratch, "opencode-plugin-bare"), stale = join(scratch, "opencode-plugin-stale");
+    for (const d of [home, bare]) mkdirSync(d, {recursive: true});
+    const oenv = h => ({...clean, HOME: h, XDG_CONFIG_HOME: join(h, ".config"), XDG_STATE_HOME: join(h, "state"), REFLEX_DATA_DIR: join(h, "data"),
+      PATH: `${dirname(process.execPath)}:/usr/bin:/bin`});
+    success(spawnSync(process.execPath, [join(root, "install.mjs"), "--agent", "opencode", "--mode", "shadow", "--allow", "off"], {cwd: root, encoding: "utf8", env: oenv(home)}));
+    mkdirSync(join(stale, ".config/opencode/plugins"), {recursive: true});
+    writeFileSync(join(stale, ".config/opencode/plugins/reflex.js"), readFileSync(join(home, ".config/opencode/plugins/reflex.js"), "utf8").replaceAll(root, join(stale, "gone")));
+    // opencode imports the entry and calls every exported function; each must be a plugin.
+    const probe = `import assert from 'node:assert/strict';
+      const mod = await import(${JSON.stringify(join(root, pkg.main))});
+      assert.deepEqual(Object.keys(mod), ['Reflex']);
+      const hooks = await mod.Reflex({directory: ${JSON.stringify(scratch)}});
+      if (process.argv[1] === 'standdown') { assert.deepEqual(Object.keys(hooks), []); process.exit(0); }
+      const setup = await import('data:text/javascript;base64,' + Buffer.from((await import('node:fs')).readFileSync(${JSON.stringify(join(home, ".config/opencode/plugins/reflex.js"))}, 'utf8')).toString('base64'));
+      assert.deepEqual(Object.keys(hooks).sort(), Object.keys(await setup.Reflex({directory: '/'})).sort(), 'same hooks as the reflex setup plugin file');
+      await hooks['tool.execute.before']({tool: 'bash', sessionID: 's', callID: 'ok'}, {args: {command: 'git status'}});
+      await assert.rejects(() => hooks['tool.execute.before']({tool: 'bash', sessionID: 's', callID: 'd'}, {args: {command: 'git push --force origin main'}}), /force push/);`;
+    const node = (h, arg) => spawnSync(process.execPath, ["--input-type=module", "-e", probe, arg ?? "gate"], {encoding: "utf8", env: oenv(h)});
+    success(node(bare));
+    assert.deepEqual(((({mode, engine}) => [mode, engine]))(read(join(bare, "data/health/opencode.json"))), ["shadow", "local"], "no config: local engine, shadow mode");
+    success(node(home, "standdown"));   // the setup file is there: the npm plugin registers no hooks
+    success(node(stale));               // its gate is gone: the npm plugin gates
+    const doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: oenv(home)}).stdout);
+    assert.match(doc.opencode_plugin, /reflex setup plugin file/, "status names the active opencode path");
+    console.log("opencode npm plugin checks OK");
   }
 } finally { rmSync(scratch, {recursive: true, force: true}); }
