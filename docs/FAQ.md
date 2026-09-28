@@ -25,6 +25,8 @@ docs. The short version of this page is the [FAQ section of the README](../READM
 - [How do I reduce permission prompts in Claude Code and approve agent commands automatically but safely?](#how-do-i-reduce-permission-prompts-in-claude-code-and-approve-agent-commands-automatically-but-safely)
 - [Can Reflex run autonomous coding agents with no human watching?](#can-reflex-run-autonomous-coding-agents-with-no-human-watching)
 - [How do I share Reflex rules with my team, like Claude Code team settings?](#how-do-i-share-reflex-rules-with-my-team-like-claude-code-team-settings)
+- [How do I set a deploy freeze or change window for AI coding agents?](#how-do-i-set-a-deploy-freeze-or-change-window-for-ai-coding-agents)
+- [How do I audit AI agent commands for SOC 2 or ISO 27001?](#how-do-i-audit-ai-agent-commands-for-soc-2-or-iso-27001)
 - [How do I try Reflex safely before enforcing it?](#how-do-i-try-reflex-safely-before-enforcing-it)
 - [How do I uninstall Reflex?](#how-do-i-uninstall-reflex)
 
@@ -314,6 +316,36 @@ without `.git` is never read. Other agents' file tools are not gated, so protect
 review as you would CI settings.
 
 See: [GUIDE: team policy](GUIDE.md#team-policy-share-reflex-rules-across-a-repo).
+
+## How do I set a deploy freeze or change window for AI coding agents?
+
+Add a `freeze` list to `~/.config/reflex/config.json`, or to the team policy
+(`.reflex/policy.json`) so the whole team gets it: weekly windows such as
+`{"days": ["fri"], "after": "15:00", "tz": "Europe/Bucharest"}` and date ranges such as
+`{"from": "2026-12-20", "to": "2027-01-03", "outcome": "deny"}`. During a window, a command that
+is not read-only and touches production (by the working directory, AWS profile, kube context,
+Terraform workspace, git branch, the command or a team prod marker) asks a human or is denied, with
+a reason such as `change freeze: Friday after 15:00 (Europe/Bucharest)`. It works in shadow and
+enforce mode, System 2 never approves it, and it can only tighten: a rule deny stays a deny, and an
+invalid window is an error rather than a smaller window. `reflex status` shows whether a freeze is
+active now. This is change management for Claude Code, Codex CLI and the other supported agents,
+for their shell commands.
+
+See: [GUIDE: change freeze for AI coding agents](GUIDE.md#change-freeze-for-ai-coding-agents).
+
+## How do I audit AI agent commands for SOC 2 or ISO 27001?
+
+Run `reflex audit --since 90d > agent-commands.csv`. It writes one row per decision the gate
+logged: time, agent, session, working directory, production or not and why, the command with
+secrets redacted, the decision, the rule and who approved it (a human in the approval queue,
+System 2, or the agent's own prompt). `--prod-only`, `--agent` and `--format json|jsonl` narrow and
+shape it. It only reads Reflex's local logs, so it is evidence for a change management control
+(SOC 2 CC8.1, ISO 27001 Annex A 8.32), not tamper-proof storage; read-only commands are not logged.
+To keep decisions outside the machine, set `notify` in `config.json` to an https webhook (Slack or
+json): it posts redacted denies, asks or production decisions from a detached process and never
+delays the agent.
+
+See: [GUIDE: audit log for AI agent commands](GUIDE.md#audit-log-for-ai-agent-commands-soc-2).
 
 ## How do I try Reflex safely before enforcing it?
 

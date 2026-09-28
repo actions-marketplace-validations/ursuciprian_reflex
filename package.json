@@ -44,7 +44,10 @@
     "hermes",
     "terraform",
     "kubectl",
-    "infrastructure-as-code"
+    "infrastructure-as-code",
+    "deploy-freeze",
+    "change-management",
+    "audit-log"
   ],
   "license": "MIT",
   "author": "Ciprian Ursu",

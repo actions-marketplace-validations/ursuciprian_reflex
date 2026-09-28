@@ -22,7 +22,7 @@ try {
   for (const [program, args] of [
     [process.execPath, ["policy.mjs"]], [process.execPath, ["gate.mjs", "--selfcheck"]],
     [process.execPath, ["instructions.mjs", "--selfcheck"]], [process.execPath, ["install.mjs", "--selfcheck"]],
-    [process.execPath, ["guard.mjs", "--selfcheck"]], [process.execPath, ["judge2.mjs", "--selfcheck"]], [process.execPath, ["autonomy.mjs", "--selfcheck"]],
+    [process.execPath, ["guard.mjs", "--selfcheck"]], [process.execPath, ["judge2.mjs", "--selfcheck"]], [process.execPath, ["autonomy.mjs", "--selfcheck"]], [process.execPath, ["freeze.mjs", "--selfcheck"]],
     [process.execPath, ["context.mjs", "--selfcheck"]], [process.execPath, ["router/server.mjs", "--selfcheck"]], [process.execPath, ["infra.mjs", "--selfcheck"]],
     ["python3", ["routing/reflex_router.py", "--selfcheck"]],
   ]) {
@@ -1024,5 +1024,192 @@ try {
     const doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: oenv(home)}).stdout);
     assert.match(doc.opencode_plugin, /reflex setup plugin file/, "status names the active opencode path");
     console.log("opencode npm plugin checks OK");
+  }
+  // Change freezes (freeze.mjs), the decision webhook (notify.mjs) and reflex audit (audit.mjs): a
+  // freeze only tightens, a webhook gets redacted text and no environment values, the hook never
+  // waits for it, and the audit export only reads.
+  {
+    const {createHash} = await import("node:crypto");
+    const {urlError, notifyTarget} = await import("./notify.mjs");
+    const base = join(scratch, "freeze"), cfg = join(base, "config"), data = join(base, "data"), repo = join(base, "infra");
+    const prodDir = join(repo, "envs/prod"), devDir = join(repo, "envs/dev"), policyFile = join(repo, ".reflex/policy.json");
+    for (const d of [join(repo, ".git"), join(repo, ".reflex"), prodDir, devDir, join(cfg, "reflex")]) mkdirSync(d, {recursive: true});
+    const fenv = {...env, XDG_CONFIG_HOME: cfg, REFLEX_DATA_DIR: data, REFLEX_ENGINE: "local", REFLEX_MODE: "shadow", AWS_PROFILE: "", KUBECONFIG: join(base, "none")};
+    const setConfig = c => writeFileSync(join(cfg, "reflex/config.json"), JSON.stringify(c));
+    const setTeam = p => writeFileSync(policyFile, JSON.stringify({version: 1, ...p}));
+    let n = 0;
+    const decide = (command, cwd, extra = {}) => JSON.parse(success(invoke("gate.mjs", ["--decide"], {env: {...fenv, ...extra},
+      input: JSON.stringify({agent: "claude-code", command, cwd, session_id: "F", call_id: `c${n++}`})})));
+    const ALWAYS = {from: "2000-01-01"}, NEVER = {from: "2000-01-01", to: "2000-01-02"};
+    setConfig({});
+    setTeam({freeze: [{...ALWAYS, outcome: "deny", note: "year-end"}]});
+    let d = decide("kubectl apply -f app.yaml", prodDir);
+    assert.ok(d.effective === "deny" && d.source === "rule" && /change freeze: from 2000-01-01 \(UTC\): year-end; production \(cwd\)/.test(d.reason), `freeze denies a prod change, in shadow too: ${JSON.stringify(d)}`);
+    assert.equal(decide("kubectl apply -f app.yaml", devDir).effective, "pass", "not production: no freeze");
+    assert.equal(decide("kubectl get pods -A", prodDir).effective, "pass", "read-only passes during a freeze");
+    assert.equal(decide("git commit -m 'prod hotfix notes'", devDir).effective, "pass", "a commit that only writes notes is not production");
+    d = decide("kubectl apply -f app.yaml", devDir, {AWS_PROFILE: "acct-prod-7788"});
+    assert.ok(d.effective === "deny" && /production \(aws_profile\)$/.test(d.reason), "production by the AWS profile, named by kind");
+    // never loosens: a freeze ask never softens a rule's deny, and it overrides a fast lane pass
+    setTeam({freeze: [ALWAYS]});
+    d = decide("terraform destroy -auto-approve", prodDir);
+    assert.ok(d.effective === "deny" && /destructive operation on production/.test(d.reason), `a rule deny keeps its reason: ${d.reason}`);
+    assert.equal(decide("git push --force origin main", prodDir).effective, "deny", "a bundled deny stays a deny under a freeze ask");
+    assert.equal(decide("git push origin feature-x", devDir).source, "fast-lane", "the fast lane outside production");
+    d = decide("git push origin feature-x", prodDir);
+    assert.ok(d.effective === "ask" && /change freeze/.test(d.reason), `a freeze asks over the fast lane: ${JSON.stringify(d)}`);
+    // strict validation: the invalid window is an error (no trust, no fast lane), the valid one still applies
+    setTeam({freeze: [ALWAYS, {days: ["friday"]}], fastlane: [{pattern: String.raw`^make\s+lint$`}]});
+    writeFileSync(join(cfg, "reflex/trusted.json"), JSON.stringify({version: 1, repos: {[realpathSync(repo)]: {sha256: createHash("sha256").update(readFileSync(policyFile, "utf8")).digest("hex")}}}));
+    const tp = JSON.parse(success(invoke("team.mjs", ["policy", repo, "--json"], {env: fenv})));
+    assert.ok(tp.errors.some(e => /freeze 2: days/.test(e)) && tp.active_fastlane === false && tp.freeze.length === 1, `invalid window: ${JSON.stringify(tp.errors)}`);
+    assert.equal(decide("kubectl apply -f app.yaml", prodDir).effective, "ask", "valid windows of an invalid file still apply");
+    for (const bad of [{freeze: {days: ["fri"]}}, {freeze: [{days: ["fri"], outcome: "allow"}]}, {freeze: [{tz: "Nowhere/City", days: ["fri"]}]}]) {
+      setTeam(bad);
+      assert.ok(JSON.parse(success(invoke("team.mjs", ["policy", repo, "--json"], {env: fenv}))).errors.length === 1, `team: invalid ${JSON.stringify(bad)}`);
+    }
+    setTeam({freeze: [NEVER]});
+    assert.equal(decide("kubectl apply -f app.yaml", prodDir).effective, "pass", "outside the window: no freeze");
+    // config.json: applies_to all; an invalid window there is a configuration error, and everything asks
+    setTeam({});
+    setConfig({freeze: [{...ALWAYS, applies_to: "all"}]});
+    assert.ok(/change freeze/.test(decide("kubectl apply -f app.yaml", devDir).reason) && decide("ls", devDir).effective === "pass", "config.json freeze, applies_to all");
+    let st = JSON.parse(invoke("status.mjs", ["--json"], {env: fenv, cwd: prodDir}).stdout);
+    assert.ok(st.freeze.active.length === 1 && st.freeze.active[0].applies_to === "all" && st.warnings.some(w => /Change freeze in force now/.test(w)), "status shows an active freeze");
+    // an invalid window in config.json: never dropped, never a crash (a crashed hook fails open), and a rule deny stays a deny
+    for (const bad of [{days: ["x"]}, {from: "2026-13-01", outcome: "deny"}, {to: "2026-02-32"}]) {
+      setConfig({freeze: [bad]});
+      d = decide("kubectl apply -f app.yaml", devDir);
+      assert.ok(d.effective === "ask" && /invalid change freeze .*config\.json freeze 1/.test(d.reason), `an invalid user window asks: ${JSON.stringify(d)}`);
+      assert.equal(decide("git push --force origin main", devDir).effective, "deny", `a rule deny stays a deny beside ${JSON.stringify(bad)}`);
+      assert.equal(decide("ls", devDir).effective, "pass", "read-only still passes");
+    }
+    // a bad date in a team policy is an error; the file's other stricter parts still apply
+    setConfig({});
+    setTeam({rules: [{id: "no-seed", outcome: "deny", rule: "seeds", all: [String.raw`\bseed-db\b`]}], freeze: [{from: "2026-13-01"}]});
+    assert.ok(/team policy/.test(decide("./seed-db --all", devDir).reason) && decide("./seed-db --all", devDir).effective === "deny", "a bad team window keeps the team rules");
+    setTeam({});
+    // a queue approval lifts a freeze ask only when it was parked and answered inside that window
+    const {freezeApproved} = await import("./gate.mjs");
+    const {parseFreeze} = await import("./freeze.mjs");
+    const [yearEnd] = parseFreeze([{from: "2026-12-20", to: "2027-01-03"}]).windows;
+    const answer = (created, decided) => ({ladder: {queue_created: created, decided_at: decided}});
+    assert.ok(freezeApproved(yearEnd, answer("2026-12-21T10:00:00Z", "2026-12-21T10:05:00Z")) && !freezeApproved(yearEnd, answer("2026-12-19T10:00:00Z", "2026-12-21T10:05:00Z")) &&
+      !freezeApproved(yearEnd, answer("2026-12-19T10:00:00Z", "2026-12-19T23:00:00Z")) && !freezeApproved(yearEnd, {ladder: {}}) &&
+      !freezeApproved({outcome: "ask", applies_to: "all", reason: "invalid"}, answer("2026-12-21T10:00:00Z", "2026-12-21T10:05:00Z")), "an approval from before the freeze does not carry into it");
+    setConfig({freeze: [NEVER]});
+    st = JSON.parse(invoke("status.mjs", ["--json"], {env: fenv, cwd: prodDir}).stdout);
+    assert.ok(st.freeze.windows === 1 && !st.freeze.active.length, "status: no freeze active now");
+
+    // the webhook, against a local server: /ok answers, /hang never does
+    const got = [];
+    const server = createServer(async (req, res) => {
+      let b = "";
+      for await (const c of req) b += c;
+      got.push({url: req.url, body: b});
+      if (req.url !== "/hang") res.end("ok");
+    });
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+    const url = p => `http://127.0.0.1:${server.address().port}${p}`;
+    const until = async (f, ms = 4000) => { for (const t0 = Date.now(); !f() && Date.now() - t0 < ms;) await new Promise(r => setTimeout(r, 25)); return f(); };
+    try {
+      assert.ok(urlError("http://example.com/x") && urlError("ftp://127.0.0.1/x") && urlError("https://u:p@example.com/x") && !urlError("https://hooks.example.com/x") &&
+        !urlError("http://localhost:9/x") && !urlError("http://[::1]:9/x"), "only https, or http on this machine");
+      assert.ok(notifyTarget({url: "https://x.example", on: ["pass"]}).error && notifyTarget({url: "https://x.example", format: "xml"}).error &&
+        notifyTarget({url: "https://x.example", secret: 1}).error && notifyTarget({url: "https://x.example"}).target.on.join() === "deny", "strict notify settings");
+      const token = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+      setConfig({notify: {url: url("/ok"), on: ["deny", "prod"]}});
+      d = decide(`GITHUB_TOKEN=${token} git push --force origin main`, devDir, {AWS_PROFILE: "acct-prod-7788"});
+      assert.equal(d.effective, "deny");
+      assert.ok(await until(() => got.length === 1), "the webhook got the deny");
+      const raw = got[0].body, ev = JSON.parse(raw);
+      assert.ok(ev.event === "reflex.decision" && ev.decision === "deny" && ev.prod === true && ev.prod_by === "aws_profile" && ev.agent === "claude-code" &&
+        ev.command.includes("<redacted>") && ev.rule_id === "force-push-main", `webhook body: ${raw}`);
+      assert.ok(!raw.includes(token) && !raw.includes("acct-prod-7788"), "no secret and no environment value leaves the machine");
+      // a freeze reason names the marker's kind, never its value
+      setConfig({notify: {url: url("/ok"), on: ["deny"]}, freeze: [{from: "2000-01-01", outcome: "deny"}]});
+      d = decide("kubectl apply -f app.yaml", devDir, {AWS_PROFILE: "acct-prod-7788"});
+      assert.ok(d.effective === "deny" && /production \(aws_profile\)/.test(d.reason) && !d.reason.includes("acct-prod-7788"), `freeze reason: ${d.reason}`);
+      assert.ok(await until(() => got.length === 2) && !got[1].body.includes("acct-prod-7788") && JSON.parse(got[1].body).rule_id === "freeze", "the freeze webhook carries no environment value");
+      got.splice(1);
+      setConfig({notify: {url: url("/ok"), on: ["deny", "prod"]}});
+      assert.equal(decide("kubectl apply -f app.yaml", devDir).effective, "pass");
+      await new Promise(r => setTimeout(r, 400));
+      assert.equal(got.length, 1, "a pass outside production is not sent");
+      setConfig({notify: {url: url("/ok"), on: ["prod"], format: "slack"}});
+      decide("echo '<!channel>' > note.txt && kubectl apply -f app.yaml", prodDir);
+      assert.ok(await until(() => got.length === 2), "slack: a production decision is sent");
+      const text = JSON.parse(got[1].body).text;
+      assert.ok(/^reflex pass in production \(cwd\): /.test(text) && text.includes("&lt;!channel&gt;") && !text.includes("<!channel>"), `slack text is escaped: ${text}`);
+      // the hook never waits: the endpoint never answers, and the hook returns long before the 2 s timeout
+      setConfig({notify: {url: url("/hang"), on: ["deny"]}});
+      const t0 = Date.now();
+      const out = JSON.parse(success(invoke("gate.mjs", ["--claude"], {env: fenv, input: JSON.stringify({tool_name: "Bash", tool_input: {command: "git push --force origin main"}, cwd: devDir, session_id: "F"})})));
+      const took = Date.now() - t0;
+      assert.ok(out.hookSpecificOutput.permissionDecision === "deny" && took < 1800, `the hook returned in ${took} ms`);
+      assert.ok(await until(() => got.some(g => g.url === "/hang")), "the detached child still posted");
+      // egress limits: http off this machine is refused (doctor says so, nothing is sent); an untrusted team webhook sends nothing
+      setConfig({notify: {url: "http://example.invalid/x"}});
+      st = JSON.parse(invoke("status.mjs", ["--json"], {env: fenv, cwd: devDir}).stdout);
+      assert.ok(st.errors.some(e => /notify: url must be https/.test(e)), "doctor: a plain http webhook off this machine is an error");
+      setConfig({});
+      setTeam({notify: {url: url("/team"), on: ["deny"]}});
+      decide("git push --force origin main", devDir);
+      await new Promise(r => setTimeout(r, 500));
+      assert.ok(!got.some(g => g.url === "/team"), "an untrusted team webhook gets nothing");
+      writeFileSync(join(cfg, "reflex/trusted.json"), JSON.stringify({version: 1, repos: {[realpathSync(repo)]: {sha256: createHash("sha256").update(readFileSync(policyFile, "utf8")).digest("hex")}}}));
+      decide("git push --force origin main", devDir);
+      assert.ok(await until(() => got.some(g => g.url === "/team")), "a trusted team webhook gets decisions");
+      const listed = success(invoke("team.mjs", ["policy", repo, "--json"], {env: fenv}));
+      assert.ok(!listed.includes("/team") && listed.includes("127.0.0.1"), "reflex policy shows the webhook host, never its path");
+      setTeam({});
+      // doctor --notify-test: one dry-run message, only when asked
+      setConfig({notify: {url: url("/ok")}});
+      const before = got.length;
+      invoke("status.mjs", ["--doctor", "--json"], {env: fenv, cwd: devDir});
+      assert.equal(got.length, before, "doctor sends nothing without --notify-test");
+      // spawn, not spawnSync: this process serves the webhook while doctor waits on it
+      st = JSON.parse(await new Promise(res => { let o = ""; const p = spawn(process.execPath, [join(root, "status.mjs"), "--doctor", "--notify-test", "--json"], {cwd: devDir, env: fenv});
+        p.stdout.on("data", c => o += c); p.on("close", () => res(o)); }));
+      assert.ok(st.notify.test[0].status === 200 && JSON.parse(got.at(-1).body).dry_run === true && !JSON.stringify(st.notify).includes("/ok"), `notify test: ${JSON.stringify(st.notify)}`);
+    } finally { server.close(); }
+
+    // reflex audit: one row per decision, redacted, with the tier and who approved it; it only reads
+    setConfig({});
+    const now = new Date().toISOString();
+    mkdirSync(join(data, "queue"), {recursive: true});
+    writeFileSync(join(data, "queue/q-0123456789.json"), JSON.stringify({version: "queue-v1", id: "q-0123456789", key: "k", status: "used", created: now, decided_at: now, decided_by: "alice"}));
+    const extra = [
+      {ts: now, tag: "tool-gate", agent: "codex", session_id: "A", call_id: "x1", state: {call: {command: "=HYPERLINK(\"http://x\")"}}, decision: "allow", emitted: "allow", source: "queue", rule: "approved",
+       ladder: {resolver: "human", queue: "q-0123456789", answered: "approved"}, tier: {prod: true, by: "cwd", why: "cwd=/p/prod"}},
+      {ts: now, tag: "tool-gate", agent: "codex", session_id: "A", call_id: "x2", state: {call: {command: "npm run gen"}}, decision: "allow", emitted: "allow", source: "judge", rule: "ok",
+       ladder: {resolver: "system2", judge: {verdict: "approve", confidence: 0.9}}, tier: {prod: false}},
+      {ts: now, tag: "tool-gate", agent: "codex", session_id: "A", call_id: "x3", state: {call: {command: "make deploy"}}, decision: "ask", emitted: "ask", source: "local", rule: "local", tier: {prod: false}},
+      {ts: now, tag: "tool-gate", agent: "hermes", call_id: "x4", state: {call: {command: "make seed"}}, decision: "ask", emitted: "deny", source: "rule", rule: "r",
+       ladder: {resolver: "human", queue: "q-0123456789", queue_created: "2001-01-01T00:00:00.000Z", parked: "new"}, tier: {prod: false}},
+      {ts: "2000-01-01T00:00:00.000Z", tag: "tool-gate", agent: "codex", state: {call: {command: "old"}}, decision: "ask"}];
+    writeFileSync(join(data, "trace.1700000000000.jsonl"), extra.map(r => JSON.stringify(r)).join("\n") + "\n{torn\n");
+    writeFileSync(join(data, "feedback.jsonl"), JSON.stringify({event: "ran", call_id: "x3"}) + "\n", {flag: "a"});
+    const snapshot = () => spawnSync("ls", ["-lR", data], {encoding: "utf8"}).stdout;
+    const s0 = snapshot();
+    const rows = JSON.parse(success(invoke("audit.mjs", ["--format", "json", "--since", "30d"], {env: fenv})));
+    const freezeRow = rows.find(r => r.rule_id === "freeze" && r.env_tier === "prod");
+    assert.ok(freezeRow && /envs\/prod/.test(freezeRow.env_reason) && freezeRow.decision === "deny" && freezeRow.agent === "claude-code" && freezeRow.session === "F", `audit: a freeze row: ${JSON.stringify(freezeRow)}`);
+    assert.ok(!JSON.stringify(rows).includes("ghp_") && rows.some(r => r.command.includes("GITHUB_TOKEN=<redacted>")), "audit: commands are redacted");
+    assert.ok(!rows.some(r => r.command === "old"), "audit: --since drops older rows");
+    assert.equal(rows.find(r => r.session === "A" && r.source === "queue").approved_by, `approved in the approval queue (q-0123456789 by alice at ${now})`);
+    assert.equal(rows.find(r => r.command === "npm run gen").approved_by, "System 2 approved (confidence 0.9)");
+    assert.equal(rows.find(r => r.command === "make deploy").approved_by, "approved at the agent's prompt (it ran)");
+    assert.equal(rows.find(r => r.command === "make seed").approved_by, "parked in the approval queue (q-0123456789); its answer is no longer on record", "audit: a reused queue id is not attributed to an older row");
+    const prodRows = JSON.parse(success(invoke("audit.mjs", ["--format", "json", "--prod-only"], {env: fenv})));
+    assert.ok(prodRows.length && prodRows.every(r => r.env_tier === "prod"), "audit: --prod-only");
+    assert.ok(JSON.parse(success(invoke("audit.mjs", ["--format", "json", "--agent", "codex"], {env: fenv}))).every(r => r.agent === "codex"), "audit: --agent");
+    const csv = success(invoke("audit.mjs", [], {env: fenv}));
+    assert.ok(csv.startsWith("time,agent,session,cwd,env_tier,env_reason,command,decision,judged,mode,source,rule_id,rule,approved_by\n") &&
+      csv.includes(`"'=HYPERLINK(""http://x"")"`), "audit: csv, with a formula cell defused");
+    assert.equal(success(invoke("audit.mjs", ["--format", "jsonl", "--agent", "codex"], {env: fenv})).trim().split("\n").length, 3, "audit: jsonl");
+    assert.equal(invoke("audit.mjs", ["--format", "xml"], {env: fenv}).status, 2, "audit: a bad option is an error");
+    assert.equal(snapshot(), s0, "audit writes nothing");
+    console.log("freeze, notify and audit checks OK");
   }
 } finally { rmSync(scratch, {recursive: true, force: true}); }

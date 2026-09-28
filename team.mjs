@@ -35,6 +35,8 @@ import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {setFlagsFromString} from "node:v8";
 import {broad, compilePattern, patternError} from "./fastlane.mjs";
+import {parseFreeze} from "./freeze.mjs";
+import {notifyTarget, targetLabel} from "./notify.mjs";
 
 export const TRUST_FILE = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "reflex/trusted.json");
 const MAX_FILE = 64 * 1024, MAX_PATTERNS = 64;
@@ -84,16 +86,16 @@ function ruleError(r, human) {
   return null;
 }
 
-const KEYS = new Set(["version", "note", "rules", "always_human", "prod", "mode", "fastlane", "infra"]);
+const KEYS = new Set(["version", "note", "rules", "always_human", "prod", "mode", "freeze", "fastlane", "notify", "infra"]);
 /** The file, validated part by part: every valid stricter entry is kept, every problem is an error. */
 export function parseTeam(text) {
-  const out = {rules: [], always_human: [], mode: null, fastlane: [], infra: null, errors: []};
+  const out = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, infra: null, errors: []};
   let doc;
   try { doc = JSON.parse(text); } catch (e) { out.errors.push(`not JSON (${e.message})`); return out; }
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) { out.errors.push("must be a JSON object"); return out; }
   if (doc.version !== 1) out.errors.push('needs "version": 1');
   for (const k of Object.keys(doc)) if (!KEYS.has(k))
-    out.errors.push(`unknown key "${k}": a team policy can add rules, always_human patterns, prod markers, a mode floor and a trusted fastlane, nothing else`);
+    out.errors.push(`unknown key "${k}": a team policy can add rules, always_human patterns, prod markers, a mode floor, change freezes, a trusted fastlane and a trusted notify webhook, nothing else`);
   let budget = MAX_PATTERNS;
   const list = (k, max) => {
     if (doc[k] === undefined) return [];
@@ -130,6 +132,19 @@ export function parseTeam(text) {
   }
   if (doc.mode !== undefined && !["shadow", "enforce"].includes(doc.mode)) out.errors.push('mode must be "shadow" or "enforce" (a floor: it can only raise the mode)');
   else out.mode = doc.mode ?? null;
+  // Change freezes (freeze.mjs): stricter only, so they apply untrusted; a bad window is an error.
+  // Each section on its own: a throw must not drop the stricter parts already read.
+  try {
+    const fz = parseFreeze(doc.freeze, "freeze");
+    out.freeze = fz.windows;
+    out.errors.push(...fz.errors);
+  } catch (e) { out.errors.push(`freeze: ${e.message}`); }
+  // A webhook sends decisions off the machine: like the fast lane, it needs the user's trust.
+  try {
+    const n = notifyTarget(doc.notify, "team policy notify");
+    out.notify = n.target;
+    if (n.error) out.errors.push(n.error);
+  } catch (e) { out.errors.push(`notify: ${e.message}`); }
   for (const [i, e] of list("fastlane", 100).entries()) {
     const why = !e || typeof e !== "object" || Array.isArray(e) ? "not an object"
       : Object.keys(e).find(k => !["pattern", "note"].includes(k)) ? "only pattern and note (the scope is the repository)" : patternError(e.pattern);
@@ -149,7 +164,7 @@ export function readTrust(file = TRUST_FILE) {
 }
 
 // One root's file: null when there is none, else what it adds and its problems.
-const parsed = new Map(), empty = {rules: [], always_human: [], mode: null, fastlane: [], infra: null};
+const parsed = new Map(), empty = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, infra: null};
 function readOne(root) {
   const file = join(root, ".reflex/policy.json");
   let text;
@@ -182,7 +197,8 @@ export function teamPolicy(cwd) {
     return {root: t.root, file: t.file, sha256: t.sha256, trust, active_fastlane: active,
       inherited: found.slice(1).map(f => f.file), tag: (found.length > 1 ? sha256(found.map(f => f.sha256).join()) : t.sha256 ?? "unreadable").slice(0, 8),
       errors: found.flatMap((f, i) => f.errors.map(e => i ? `${f.file}: ${e}` : e)),
-      rules: found.flatMap(f => f.rules), always_human: found.flatMap(f => f.always_human),
+      rules: found.flatMap(f => f.rules), always_human: found.flatMap(f => f.always_human), freeze: found.flatMap(f => f.freeze),
+      notify: active ? t.notify : null, notify_target: t.notify,
       mode: found.some(f => f.mode === "enforce") ? "enforce" : found.find(f => f.mode)?.mode ?? null,
       infra: found.some(f => f.infra) ? Object.assign({}, ...found.map(f => f.infra ?? {})) : null,
       fastlane: active ? t.fastlane.map(pattern => ({pattern, cwd: t.root, re: compilePattern(pattern), team: true})) : [],
@@ -245,7 +261,8 @@ const die = (s, code = 1) => { console.error(`reflex: ${s}`); process.exit(code)
 function describe(t) {
   return [`team policy: ${t.file}`, `sha256: ${t.sha256 ?? "unreadable"}`, `trust: ${t.trust}${t.trust === "changed" ? " (the file changed since you trusted it; its fast lane is off)" : ""}`,
     `adds: rules ${t.rules.filter(r => r.id !== "team:prod").length}, always-human ${t.always_human.length}, prod markers ${t.rules.filter(r => r.id === "team:prod").length}` +
-    `, mode floor ${t.mode ?? "none"}`,
+    `, mode floor ${t.mode ?? "none"}, change freezes ${t.freeze.length}`,
+    ...(t.notify_target ? [`notify webhook: ${targetLabel(t.notify_target)}, ${t.notify ? "active" : "inactive until you trust this file"}`] : []),
     `fast lane: ${t.fastlane_count ?? 0} entr${t.fastlane_count === 1 ? "y" : "ies"}, ${t.active_fastlane ? "active" : "inactive"}`,
     ...t.inherited.map(f => `also applies (stricter parts): ${f}`), ...t.errors.map(e => `invalid: ${e}`)];
 }
@@ -281,7 +298,7 @@ function main(argv) {
   const t = teamPolicy(root);
   if (cmd === "policy") {
     if (!t) return say(`no team policy in ${root} (reflex policy init writes a starter)`);
-    return argv.includes("--json") ? console.log(JSON.stringify({...t, fastlane: undefined, rules: t.rules.map(r => r.id), always_human: t.always_human.map(r => r.id)}, null, 1)) : describe(t).forEach(l => say(l));
+    return argv.includes("--json") ? console.log(JSON.stringify({...t, fastlane: undefined, rules: t.rules.map(r => r.id), always_human: t.always_human.map(r => r.id), notify: t.notify && targetLabel(t.notify), notify_target: t.notify_target && targetLabel(t.notify_target)}, null, 1)) : describe(t).forEach(l => say(l));
   }
   if (cmd === "trust" && rest.includes("--revoke")) { trustRepo(root, null); return say(`${root}: trust removed; its team fast lane is off`); }
   if (cmd !== "trust") die("usage: reflex trust [dir] | reflex trust --revoke [dir] | reflex policy [dir] [--json] | reflex policy init [dir]");
@@ -290,7 +307,8 @@ function main(argv) {
   if (broad(root)) die(`${root} is your home or /; a team fast lane there would cover every project`);
   describe(t).forEach(l => say(l));
   for (const p of t.fastlane_patterns) say(`  fast lane: ${p}`);   // from the text that was hashed
-  if (!confirm(`Trust this file for ${root}? Its fast lane then passes these commands without a prompt. Type "trust" to confirm: `)) die("not trusted");
+  if (t.notify_target) say(`  notify: every matching decision is posted to ${targetLabel(t.notify_target)}`);
+  if (!confirm(`Trust this file for ${root}? Its fast lane then passes these commands without a prompt${t.notify_target ? ", and its webhook receives redacted decisions" : ""}. Type "trust" to confirm: `)) die("not trusted");
   trustRepo(root, t.sha256);
   say(`trusted ${t.sha256.slice(0, 12)} for ${root}. Any change to the file drops the trust until you run reflex trust again.`);
 }

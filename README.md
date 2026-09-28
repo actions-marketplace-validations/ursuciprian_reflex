@@ -169,6 +169,7 @@ uninstalling.
 reflex check "terraform apply -auto-approve" --cwd ~/infra/envs/prod   # judge one command
 reflex scan page.html                                                  # check text for prompt injection
 reflex report                                                          # decisions so far
+reflex audit --since 30d --prod-only                                   # audit AI agent commands: one csv row per decision
 reflex replay claude --since 7d                                        # what it would have done with past sessions
 reflex suggest claude --since 30d                                      # fewer permission prompts: safe fast-lane entries from past sessions
 reflex doctor                                                          # local checks; no API calls
@@ -273,6 +274,14 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
 - [Team policy](docs/GUIDE.md#team-policy-share-reflex-rules-across-a-repo): team guardrails for AI coding agents in a
   committed `.reflex/policy.json` (extra rules, always-human patterns, prod markers, a mode floor), applied by every
   teammate's Reflex in Claude Code, Codex and the other agents. It only tightens; its fast lane needs `reflex trust .`.
+- [Change freeze](docs/GUIDE.md#change-freeze-for-ai-coding-agents): a deploy freeze or change window for AI coding
+  agents (`{"days": ["fri"], "after": "15:00", "tz": "Europe/Bucharest"}` or a date range). During it, a production
+  command that is not read-only asks or is denied, in every mode. Change management for Claude Code and Codex in
+  `config.json` or the team policy; it can only tighten, and `reflex status` shows whether a freeze is active.
+- [Audit log](docs/GUIDE.md#audit-log-for-ai-agent-commands-soc-2): `reflex audit` exports one row per decision
+  (agent, session, cwd, production tier and why, redacted command, decision, rule, who approved it) as csv, json or
+  jsonl, for SOC 2 and ISO 27001 change management evidence. An optional webhook (Slack or json, https only) posts
+  redacted denies, asks or production decisions without ever delaying the hook.
 
 ## How a command is decided
 

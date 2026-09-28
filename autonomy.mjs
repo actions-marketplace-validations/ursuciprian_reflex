@@ -28,7 +28,7 @@
 import {copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync} from "node:fs";
 import {createHash} from "node:crypto";
 import {spawn, spawnSync} from "node:child_process";
-import {homedir, tmpdir} from "node:os";
+import {homedir, tmpdir, userInfo} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, rulesHit, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
@@ -71,7 +71,7 @@ export async function ladder(j, call, effective, {env = envContext(call.cwd), ju
     // queue off: the agent's own prompt; a System 1 pass or allow of the always-human class becomes that prompt too
     if (!CONFIG.queue.enabled) return {j: {...j, rule: `${j.rule}. Needs a human (${cls.rule})`}, effective: "ask"};
     const {item, fresh} = park(call, j, cls);
-    Object.assign(L, {queue: item.id, parked: fresh ? "new" : "pending"});
+    Object.assign(L, {queue: item.id, queue_created: item.created, parked: fresh ? "new" : "pending"});
     return {j: {...j, rule: `${j.rule}. Needs a human (${cls.rule}): parked in the approval queue as ${item.id}. Continue with other work and ` +
       `retry this exact command later from the same directory; \`reflex queue show ${item.id}\` shows whether it was answered. Do not rephrase ` +
       "the command to get around this check"}, effective: "deny"};
@@ -432,18 +432,20 @@ export function queueAnswer(call) {
     rmSync(claim, {force: true});
     // a runaway stop the human lifted: the guard steps aside once, the gate still judges the command
     if (it.class === "runaway") return {resume: true};
-    return {outcome: "allow", source: "queue", rule: `approved by a human in the approval queue (${id})`, ladder: {resolver: "human", queue: id, answered: "approved"}};
+    return {outcome: "allow", source: "queue", rule: `approved by a human in the approval queue (${id})`, ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "approved", decided_at: it.decided_at}};
   }
   if (it.status === "denied" && live)
     return {outcome: "deny", source: "queue", rule: `a human denied this in the approval queue (${id})${it.note ? `: ${it.note}` : ""}. Do not retry it; find another way or ask the user`,
-            ladder: {resolver: "human", queue: id, answered: "denied"}};
+            ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "denied", decided_at: it.decided_at}};
   return null;
 }
 export function answer(id, verdict, {ttlHours = CONFIG.queue.ttl_hours, note} = {}) {
   const it = readItem(id);
   if (!it) throw new Error(`no queue item ${id}`);
   if (!["pending", "approved", "denied"].includes(it.status)) throw new Error(`${id} is ${it.status}; the agent's next retry parks it again`);
-  const now = Date.now(), next = {...it, status: verdict, decided_at: iso(now), expires: iso(now + ttlHours * 3600e3), ...(note && {note: redact(note).slice(0, 300)})};
+  // who answered, for the audit export (reflex audit): the account that ran reflex queue approve or deny
+  const by = (() => { try { return userInfo().username; } catch { return process.env.USER ?? null; } })();
+  const now = Date.now(), next = {...it, status: verdict, decided_at: iso(now), decided_by: by, expires: iso(now + ttlHours * 3600e3), ...(note && {note: redact(note).slice(0, 300)})};
   writeItem(next);
   return next;
 }
