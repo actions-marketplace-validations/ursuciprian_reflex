@@ -6,6 +6,33 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Codex CLI plugin: `codex plugin marketplace add ursuciprian/reflex`, then
+  `codex plugin add reflex@reflex`, then trust the hooks in `/hooks`. `.codex-plugin/plugin.json`
+  points Codex at `hooks/codex.json`, which wires the same events, matchers and timeouts as
+  `install.mjs --agent codex` and runs the gate, the instruction layer and the injection guard with
+  `node` from `${PLUGIN_ROOT}`. `.agents/plugins/marketplace.json` is the Codex marketplace. A test
+  keeps `hooks/codex.json` in step with `install.mjs` and the manifest version with `package.json`.
+- opencode plugin: the npm package's `main` is `adapters/opencode.js`, so
+  `"plugin": ["@ursuciprian/reflex"]` in `opencode.json` loads the same plugin `reflex setup --agent
+  opencode` writes. Unfilled, it runs the package's own gate with `node` from `PATH` and reads the
+  mode and allow from `~/.config/reflex/config.json`.
+- `reflex status` and `reflex doctor` print which path runs the Codex hooks and the opencode plugin;
+  doctor probes the Codex plugin's gate when the plugin is the active one.
+
+### Changed
+
+- The Codex plugin's hooks stand down when `reflex setup` hooks are in `$CODEX_HOME/hooks.json`
+  (default `~/.codex/hooks.json`), and the opencode npm plugin registers no hooks when the setup
+  plugin file is in opencode's global plugins directory, so a call is never judged twice. A setup
+  entry whose gate no longer exists does not count.
+- `codex plugin marketplace add ursuciprian/reflex` used to find only the Claude Code manifest and
+  run Claude Code hooks (`--claude` flags, `PermissionRequest`) in Codex; Codex now reads
+  `.codex-plugin/plugin.json` first.
+- The `tamper` rule asks before `codex plugin remove` and `codex plugin marketplace remove`.
+- The `reflex` skill and `/reflex:status` no longer assume Claude Code, since Codex loads them too.
+
 ## [0.12.0] - 2026-09-27
 
 ### Added
