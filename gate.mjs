@@ -1691,13 +1691,20 @@ export async function jevJudge({command, cwd, env, session = {}, useCache = true
 /** The whole gate for one command, as eval.mjs and the hook see it. */
 export async function judge({command, cwd, env = envContext(cwd), session = {}, useCache = true, asker}) {
   if (configurationError()) return {outcome: "ask", rule: configurationError(), source: "error"};
-  const {quick, plan} = infraJudge(command, cwd, env, precheck(command, cwd, env));
-  return quick ?? (CONFIG.engine === "local" ? localJudgment() : jevJudge({command, cwd, env, session: plan ? {...session, plan} : session, useCache, asker}));
+  const {quick, plan, floor} = infraJudge(command, cwd, env, precheck(command, cwd, env));
+  if (quick) return quick;
+  if (CONFIG.engine === "local") return floor ?? localJudgment();
+  return askFloor(await jevJudge({command, cwd, env, session: plan ? {...session, plan} : session, useCache, asker}), floor);
 }
+// A plan's ask is a floor under the judge, not in place of it: Jev still sees the command and a deny
+// it finds stands; anything milder becomes the plan's ask, with Jev's answers kept for the trace.
+export const askFloor = (j, floor) => !floor || j.outcome === "deny" ? j
+  : {...floor, answers: j.answers, state: j.state, questions: j.questions, qset: j.qset, usage: j.usage, latency_s: j.latency_s, error: j.error, policy_outcome: j.policy_outcome ?? j.outcome};
 // The plan-aware infra gate (infra.mjs), after the rules; a rule deny stands and nothing is read.
 // A plan's ask or deny is a rule outcome, enforced in every mode, and the more severe of it and the
 // rules' wins. A clean verified plan is allow-eligible: the usual judge decides with the counts in
-// its state (keyless, it passes). {quick, plan}: the precheck result to use, and the counts.
+// its state (keyless, it passes). {quick, plan, floor}: the precheck result to use, the counts, and a
+// plan's ask when nothing else decided yet (askFloor: the judge still runs under it).
 export function infraJudge(command, cwd, env, quick) {
   if (quick?.source === "rule" && quick.outcome === "deny") return {quick, plan: null};
   const g = planGate({command, cwd, settings: infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), prod: dir => infraProd(command, dir, env, cwd), pipelines, shellWords});
@@ -1705,6 +1712,7 @@ export function infraJudge(command, cwd, env, quick) {
   const plan = g.plan ?? null, version = teamRules(load("rules.json"), cwd).version, withPlan = q => q && plan ? {...q, plan} : q;
   if (g.outcome === "ask" || g.outcome === "deny") {
     const j = {outcome: g.outcome, rule: g.rule, id: g.id, source: "rule", policy_version: version, plan};
+    if (!quick && j.outcome === "ask") return {quick: null, plan, floor: j};
     return {quick: quick?.source === "rule" && (SEVERITY[quick.outcome] ?? 0) >= SEVERITY[j.outcome] ? withPlan(quick) : j, plan};
   }
   if (g.outcome === "pass" && !quick && CONFIG.engine === "local") return {quick: {outcome: "pass", rule: g.rule, id: g.id, source: "plan", policy_version: version, plan}, plan};
@@ -1741,7 +1749,10 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   const env = envContext(call.cwd);
   let quick = background ? null : precheck(call.command, call.cwd, env);
   // the counts come from the gate itself, never from the caller (the background copy gets them from its parent)
-  if (!background) { const infra = infraJudge(call.command, call.cwd, env, quick); quick = infra.quick; call = {...call, plan: infra.plan ?? undefined}; }
+  let floor = null;
+  if (!background) { const infra = infraJudge(call.command, call.cwd, env, quick); ({quick, floor} = infra); call = {...call, plan: infra.plan ?? undefined}; }
+  // a plan's ask applies now, like a rule's, unless Jev judges in the foreground (enforce): then it is a floor under Jev
+  if (floor && (CONFIG.engine === "local" || CONFIG.mode !== "enforce")) [quick, floor] = [floor, null];
   // A human's answer in the approval queue (autonomous profile): the identical command, cwd and
   // session, within its TTL. A deterministic deny is never lifted, not even by an approval.
   let resumed = false;
@@ -1784,7 +1795,7 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   if (CONFIG.engine === "local") return finish(localJudgment(), call, CONFIG.mode === "enforce" ? "ask" : "pass", {env, judger, background});
   // Shadow mode: nobody waits for Jev. A detached copy of this script judges and logs.
   if (CONFIG.mode !== "enforce" && !background) return inBackground(call);
-  const j = allowSetting(holdAllow(await jevJudge({command: call.command, cwd: call.cwd, env, session: callSession(call), asker, tainted: !!t}), call));
+  const j = askFloor(allowSetting(holdAllow(await jevJudge({command: call.command, cwd: call.cwd, env, session: callSession(call), asker, tainted: !!t}), call)), floor);
   const effective = CONFIG.mode === "enforce" && j.outcome !== "would_allow" ? j.outcome : "pass";
   return finish(j, call, effective, {env, judger, background, tainted: !!t});
 }
