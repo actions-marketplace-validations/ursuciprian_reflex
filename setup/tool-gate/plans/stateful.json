@@ -1,0 +1,75 @@
+{
+ "format_version": "1.2",
+ "terraform_version": "1.13.2",
+ "planned_values": {
+  "root_module": {}
+ },
+ "resource_changes": [
+  {
+   "address": "aws_iam_role.ci",
+   "mode": "managed",
+   "type": "aws_iam_role",
+   "name": "ci",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "delete"
+    ],
+    "before": null,
+    "after": {},
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "aws_db_instance.main",
+   "mode": "managed",
+   "type": "aws_db_instance",
+   "name": "main",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "delete"
+    ],
+    "before": null,
+    "after": {},
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "aws_s3_bucket.logs",
+   "mode": "managed",
+   "type": "aws_s3_bucket",
+   "name": "logs",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create",
+     "delete"
+    ],
+    "before": null,
+    "after": {},
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "module.data.aws_dynamodb_table.events",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "events",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "delete"
+    ],
+    "before": null,
+    "after": {},
+    "after_unknown": {}
+   }
+  }
+ ],
+ "configuration": {},
+ "applyable": true,
+ "complete": true,
+ "errored": false,
+ "timestamp": "2026-09-28T00:00:00Z"
+}
