@@ -42,28 +42,36 @@ All notable changes to Reflex are documented here. The format follows
 Fourth review of the read-only parser (#43). Each change asks more often; none passes anything new.
 
 - Option-sensitive tools (every tool in the unsafe-flag list or with a read-only subcommand list, plus
-  sed, date and file) are read-only only when their words hold no expansion at all: no variable, no
-  command substitution, no arithmetic, no brace list and no glob, before or after `--` (`xxd -- *`
-  can write the second file, `awk -- *` runs a file name as its program). The per-binding exceptions
-  (`F=notes.txt; sed -n 1p "$F"`) are gone. The one word kept is a double-quoted `$name` inside a
-  word that starts with a literal path, such as `gh api "repos/$R/pulls"`, and never for sed or awk.
-  `printf` keeps its own rule (options in the first word only).
-- awk is read-only only when its program text has no `@`, `system`, `getline`, `|`, `>`, `close`,
-  `fflush`, `PROCINFO` or `ENVIRON`, and there is no `-f` or `-i`. A `>` comparison now asks too.
+  sed, date, file and printf) are read-only only when their words hold no expansion at all: no
+  variable, no command substitution, no arithmetic, no brace list and no glob, before or after `--`
+  (`xxd -- *` can write the second file, `awk -- *` runs a file name as its program). The
+  per-binding exceptions (`F=notes.txt; sed -n 1p "$F"`) are gone. The one word kept is a
+  double-quoted `$name` inside a word that starts with a literal path, such as
+  `gh api "repos/$R/pulls"`, and never for sed or awk. printf then still reads options in its first
+  word only.
+- awk is read-only only when its program text has no `@`, `|`, `>`, `PROCINFO` or `ENVIRON` and none
+  of the words `system`, `getline`, `close` or `fflush` (`awk '/closed/'` still reads), and there is
+  no `-f` or `-i`. A `>` comparison now asks too.
+- sort and tree `-o`, fd `-x` and yq `-i` / `-s` are caught clustered or with the value attached
+  (`sort -ro out`, `sort -oout`, `fd -xrm`).
 - The rules read brace sequences (`ma{i..i}n`), nested lists and several braces per word, with quotes
-  kept, so the force-push rules still deny. Past 1,024 expanded words the command asks.
+  kept, so the force-push rules still deny. A word that would expand past 256 words (1,024 in all)
+  is read as an unknown ref instead; `for i in {1..300}` is not an ask.
 - Over 32 KB the deny rules run before the size ask, on overlapping windows and in every spelling,
+  on the same views precheck reads (a command that only writes notes is not read for shell rules),
   until the deadline: a large command never turns a deny into an ask.
 - `precheck` shares one deadline across the spellings it recurses into, and scans each local script
   once per call, so the total stays under the hook timeout.
-- `shell-startup` (rules-v17) also catches a startup file copied into a directory (a destination
-  that ends in `/` or is `~` or `$HOME`) and `tee` with several files.
+- `shell-startup` (rules-v18) also catches `tee` with several files and a startup file copied into
+  the home directory (`~`, `~/`, `~/.`, `$HOME`, `$HOME/`). Both parts are linear: 32 KB of `tee` is
+  checked in well under 50 ms.
 - The user fast lane and the report's fast-lane candidates drop git's global options before the
   always-human and rule checks (`rulesHit`, shared with `alwaysHuman`).
 - An escaped `\(` in `find . \( -name a -o -name b \)` no longer trips the zsh glob-qualifier guard.
-- In a nested worktree, cd targets and path words are resolved with `realpathSync` before they count
-  as staying inside it; a symlink out of it, or a path that cannot be resolved, restores the checkout
-  view.
+- In a nested worktree, cd targets, path words and short options with an attached value (`-Cdir`,
+  `-tdir`, `-ofile`) are resolved with `realpathSync` before they count as staying inside it. A
+  symlink out of it, a path that cannot be resolved, or a check past the deadline restores the
+  checkout view. Real paths are cached per call, so 8 KB of cds checks in well under 500 ms.
 
 ## [0.13.0] - 2026-09-28
 
