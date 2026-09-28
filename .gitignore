@@ -4,3 +4,4 @@ node_modules/
 .claude/
 __pycache__/
 .serena/
+docs/demo/raw.gif
