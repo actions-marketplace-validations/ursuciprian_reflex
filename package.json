@@ -41,7 +41,10 @@
     "pre-tool-use",
     "pi",
     "oh-my-pi",
-    "hermes"
+    "hermes",
+    "deploy-freeze",
+    "change-management",
+    "audit-log"
   ],
   "license": "MIT",
   "author": "Ciprian Ursu",

@@ -12,6 +12,8 @@ import {breaker, listItems, runawayTrips} from "./autonomy.mjs";
 import {health as layaHealth} from "./laya.mjs";
 import {FASTLANE_FILE, loadFastLane} from "./fastlane.mjs";
 import {teamPolicy} from "./team.mjs";
+import {inWindow} from "./freeze.mjs";
+import {targetLabel, testTargets} from "./notify.mjs";
 
 const doctor = process.argv.includes("--doctor"), json = process.argv.includes("--json");
 const errors = [], warnings = [], agents = [];
@@ -33,11 +35,26 @@ if (fastlane.error) warnings.push(`${FASTLANE_FILE} is ignored: ${fastlane.error
 const tp = teamPolicy(process.cwd());
 const team_policy = tp && {file: tp.file, sha256: tp.sha256, trust: tp.trust, fastlane_active: tp.active_fastlane, valid: !tp.errors.length,
   rules: tp.rules.filter(r => r.id !== "team:prod").length, always_human: tp.always_human.length, prod_markers: tp.rules.filter(r => r.id === "team:prod").length,
-  mode_floor: tp.mode, fastlane_entries: tp.fastlane_count ?? 0, errors: tp.errors};
+  mode_floor: tp.mode, freezes: tp.freeze.length, fastlane_entries: tp.fastlane_count ?? 0, notify: tp.notify_target ? (tp.notify ? "active" : "inactive (needs trust)") : "none", errors: tp.errors};
 if (tp?.errors.length) warnings.push(`Team policy ${tp.file} is invalid: ${tp.errors.join("; ")}. Its valid stricter parts apply; its fast lane does not.`);
 if (tp?.trust === "changed") warnings.push(`Team policy ${tp.file} changed since you trusted it: its fast lane is off until you review it and run reflex trust again.`);
 if (tp?.mode === "enforce" && CONFIG.mode === "shadow") warnings.push(`Team policy sets a mode floor: enforce applies in ${tp.root}.`);
 if (CONFIG.mode === "shadow") warnings.push("Shadow mode enforces deterministic rules. Other decisions are logged without blocking.");
+// Change freezes (freeze.mjs): config.json and this directory's team policy, checked against the clock now.
+const windows = [...CONFIG.freeze.windows, ...(tp?.freeze ?? [])], onNow = windows.filter(w => inWindow(w, new Date()));
+const freeze = {windows: windows.length, active: onNow.map(w => ({reason: w.reason, outcome: w.outcome, applies_to: w.applies_to}))};
+const scope = w => w.applies_to === "all" ? "every command that is not read-only" : "production commands that are not read-only";
+if (onNow.length) warnings.push(`Change freeze in force now: ${onNow.map(w => `${w.reason}; ${scope(w)} ${w.outcome === "deny" ? "are denied" : "ask"}`).join(" | ")}.`);
+// The decision webhook (notify.mjs). Only --notify-test sends anything: one dry-run message per target.
+const hooks = [CONFIG.notify.target, tp?.notify].filter(Boolean);
+const notify = {targets: hooks.map(targetLabel), test: null};
+for (const e of CONFIG.freeze.errors) errors.push(`${e}. Until it is fixed, every command that is not read-only asks.`);
+if (CONFIG.notify.error) errors.push(`${CONFIG.notify.error}. Nothing is sent until it is fixed.`);
+if (process.argv.includes("--notify-test")) {
+  if (!hooks.length) warnings.push("--notify-test: no notify webhook is configured (config.json notify).");
+  notify.test = await testTargets(hooks);
+  for (const t of notify.test) if (t.error || t.status >= 300) errors.push(`notify test to ${t.target} failed: ${t.error ?? `HTTP ${t.status}`}.`);
+}
 const policy = setupFile("policy.json");
 try { compile(load("policy.json")); load("rules.json"); load("questions.json"); }
 catch (e) { errors.push(`Cannot load policy: ${e.message}`); }
@@ -259,7 +276,7 @@ const trips = runawayTrips(Date.now() - 36e5);
 const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
 if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, agents, errors, warnings};
+  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, freeze, notify, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
@@ -270,7 +287,9 @@ else {
   console.log(`Queue: ${queue.enabled ? "on" : "off"}; ${queue.pending} pending of ${queue.total} · checkpoints ${CONFIG.checkpoints ? "on" : "off"}`);
   console.log(`Team policy: ${team_policy ? `${team_policy.file}; ${team_policy.trust}${team_policy.valid ? "" : ", INVALID"}; sha256 ${team_policy.sha256?.slice(0, 12) ?? "unreadable"}; ` +
     `rules ${team_policy.rules}, always-human ${team_policy.always_human}, prod markers ${team_policy.prod_markers}, mode floor ${team_policy.mode_floor ?? "none"}, ` +
-    `fast lane ${team_policy.fastlane_entries} (${team_policy.fastlane_active ? "active" : "inactive"})` : "none in this directory"}`);
+    `freezes ${team_policy.freezes}, fast lane ${team_policy.fastlane_entries} (${team_policy.fastlane_active ? "active" : "inactive"}), notify ${team_policy.notify}` : "none in this directory"}`);
+  console.log(`Change freeze: ${freeze.active.length ? `ACTIVE now: ${freeze.active.map(w => `${w.reason} (${w.outcome}, ${w.applies_to})`).join("; ")}` : "none active"} (${freeze.windows} window${freeze.windows === 1 ? "" : "s"})`);
+  console.log(`Notify: ${notify.targets.length ? notify.targets.join("; ") : "off"}${notify.test ? `; test ${notify.test.map(t => t.error ?? `HTTP ${t.status}`).join(", ") || "not sent"}` : ""}`);
   console.log(`Runaway guard: ${runaway.enabled ? `on (${CONFIG.mode === "enforce" ? "stops" : CONFIG.mode === "shadow" ? "logs only, shadow" : "off with the mode"}); ${runaway.stops_last_hour} stop${runaway.stops_last_hour === 1 ? "" : "s"} in the last hour` : "off"}`);
   console.log(`Claude Code hooks: ${claudeHooks}${plugin.checks.length ? `; plugin probes ${plugin.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);
   console.log(`Codex CLI hooks: ${codex_hooks}${codex_plugin.checks.length ? `; plugin probes ${codex_plugin.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);

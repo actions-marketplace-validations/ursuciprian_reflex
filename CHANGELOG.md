@@ -6,6 +6,33 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Change freezes: a `freeze` list in `config.json` or a team policy. Each window has `days`,
+  `after` / `before` (local `HH:MM`), `from` / `to` (inclusive dates), a `tz` read with `Intl`
+  (default UTC), `applies_to` (`prod` or `all`) and `outcome` (`ask` or `deny`). During a window, a
+  command that is not read-only and touches production, by the existing markers (cwd, AWS profile,
+  kube context, Terraform workspace, git branch, the command, team prod markers), gets a rule
+  decision such as `change freeze: Friday after 15:00 (Europe/Bucharest)`. It applies in every
+  mode, is in the always-human class, overrides a fast lane pass and never softens a rule deny.
+  Validation is strict: an invalid window makes a team policy invalid (no fast lane, no webhook;
+  valid windows still apply), and in `config.json` it makes every command that is not read-only
+  ask while the rules keep running. A queue approval lifts a freeze ask only when it was parked and
+  answered inside the window. The reason names the marker's kind, never its value.
+  `reflex status` shows whether a freeze is active now.
+- `reflex audit [--since 7d] [--format csv|json|jsonl] [--prod-only] [--agent a]`: one row per
+  decision with time, agent, session, cwd, production tier and why, the redacted command, the
+  decision, source, rule and who approved it (queue, System 2, the agent's prompt). Read-only over
+  the trace (rotated files included), the queue and the feedback log. Csv cells that a spreadsheet
+  would run as formulas are quoted.
+- A decision webhook: `notify: {url, on: ["deny", "ask", "prod"], format: "json" | "slack"}` in
+  `config.json`. https, or http on localhost only; redacted command and reason, no environment
+  values; posted by a detached child with a 2 s timeout, no retries and no redirects, so the hook
+  never waits. A team policy's `notify` applies only while the user trusts the file.
+  `reflex doctor --notify-test` sends one dry-run message.
+- The trace records each judged command's production tier (`tier`), its `rule_id` and its `cwd`,
+  and a queue answer records who gave it (`decided_by`).
+
 ## [0.14.0] - 2026-09-28
 
 ### Added

@@ -32,6 +32,8 @@ import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
 import {globsReflex, teamMode, teamPolicy, teamRules} from "./team.mjs";
+import {activeFreeze, inWindow, parseFreeze} from "./freeze.mjs";
+import {notifyLater, notifyTarget} from "./notify.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env;
@@ -151,6 +153,9 @@ export const CONFIG = {
   queue: {...QUEUE_DEFAULTS, ...USER_CONFIG.queue, enabled: onOff(ENV.REFLEX_QUEUE, USER_CONFIG.queue?.enabled)},
   checkpoints: onOff(ENV.REFLEX_CHECKPOINTS, USER_CONFIG.checkpoints),
   runaway: runawaySettings(USER_CONFIG.runaway, ENV.REFLEX_RUNAWAY),
+  // change freezes (freeze.mjs) and the decision webhook (notify.mjs), both from config.json only
+  freeze: parseFreeze(USER_CONFIG.freeze, "config.json freeze"),
+  notify: notifyTarget(USER_CONFIG.notify, "config.json notify"),
 };
 /** Saved judge settings with the backend's (and, keyless, the engine's) defaults filled in; `enabled` unless the backend is none or REFLEX_JUDGE=off. */
 export function judgeSettings(saved = {}, env, engine = "jev") {
@@ -1383,6 +1388,42 @@ export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now
   if (depth === 0 && Date.now() > run.deadline && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
   return best;
 }
+// The production tier of a command that is not read-only, by the markers the rules already use: the
+// prod-destroy rule's first pattern (cwd, aws_profile, kube_context, tf_workspace, git_branch or the
+// command itself) and a team policy's prod list. Read like a "shell" rule: nothing when every pipeline
+// only writes notes. {prod, by, why}: `by` names the marker's kind (what a webhook may carry), `why`
+// the text it matched (for the local trace and the audit export). Too large to read counts as production.
+export function prodTier(command, cwd, env) {
+  const c = String(command ?? "").replace(/\\\n/g, "");
+  if (c.length > COMMAND_BYTES) return {prod: true, by: "command", why: "command too large to check"};
+  if (onlyNotes(pipelines(c))) return {prod: false};
+  const marker = load("rules.json").rules.find(r => r.id === "prod-destroy")?.all[0];
+  const team = teamPolicy(cwd)?.rules.filter(r => r.id === "team:prod") ?? [];
+  const parts = [[`cwd`, `cwd=${cwd ?? ""}`], ...Object.entries(env).map(([k, v]) => [k, `${k}=${v}`]), ["command", stripDataHeredocs(c, true)]];
+  const hit = text => (marker && rx(marker).exec(text)?.[0]) ?? (team.find(r => r.test(text)) && "a team prod marker");
+  if (!hit(parts.map(p => p[1]).join(" "))) return {prod: false};
+  for (const [by, text] of parts) {
+    const m = hit(text);
+    if (m) return {prod: true, by, why: redact(by === "command" ? `command: ${m}` : text).slice(0, 160)};
+  }
+  return {prod: true, by: "context", why: "the command with its context"};
+}
+// A change freeze (freeze.mjs) in force now, from config.json and the team policy, as a rule decision:
+// it asks or denies in every mode, and a rule's deny or an equal rule outcome keeps its own reason.
+// An invalid window in config.json is never dropped: it asks for every command that is not read-only
+// until it is fixed, while the rules keep running (a rule deny stays a deny).
+// The reason names the marker's kind, never its value: it reaches the agent, the trace and a webhook.
+function frozen(quick, cwd, tier, now = new Date()) {
+  if (quick?.source === "read-only") return quick;
+  const bad = CONFIG.freeze.errors.length ? [{outcome: "ask", applies_to: "all", reason: `invalid change freeze in ${USER_CONFIG_FILE} (${CONFIG.freeze.errors[0]}); every command asks until it is fixed`}] : [];
+  const w = activeFreeze([...bad, ...CONFIG.freeze.windows, ...(teamPolicy(cwd)?.freeze ?? [])], now, tier.prod);
+  if (!w || (quick?.source === "rule" && (SEVERITY[quick.outcome] ?? 0) >= SEVERITY[w.outcome])) return quick;
+  return {outcome: w.outcome, rule: `${w.reason}${tier.prod ? `; production (${tier.by})` : ""}`, id: "freeze", window: w, source: "rule", policy_version: load("rules.json").version};
+}
+// A queue approval lifts a freeze ask only when the item was parked and answered inside that window,
+// so the human saw the freeze: an approval from before the window never carries into it.
+export const freezeApproved = (w, q) => !w.days && !w.after && !w.before && !w.from && !w.to ? false
+  : [q.ladder?.queue_created, q.ladder?.decided_at].every(t => t && inWindow(w, new Date(t)));
 // The deny rules on a command over COMMAND_BYTES: windows of that size, half of it apart (a match up
 // to COMMAND_BYTES / 2 long is inside one), each as written and in the other spellings, until `deadline`.
 // The views are precheckAs's: "shell" rules read the command without interpreter heredocs that only
@@ -1689,7 +1730,9 @@ export async function jevJudge({command, cwd, env, session = {}, useCache = true
 /** The whole gate for one command, as eval.mjs and the hook see it. */
 export async function judge({command, cwd, env = envContext(cwd), session = {}, useCache = true, asker}) {
   if (configurationError()) return {outcome: "ask", rule: configurationError(), source: "error"};
-  return precheck(command, cwd, env) ?? (CONFIG.engine === "local" ? localJudgment() : jevJudge({command, cwd, env, session, useCache, asker}));
+  const quick = precheck(command, cwd, env);
+  return frozen(quick, cwd, quick?.source === "read-only" ? {prod: false} : prodTier(command, cwd, env)) ??
+    (CONFIG.engine === "local" ? localJudgment() : jevJudge({command, cwd, env, session, useCache, asker}));
 }
 const localJudgment = () => ({outcome: "ask", source: "local", rule: "not covered by local rules; a human must review it"});
 
@@ -1714,12 +1757,18 @@ export async function decide(call, {background = false, asker, judger} = {}) {
     return {...view(j, effective), ...(CONFIG.mode === "enforce" && j.outcome === "pass" && drop.length && {drop})};
   }
   const env = envContext(call.cwd);
-  const quick = background ? null : precheck(call.command, call.cwd, env);
+  let quick = background ? null : precheck(call.command, call.cwd, env);
+  // the production tier goes into the trace (reflex audit); a change freeze tightens like a rule
+  if (quick?.source !== "read-only") {
+    call = {...call, tier: prodTier(call.command, call.cwd, env)};
+    if (!background) quick = frozen(quick, call.cwd, call.tier);
+  }
   // A human's answer in the approval queue (autonomous profile): the identical command, cwd and
   // session, within its TTL. A deterministic deny is never lifted, not even by an approval.
   let resumed = false;
   if (CONFIG.mode === "enforce" && !background && CONFIG.queue.enabled && !(quick?.source === "rule" && quick.outcome === "deny")) {
-    const q = quick?.source === "read-only" ? null : queueAnswer(call);
+    let q = quick?.source === "read-only" ? null : queueAnswer(call);
+    if (q && q.outcome !== "deny" && quick?.id === "freeze" && !freezeApproved(quick.window, q)) q = null;
     if (q) return finish(q, call, q.outcome === "deny" ? "deny" : allowSetting(holdAllow(q, call)).outcome === "allow" ? "allow" : "pass", {env});
     // a human lifted a runaway stop of this command: the guard steps aside once, the gate does not.
     // A human's deny of the stop is a deny.
@@ -1963,6 +2012,8 @@ export function append(path, obj) {
   appendFileSync(path, [obj].flat().map(o => JSON.stringify(o) + "\n").join(""));   // one write: a batch stays together
 }
 
+// The home directory as ~, so a webhook does not carry the local account name.
+const tilde = p => p === homedir() || p.startsWith(homedir() + "/") ? `~${p.slice(homedir().length)}` : p;
 function trace(j, call, effective) {
   const cmd = redact(call.command);
   const state = j.state ?? {call: {title: cmd.slice(0, 160), command: cmd, cwd: call.cwd}};
@@ -1972,7 +2023,14 @@ function trace(j, call, effective) {
     decision: j.outcome, policy_decision: j.policy_outcome ?? j.outcome, rule: j.rule, source: j.source, policy_version: j.policy_version ?? null,
     mode: CONFIG.mode, emitted: effective === "pass" ? null : effective,
     agent: call.agent ?? null, session_id: call.session_id ?? null, call_id: call.call_id ?? null,
-    permission_mode: call.permission_mode ?? null, ...(j.ladder && {ladder: j.ladder}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway})});
+    permission_mode: call.permission_mode ?? null, ...(j.ladder && {ladder: j.ladder}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway}),
+    ...(j.id && {rule_id: j.id}), ...(call.tier && {tier: call.tier}), cwd: call.cwd ?? null});
+  // the decision webhook (notify.mjs): redacted, detached, never waited for; a trusted team policy may add one
+  const targets = [CONFIG.notify.target, teamPolicy(call.cwd)?.notify].filter(Boolean);
+  if (targets.length) notifyLater(targets, {ts: new Date().toISOString(), agent: call.agent ?? null, session_id: call.session_id ?? null,
+    cwd: tilde(redact(call.cwd ?? "")), prod: !!call.tier?.prod, prod_by: call.tier?.prod ? call.tier.by : null, command: cmd.slice(0, 500),
+    decision: effective === "pass" || !effective ? "pass" : effective, judged: j.outcome, mode: CONFIG.mode, source: j.source, rule_id: j.id ?? null,
+    reason: redact(j.rule ?? "").slice(0, 300)});
 }
 
 // ---------------------------------------------------------------------------------------------
