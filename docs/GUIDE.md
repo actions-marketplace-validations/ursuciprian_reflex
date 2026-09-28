@@ -15,16 +15,18 @@
    - [Audit log for AI agent commands (SOC 2)](#audit-log-for-ai-agent-commands-soc-2)
 5. [Metrics](#metrics)
 6. [Data handling](#data-handling)
-7. [Safety properties and limits](#safety-properties-and-limits)
-8. [Injection guard](#injection-guard)
-9. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
-10. [Autonomous agents](#autonomous-agents)
-11. [Conditional instructions](#conditional-instructions)
-12. [Tool router](#tool-router)
-13. [Model routing](#model-routing)
-14. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
-15. [Laya (local System 1)](#laya-local-system-1)
-16. [Where this goes next](#where-this-goes-next)
+7. [Reliability](#reliability)
+   - [Reflex fails closed](#reflex-fails-closed)
+8. [Safety properties and limits](#safety-properties-and-limits)
+9. [Injection guard](#injection-guard)
+10. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
+11. [Autonomous agents](#autonomous-agents)
+12. [Conditional instructions](#conditional-instructions)
+13. [Tool router](#tool-router)
+14. [Model routing](#model-routing)
+15. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
+16. [Laya (local System 1)](#laya-local-system-1)
+17. [Where this goes next](#where-this-goes-next)
 
 ## Local and hosted operation
 
@@ -875,6 +877,51 @@ configured webhook and reports the HTTP status. Doctor sends nothing without tha
   set. No environment value is sent. See [decision webhook](#decision-webhook).
 - **Locally**, logs contain the same redacted data and stay in `~/.local/state/reflex/`. Trace and
   feedback files rotate at 50 MB. Command output is never stored.
+
+## Reliability
+
+### Reflex fails closed
+
+A hook that crashes must not let a command through unchecked. Most agents treat a hook that exits
+with a plain error as "no decision" and run the command, so every hook starts through a small
+entry, `hook.mjs`, that uses only Node built-ins:
+
+```
+node hook.mjs /path/to/gate.mjs --claude --mode enforce --allow off
+```
+
+It installs handlers for uncaught exceptions and unhandled rejections, then loads the script with a
+dynamic import. So a syntax or import error, a throw while the modules load (a bad config value, a
+top-level parse), or a rejection nobody handled still gives the agent an answer in its own hook
+contract. The reason is `reflex error: <short message>; a human must review`.
+
+| Entry point | On an error, in enforce mode |
+| --- | --- |
+| Claude Code `PreToolUse` (`--claude`) | `permissionDecision: "ask"`, exit 0 (the JSON is read only on exit 0; exit 2 would block, not ask) |
+| Codex `PreToolUse` (`--codex`) | `permissionDecision: "deny"` with the reason, the reason on stderr, exit 2 (Codex does not support ask yet) |
+| Hermes `pre_tool_call` (`--hermes`) | `{"action": "approve"}`, Hermes' own prompt, with a rule key used once |
+| opencode, pi, oh-my-pi (`--decide`) | `{"effective": "ask"}`; the adapters also treat no answer, or one that is not JSON, as ask |
+| `reflex-sh` (`--sh`) | a y/N on the terminal; no terminal or no refuses with exit 126 |
+| `PostToolUse`, `UserPromptSubmit`, record hooks, the injection guard, instructions | never blocked: exit 0 with a `systemMessage` warning; after a tool result the guard also tells the model it did not check the result |
+
+- **Shadow mode** stays non-blocking: the error is logged and the command runs, with a warning in
+  Claude Code and Codex. While the gate is broken it checks nothing, deterministic rules included,
+  so `reflex status` and `reflex doctor` show it as an error.
+- **Mode off** passes at once, without loading the gate.
+- **Subagent spawns** (subgoal dedup) pass on an error, as they do for any internal error.
+- **A decision already written stands.** An error after the gate has answered is only logged.
+- **The log** is `~/.local/state/reflex/health/errors.jsonl` (time, script, flag, mode, what the
+  hook answered, and the message). Messages are cut to one line, the quoted file content of a JSON
+  parse error is dropped, and anything shaped like a key is replaced by `<redacted>`.
+- **Hooks installed before this entry** (`node gate.mjs --claude`, without `hook.mjs`) still get
+  the same answers for any error after the modules have linked, because `gate.mjs`, `guard.mjs`
+  and `instructions.mjs` load the same handlers first. A syntax or import error needs the entry:
+  `reflex status` warns about such hooks, and `reflex setup` rewrites them.
+- **Limits.** A hook that times out, or a missing `node` or checkout, is outside Reflex: Claude
+  Code and Codex let the command run. In shadow mode a team policy's enforce floor does not apply
+  to a crash, since reading that policy may be what failed. Tests can simulate a crash with
+  `REFLEX_TEST=1 REFLEX_TEST_CRASH=load` (or `reject`); a simulated crash is always strict, even in
+  shadow mode, so the switch can only make a hook stricter.
 
 ## Safety properties and limits
 
