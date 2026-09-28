@@ -3,8 +3,9 @@
 You need Node 18+ on macOS or Linux (including WSL) and at least one supported agent: Claude Code, Codex CLI,
 pi, oh-my-pi (omp), opencode or Hermes.
 
-Claude Code only? The [Claude Code plugin](#claude-code-plugin) is the shortest install. For every
-other agent, or for the autonomous profile, follow the numbered steps.
+Claude Code, Codex CLI or opencode only? The [Claude Code plugin](#claude-code-plugin), the
+[Codex CLI plugin](#codex-cli-plugin) and the [opencode plugin](#opencode-plugin) are the shortest
+installs. For every other agent, or for the autonomous profile, follow the numbered steps.
 
 ## Claude Code plugin
 
@@ -77,6 +78,81 @@ What only `reflex setup` does, because a plugin cannot change settings:
 To remove the plugin: `claude plugin uninstall reflex@reflex`, and
 `claude plugin marketplace remove reflex` for the marketplace. Your settings and logs stay, as with
 `reflex uninstall`.
+
+## Codex CLI plugin
+
+The same repository is a Codex plugin marketplace (`.agents/plugins/marketplace.json`) that lists
+the `reflex` plugin at the repository root. Codex reads `.codex-plugin/plugin.json` there, which
+points at `hooks/codex.json`, not at the Claude Code `hooks/hooks.json`. Codex copies the plugin to
+`$CODEX_HOME/plugins/cache/reflex/reflex/<version>/` and runs the hooks from that copy with `node`.
+
+```sh
+codex plugin marketplace add ursuciprian/reflex
+codex plugin add reflex@reflex
+codex plugin marketplace upgrade reflex             # later, for a new release,
+codex plugin add reflex@reflex                      # then add it again to copy the new version
+```
+
+Inside Codex, `/plugins` shows the same marketplace. Then open `codex`, run `/hooks` and trust the
+Reflex entries: Codex runs no plugin hook it has not been told to trust, and it asks again when a
+new release changes one.
+
+| Part | What it is |
+|---|---|
+| `hooks/codex.json` | the same Codex events, matchers and timeouts as `install.mjs --agent codex` (see step 3): `PreToolUse` on `^(Bash\|spawn_agent)$` (15 s), `PostToolUse` records on `^(Bash\|spawn_agent)$` (5 s), the injection guard on `PostToolUse` for `^Bash$\|^mcp__` (15 s), `UserPromptSubmit` instructions (10 s) and prompt guard (5 s). Each runs `node "$PLUGIN_ROOT/<script>.mjs" <flag> --plugin` (an environment variable Codex sets; the form works in sh, bash, zsh and fish); a test keeps the file in step with `install.mjs` |
+| `skills/reflex` | tells the agent when to use `reflex check` and `reflex replay`, and not to work around a deny |
+
+Codex loads `skills/` by default and turns two of the Claude Code commands (`status`, `queue`) into skills (checked with Codex 0.157: they appear under `.codex-plugin/migrated-command-skills/` in the installed copy). The `reflex` CLI
+is not put on the `PATH` by Codex; install the package (`npm install -g @ursuciprian/reflex`) if you
+want those skills and `reflex status` to work. Configuration, defaults and logs are the same as for
+the Claude Code plugin above.
+
+**Plugin and `reflex setup` together.** Codex runs every matching hook from every source, so both
+would judge each call. When `reflex setup` (or `install.mjs --agent codex`) has written Reflex hooks
+into `~/.codex/hooks.json`, every plugin hook exits at once without reading its input or writing a
+log line. The plugin checks the file Codex reads, `$CODEX_HOME/hooks.json` when `CODEX_HOME` is set.
+A hook whose script no longer exists does not count, and `reflex status` reports it as an error.
+`reflex status` and `reflex doctor` print which path is active (`Codex CLI hooks: ...`); doctor
+also runs the plugin's installed `PreToolUse` command through `$SHELL -lc`, as Codex does, when the plugin is the active one. Codex runs a `hooks.json` entry only after you trust it, but the plugin stands down for it either way; `reflex status` warns when setup hooks silence the plugin and none of them has run yet. To switch to the plugin only:
+`node <copy that installed them>/install.mjs --agent codex --uninstall`; to switch to setup only:
+`codex plugin remove reflex@reflex`. The plugin's gate timeout is 15 s, the same as `reflex setup`
+without System 2; with the autonomous profile use `reflex setup --profile autonomous`.
+
+To remove the plugin: `codex plugin remove reflex@reflex`, and
+`codex plugin marketplace remove reflex` for the marketplace. The gate's `tamper` rule asks before
+the agent runs either of them.
+
+## opencode plugin
+
+The npm package is an opencode plugin: `package.json` `main` is `adapters/opencode.js`, the same
+file `reflex setup --agent opencode` copies into `~/.config/opencode/plugins/reflex.js`. Add it to
+`~/.config/opencode/opencode.json` (or a project's `opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@ursuciprian/reflex"]
+}
+```
+
+opencode installs it with Bun at startup into `~/.cache/opencode/node_modules/` and loads it into
+its own process. The plugin runs `gate.mjs`, `instructions.mjs` and `guard.mjs` from the installed
+package with `node` from the `PATH` opencode was started with (opencode itself runs on Bun), so it
+needs Node.js 18+ there. It registers the same hooks as the setup file: the gate on
+`tool.execute.before` for `bash` and `task`, instructions on `chat.message` and
+`experimental.chat.system.transform`, the injection guard on `tool.execute.after` and `chat.message`.
+The gate reads the mode and allow on every call from `REFLEX_MODE` / `REFLEX_ALLOW` or
+`$XDG_CONFIG_HOME/reflex/config.json` (default `~/.config`), else shadow and off, so a change applies
+without restarting opencode. Pin a version with `"@ursuciprian/reflex@0.13.0"`; this needs a release that ships
+the plugin (0.13.0 or later).
+
+**Plugin and `reflex setup` together.** opencode loads both. When the plugin file
+`reflex setup` writes is in opencode's global plugins directory (`$XDG_CONFIG_HOME/opencode/plugins/reflex.js`,
+by default `~/.config/opencode/plugins/reflex.js`) and its gate exists, the npm plugin registers no
+hooks, so each call is judged once. `reflex status` prints which one is active
+(`opencode plugin: ...`). To switch to the npm plugin only:
+`node <copy that installed it>/install.mjs --agent opencode --uninstall`; to switch to setup only, remove the entry
+from `plugin`.
 
 ## 1. Start locally, or enable hosted classification
 
@@ -197,8 +273,8 @@ To work on Reflex itself, clone the repo, run `npm test`, and install that check
 ### Publishing a release (maintainers)
 
 Once: add the `NPM_TOKEN` repository secret (an npm access token with publish rights on the
-`@ursuciprian` scope). Then per release: bump `version` in `package.json`, `.claude-plugin/plugin.json` (`npm test`
-fails when they differ; plugin users receive a release only when this version changes) and
+`@ursuciprian` scope). Then per release: bump `version` in `package.json`, `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`
+(`npm test` fails when they differ; plugin users receive a release only when this version changes) and
 `CHANGELOG.md`, merge,
 and tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. `.github/workflows/publish.yml` checks the tag
 matches `package.json`, runs the self-checks and runs `npm publish --access public --provenance`.
@@ -218,10 +294,10 @@ absolute path of the Node that ran `install.mjs`; pass `--node /path/to/node` to
 | Agent | What `install.mjs` does | After installing |
 |---|---|---|
 | Claude Code | `~/.claude/settings.json`: `PreToolUse` hook on `Bash\|Task\|Agent` (`gate.mjs --claude`; `Task\|Agent` is subgoal dedup), `PostToolUse` / `PostToolUseFailure` / `PermissionDenied` hooks on the same tools (`--claude-post`), a `PermissionRequest` hook on the same tools (`--claude-prompted`, which only records that Claude Code showed its own dialog; it never answers it), a `UserPromptSubmit` hook for conditional instructions (`instructions.mjs --claude`), the injection guard (`guard.mjs --claude` on `PostToolUse` for web, MCP, `Read` and `Bash` results; `guard.mjs --claude-prompt` on `UserPromptSubmit`), and permission rules that make Claude Code ask before editing the Reflex checkout, its logs, your personal instruction fragments (`~/.config/reflex`) or its own settings | restart sessions |
-| Codex CLI | `~/.codex/hooks.json`: `PreToolUse` + `PostToolUse` on `^(Bash\|spawn_agent)$` (`spawn_agent` is subgoal dedup), `UserPromptSubmit` (`instructions.mjs --codex`), and the injection guard (`guard.mjs --codex` on `PostToolUse` for `^Bash$\|^mcp__`, `guard.mjs --codex-prompt` on `UserPromptSubmit`) | open Codex, run `/hooks` and **trust** the Reflex hooks; untrusted hooks do not run |
+| Codex CLI | `~/.codex/hooks.json` (`$CODEX_HOME/hooks.json` when set): `PreToolUse` + `PostToolUse` on `^(Bash\|spawn_agent)$` (`spawn_agent` is subgoal dedup), `UserPromptSubmit` (`instructions.mjs --codex`), and the injection guard (`guard.mjs --codex` on `PostToolUse` for `^Bash$\|^mcp__`, `guard.mjs --codex-prompt` on `UserPromptSubmit`) | open Codex, run `/hooks` and **trust** the Reflex hooks; untrusted hooks do not run |
 | pi | `~/.pi/agent/extensions/reflex.ts` (gate on `tool_call`, instructions on `before_agent_start`, injection guard on `tool_result` and `input`) | restart pi |
 | oh-my-pi | `~/.omp/agent/extensions/reflex.ts` (same file) | restart omp |
-| opencode | `~/.config/opencode/plugins/reflex.js` (gate on `tool.execute.before`, instructions on `chat.message` + `experimental.chat.system.transform`, injection guard on `tool.execute.after` and `chat.message`) | restart opencode |
+| opencode | `~/.config/opencode/plugins/reflex.js` (under `$XDG_CONFIG_HOME` when set) (gate on `tool.execute.before`, instructions on `chat.message` + `experimental.chat.system.transform`, injection guard on `tool.execute.after` and `chat.message`) | restart opencode |
 | Hermes | prints a `hooks:` block with `pre_tool_call`, `post_tool_call` (gate records and the injection guard) and `pre_llm_call` (instructions and the guard's notes) (Hermes config is YAML, so you paste it) | add it to each profile's `config.yaml`, then `hermes hooks list` to accept it |
 
 The injection guard follows the installed mode: in shadow it only logs (`guard.jsonl`). To enforce it

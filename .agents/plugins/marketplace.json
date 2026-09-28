@@ -1,0 +1,20 @@
+{
+  "name": "reflex",
+  "interface": {
+    "displayName": "Reflex"
+  },
+  "plugins": [
+    {
+      "name": "reflex",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security"
+    }
+  ]
+}

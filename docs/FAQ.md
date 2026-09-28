@@ -6,6 +6,8 @@ docs. The short version of this page is the [FAQ section of the README](../READM
 - [What is Reflex?](#what-is-reflex)
 - [How do I stop Claude Code from running dangerous commands?](#how-do-i-stop-claude-code-from-running-dangerous-commands)
 - [How do I install Reflex as a Claude Code plugin?](#how-do-i-install-reflex-as-a-claude-code-plugin)
+- [How do I install Reflex as a Codex CLI plugin?](#how-do-i-install-reflex-as-a-codex-cli-plugin)
+- [How do I install Reflex as an opencode plugin?](#how-do-i-install-reflex-as-an-opencode-plugin)
 - [How is Reflex different from Claude Code permission prompts and allowlists?](#how-is-reflex-different-from-claude-code-permission-prompts-and-allowlists)
 - [Can I use Reflex with --dangerously-skip-permissions?](#can-i-use-reflex-with---dangerously-skip-permissions)
 - [Do I still need a devcontainer or a sandbox if I use Reflex?](#do-i-still-need-a-devcontainer-or-a-sandbox-if-i-use-reflex)
@@ -64,6 +66,33 @@ nothing is judged twice, and `reflex doctor` shows which one is active. Use `ref
 other agents, the autonomous profile, or the permission rules that guard Reflex's own files.
 
 See: [README: Claude Code plugin](../README.md#claude-code-plugin), [docs/SETUP.md: Claude Code plugin](SETUP.md#claude-code-plugin).
+
+## How do I install Reflex as a Codex CLI plugin?
+
+Add the marketplace in this repository and install the plugin from a shell:
+`codex plugin marketplace add ursuciprian/reflex`, then `codex plugin add reflex@reflex`. Open
+`codex`, run `/hooks` and trust the Reflex entries: Codex runs no plugin hook it has not been told to
+trust. The plugin wires the same Codex hooks as `reflex setup --agent codex`: the `PreToolUse`
+command gate on Bash and `spawn_agent`, the post-tool records, conditional instructions and the
+prompt injection guard on Bash and MCP results and on prompts. It needs Node.js 18+ on the `PATH`
+and no build step or API key; with no saved settings it runs the local engine in shadow mode. If
+`reflex setup` hooks are also in `~/.codex/hooks.json`, the plugin's hooks stand down so nothing is
+judged twice, and `reflex doctor` shows which one is active.
+
+See: [README: Codex CLI plugin](../README.md#codex-cli-plugin), [docs/SETUP.md: Codex CLI plugin](SETUP.md#codex-cli-plugin).
+
+## How do I install Reflex as an opencode plugin?
+
+Add `"plugin": ["@ursuciprian/reflex"]` to `~/.config/opencode/opencode.json` (or a project's
+`opencode.json`). opencode installs the npm package with Bun at its next start and loads
+`adapters/opencode.js`, the same plugin `reflex setup --agent opencode` copies into
+`~/.config/opencode/plugins/reflex.js`: the gate on `tool.execute.before` for `bash` and `task`,
+conditional instructions on `chat.message`, and the injection guard on tool results and prompts. It
+runs the gate with `node` from the `PATH`, so it needs Node.js 18+ there. If the setup file is also
+in `~/.config/opencode/plugins/`, the npm plugin registers no hooks, and `reflex status` shows which
+one is active.
+
+See: [README: opencode plugin](../README.md#opencode-plugin), [docs/SETUP.md: opencode plugin](SETUP.md#opencode-plugin).
 
 ## How is Reflex different from Claude Code permission prompts and allowlists?
 

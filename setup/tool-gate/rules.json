@@ -122,7 +122,7 @@
         "script"
       ],
       "all": [
-        "((?<!https?://[^\\s<>;&|'\"]*|\\bgh\\s[^;&|\\n]*?(\\brepos/|(--repo|-R)[=\\s]+)[\\w.-]*)/reflex(/|\\s|$)|(\\.local/state|\\.config|xdg_(state|config)_home)\\b[^\\n]{0,200}\\breflex\\b|\\.claude[\\w-]*/(settings|hooks|plugins/)|\\bclaude\\s+plugins?\\s+(disable|uninstall|remove|rm|marketplace\\s+(remove|rm))\\b|\\.codex/(hooks\\.json|config\\.toml|rules)|\\.hermes/.*config\\.yaml|opencode/(plugins?|opencode\\.jsonc?)|\\.(pi|omp)/agent/(extensions|settings)|reflex_(mode|allow|guard|judge|queue|checkpoints|engine|setup_dir|data_dir|injection_dir))"
+        "((?<!https?://[^\\s<>;&|'\"]*|\\bgh\\s[^;&|\\n]*?(\\brepos/|(--repo|-R)[=\\s]+)[\\w.-]*)/reflex(/|\\s|$)|(\\.local/state|\\.config|xdg_(state|config)_home)\\b[^\\n]{0,200}\\breflex\\b|\\.claude[\\w-]*/(settings|hooks|plugins/)|\\bclaude\\s+plugins?\\s+(disable|uninstall|remove|rm|marketplace\\s+(remove|rm))\\b|\\bcodex\\s+plugins?\\s+(remove|rm|uninstall|marketplace\\s+(remove|rm))\\b|\\.codex/(hooks\\.json|config\\.toml|rules)|\\.hermes/.*config\\.yaml|opencode/(plugins?|opencode\\.jsonc?)|\\.(pi|omp)/agent/(extensions|settings)|reflex_(mode|allow|guard|judge|queue|checkpoints|engine|setup_dir|data_dir|injection_dir))"
       ]
     },
     {

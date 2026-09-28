@@ -90,6 +90,39 @@ permission rules that make Claude Code ask before editing Reflex's files and set
 the hook timeout to System 2 in the autonomous profile. See
 [docs/SETUP.md: Claude Code plugin](docs/SETUP.md#claude-code-plugin).
 
+### Codex CLI plugin
+
+The same repository is a Codex CLI plugin marketplace. From your shell:
+
+```sh
+codex plugin marketplace add ursuciprian/reflex
+codex plugin add reflex@reflex
+```
+
+Then open `codex`, run `/hooks` and trust the Reflex entries; Codex runs no plugin hook until you
+do. The plugin adds the same Codex hooks as `reflex setup --agent codex`: the `PreToolUse` command
+gate on `Bash` and `spawn_agent`, the post-tool records, conditional instructions on
+`UserPromptSubmit` and the prompt injection guard on Bash and MCP results and on prompts. It needs
+Node.js 18+ as `node` on the `PATH` Codex runs with, and no API key: without saved settings it runs
+the local engine in shadow mode. If `reflex setup` hooks are also in `~/.codex/hooks.json`, those
+run and the plugin's hooks exit at once, so no command is judged twice; `reflex doctor` says which
+one is active. See [docs/SETUP.md: Codex CLI plugin](docs/SETUP.md#codex-cli-plugin).
+
+### opencode plugin
+
+The npm package is an opencode plugin. Add it to `~/.config/opencode/opencode.json`:
+
+```json
+{ "plugin": ["@ursuciprian/reflex"] }
+```
+
+opencode installs it at its next start. It registers the same hooks as the plugin file
+`reflex setup --agent opencode` writes: the gate on `tool.execute.before` for `bash` and `task`,
+instructions on `chat.message`, and the injection guard on tool results and prompts. It needs
+Node.js 18+ as `node` on the `PATH` opencode runs with. If that setup file is also in
+`~/.config/opencode/plugins/`, the npm plugin registers nothing, so no command is judged twice. See
+[docs/SETUP.md: opencode plugin](docs/SETUP.md#opencode-plugin).
+
 ### Every agent: install script or package runner
 
 ```sh
@@ -814,8 +847,17 @@ See the [comparison with other guardrails](#compared-with-other-ai-coding-agent-
 Reflex installs Codex hooks that judge each Bash command inside the sandbox mode and approval
 policy Codex already uses, and scan Bash and MCP results for prompt injection. Codex hooks cannot
 show a prompt, so a Reflex `ask` blocks and the human runs the command with `reflex run` in their
-own terminal. Trust the hooks once in Codex's `/hooks`. See
+own terminal. Trust the hooks once in Codex's `/hooks`. Install it as a Codex CLI plugin
+(`codex plugin marketplace add ursuciprian/reflex`, then `codex plugin add reflex@reflex`) or with
+`reflex setup --agent codex`. See
 [supported agents](#supported-agents-claude-code-hooks-codex-hooks-and-more).
+
+### Is there an opencode plugin?
+
+Yes. Add `"plugin": ["@ursuciprian/reflex"]` to `~/.config/opencode/opencode.json` and opencode
+installs it from npm at its next start, or run `reflex setup --agent opencode` to write the same
+plugin into `~/.config/opencode/plugins/reflex.js`. With both, only the setup file gates. See
+[docs/SETUP.md: opencode plugin](docs/SETUP.md#opencode-plugin).
 
 ### Does Reflex need an API key, an account or LiteLLM?
 

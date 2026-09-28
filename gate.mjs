@@ -26,6 +26,7 @@ import {createHash, randomUUID} from "node:crypto";
 import {execFileSync, spawn, spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join, posix, resolve} from "node:path";
+import {isatty} from "node:tty";
 import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
@@ -86,14 +87,17 @@ export function runawaySettings(saved = {}, env) {
 // A hook counts only when the script it names exists: a stale entry from a deleted checkout fails
 // in Claude Code, so the plugin must not stand down for it.
 export const CLAUDE_SETTINGS = join(ENV.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "settings.json");
-const REFLEX_HOOK = /(?:"((?:[^"\\]|\\.)*?(?:gate|guard|instructions)\.mjs)"|'([^']*?(?:gate|guard|instructions)\.mjs)'|(\S*(?:gate|guard|instructions)\.mjs))\s+--claude(?:-post|-prompted|-prompt)?(?=\s|$)/;
-/** Reflex hooks in the Claude Code settings file: `live` scripts exist, `stale` ones do not. Plugin hooks are not counted. */
-export function settingsHooks(file = CLAUDE_SETTINGS) {
-  const live = [], stale = [];
+// The Codex CLI plugin (hooks/codex.json, also --plugin) does the same against the hooks file Codex
+// reads, $CODEX_HOME/hooks.json, which is the ~/.codex/hooks.json install.mjs writes unless CODEX_HOME is set.
+export const CODEX_HOOKS = join(ENV.CODEX_HOME || join(homedir(), ".codex"), "hooks.json");
+const reflexHook = agent => new RegExp(String.raw`(?:"((?:[^"\\]|\\.)*?(?:gate|guard|instructions)\.mjs)"|'([^']*?(?:gate|guard|instructions)\.mjs)'|(\S*(?:gate|guard|instructions)\.mjs))\s+--${agent}(?:-post|-prompted|-prompt)?(?=\s|$)`);
+/** Reflex hooks in an agent's hooks file: `live` scripts exist, `stale` ones do not. Plugin hooks are not counted. */
+export function settingsHooks(file = CLAUDE_SETTINGS, agent = "claude") {
+  const live = [], stale = [], hook = reflexHook(agent);
   try {
     for (const g of Object.values(JSON.parse(readFileSync(file, "utf8")).hooks ?? {}).flat())
       for (const h of g?.hooks ?? []) {
-        const m = typeof h?.command === "string" && !/\s--plugin(\s|$)/.test(h.command) && h.command.match(REFLEX_HOOK);
+        const m = typeof h?.command === "string" && !/\s--plugin(\s|$)/.test(h.command) && h.command.match(hook);
         if (!m) continue;
         const script = m[1]?.replace(/\\(.)/g, "$1") ?? m[2] ?? m[3];
         (existsSync(script) ? live : stale).push(script);
@@ -101,9 +105,15 @@ export function settingsHooks(file = CLAUDE_SETTINGS) {
   } catch { /* no settings file, or not JSON: nothing installed there */ }
   return {live: [...new Set(live)], stale: [...new Set(stale)]};
 }
-export const settingsHooksInstalled = file => settingsHooks(file).live.length > 0;
+export const settingsHooksInstalled = (file, agent) => settingsHooks(file, agent).live.length > 0;
 export const PLUGIN = process.argv.includes("--plugin");
-if (PLUGIN && settingsHooksInstalled()) process.exit(0);
+const CODEX_PLUGIN = PLUGIN && process.argv.some(a => /^--codex(-|$)/.test(a));
+// Standing down, read the input first: an agent writing a large tool result must not get EPIPE.
+if (PLUGIN && (CODEX_PLUGIN ? settingsHooksInstalled(CODEX_HOOKS, "codex") : settingsHooksInstalled())) {
+  // isatty, not process.stdin.isTTY: touching process.stdin makes a pipe non-blocking and the read fails with EAGAIN
+  if (!isatty(0)) try { readFileSync(0); } catch { /* nothing to read */ }
+  process.exit(0);
+}
 // With no saved engine the gate starts where a fresh `reflex setup` does: local, no key needed, or
 // Jev when a TypeSafe key is in the environment, or a Keychain item or an earlier install is
 // recorded. The plugin relies on this default.
