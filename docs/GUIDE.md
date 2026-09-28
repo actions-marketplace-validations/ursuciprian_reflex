@@ -11,6 +11,8 @@
    - [Calibrated allow](#calibrated-allow)
 4. [Changing behaviour](#changing-behaviour)
    - [Team policy: share Reflex rules across a repo](#team-policy-share-reflex-rules-across-a-repo)
+   - [Change freeze for AI coding agents](#change-freeze-for-ai-coding-agents)
+   - [Audit log for AI agent commands (SOC 2)](#audit-log-for-ai-agent-commands-soc-2)
 5. [Metrics](#metrics)
 6. [Data handling](#data-handling)
 7. [Safety properties and limits](#safety-properties-and-limits)
@@ -604,7 +606,9 @@ What each part does. All of them apply as soon as the file is in the repository:
 | `always_human` | Extra patterns for the [always-human class](#the-always-human-class): System 2 never approves a match. |
 | `prod` | Production markers. A command whose text or context (`cwd=`, `aws_profile=`, `kube_context=`, `tf_workspace=`, `git_branch=`) matches, and that is not read-only, asks a human. |
 | `mode` | A floor: `enforce` turns shadow into enforce for commands in this repository. `off` stays off: that switch stays with the user. |
+| `freeze` | Change windows and deploy freezes: during a window, a production command that is not read-only asks or is denied. See [change freeze](#change-freeze-for-ai-coding-agents). |
 | `fastlane` | Command shapes that pass without a prompt (`[{"pattern": "^make\\s+lint$"}]`). This loosens, so it needs trust (below). |
+| `notify` | A decision webhook, like the one in `config.json` ([audit log](#audit-log-for-ai-agent-commands-soc-2)). It sends data off the machine, so it needs trust (below). |
 
 The file has no key that removes a rule, raises a threshold or turns off the injection guard, the
 runaway guard or the tamper check, and an unknown key makes it invalid. Patterns are
@@ -613,8 +617,8 @@ expression engine, because a hook that times out lets the command run and the co
 agent's choice. A pattern that engine cannot run in linear time is rejected: lookaheads,
 backreferences and large bounded repeats such as `{0,64}` (use `*` or `+` instead).
 
-**Trust, for the fast lane only.** `reflex trust .` shows the file, its sha256 and every fast lane
-entry, and asks you to type `trust` on the terminal. It records the repository path and the hash in
+**Trust, for the fast lane and the webhook only.** `reflex trust .` shows the file, its sha256, every
+fast lane entry and the host of its webhook, and asks you to type `trust` on the terminal. It records the repository path and the hash in
 `~/.config/reflex/trusted.json`. Any change to the file, from a teammate's commit or from an agent,
 changes the hash, and the fast lane stays off until you review it and run `reflex trust .` again.
 `reflex trust --revoke .` removes the trust. Team fast lane entries are held to the same checks as
@@ -657,6 +661,148 @@ in: its path, whether you trust it, its hash, and what it adds. `reflex policy` 
 one repository. Decisions record it too: a rule from the team policy says `(team policy)`, and the
 policy version reads `rules-v16+team-<hash>`. `reflex check --cwd <dir>` and `reflex replay` judge
 each command with the team policy of its own working directory.
+
+## Change freeze for AI coding agents
+
+A deploy freeze for AI coding agents: during a change window you define, a command that is not
+read-only and touches production asks a human, or is denied. This is change management for Claude
+Code, Codex CLI and the other agents Reflex gates, in the same place as the rest of the policy.
+Windows go in `~/.config/reflex/config.json` (yours) or in a team policy's `freeze` list (the
+repository's), and both apply:
+
+```json
+{
+  "freeze": [
+    {"days": ["fri"], "after": "15:00", "tz": "Europe/Bucharest", "applies_to": "prod", "outcome": "ask"},
+    {"from": "2026-12-20", "to": "2027-01-03", "outcome": "deny", "note": "year-end freeze"}
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `days` | Days of the week: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`. |
+| `after`, `before` | Local time, `HH:MM`. `after` is inclusive, `before` is exclusive, and `after` must be earlier than `before`; a window across midnight is two windows. |
+| `from`, `to` | Dates, `YYYY-MM-DD`, both inclusive. |
+| `tz` | An IANA time zone name such as `Europe/Bucharest`. Default `UTC`. Times and dates are read in it with `Intl`, so summer time is handled. |
+| `applies_to` | `prod` (default): commands that touch production. `all`: every command that is not read-only. |
+| `outcome` | `ask` (default) or `deny`. |
+| `note` | Text added to the reason, at most 200 characters. |
+
+Every field a window has must hold at once: `{"days": ["fri"], "after": "15:00"}` is Friday from
+15:00 to midnight. A window needs at least one of `days`, `after`, `before`, `from` and `to`.
+
+**What counts as production.** The markers Reflex already uses: the prod-destroy rule's production
+pattern over the working directory, the AWS profile, the kube context, the Terraform workspace, the
+git branch and the command text (`envs/prod`, `--context prd-eu`, `aws_profile=production`,
+`tf_workspace=live` and so on), plus the `prod` markers of the team policy. A command whose
+pipelines only write notes (`git commit -m "prod fix"`) is not production.
+
+**What the agent sees.** A frozen command gets a rule decision with a reason such as
+
+```
+reflex (rule): change freeze: Friday after 15:00 (Europe/Bucharest); production (cwd=/infra/envs/prod)
+```
+
+It is a deterministic decision, so it applies in shadow mode too, and in the autonomous profile it
+is in the always-human class: System 2 never approves it. A human's approval in the approval queue
+can lift a freeze ask for that one command; nothing lifts a deny.
+
+**It only tightens.** A window has no outcome that passes. A freeze outcome replaces a pass (the
+read-only list excepted), a fast lane pass, a Jev or local judgment, and a rule ask when the window
+denies. A rule deny, or a rule ask under an ask window, keeps its own reason. Validation is strict:
+an unknown field, a day such as `friday`, a time such as `9:00`, a date that does not exist, an
+unknown time zone or an outcome other than `ask` or `deny` is an error, never a smaller window.
+In a team policy, an invalid window makes the file invalid, so its fast lane and webhook are off
+while its valid stricter parts, other windows included, still apply. In `config.json`, an invalid
+window is a configuration error, and until you fix it every command asks, as with any invalid
+setting. `reflex doctor` names the window and the problem.
+
+**Seeing it.** `reflex status` prints `Change freeze: ACTIVE now: ...` or `none active`, with the
+number of windows, for `config.json` and the team policy of the directory it runs in.
+`reflex check "kubectl apply -f app.yaml" --cwd ~/infra/envs/prod` shows the decision a frozen
+command would get. `reflex audit --prod-only` lists what happened during a freeze.
+
+**Limits.** The window is read from the machine's clock. You can edit your own `config.json` or
+turn Reflex off (`--mode off`); a freeze is a control on the agent, not on you. A team policy's
+windows are protected like the rest of the file: an agent shell command that writes `.reflex/` gets a
+tamper ask, and code review protects the committed file. The production markers read text, so a
+command that names production in an argument (`gh pr create --title "prod fix"`) counts, which only
+adds asks. Reflex gates shell commands; file edits and MCP calls are not frozen.
+
+## Audit log for AI agent commands (SOC 2)
+
+`reflex audit` exports one row per decision the gate logged: a document auditors can use as
+evidence for change management controls such as SOC 2 CC8.1 and ISO 27001 Annex A 8.32. It shows
+which agent ran what, where, in which environment tier, what Reflex decided and who approved it.
+It reads the trace (`trace.jsonl` and its rotated files), the approval queue and the execution
+feedback, writes nothing and calls nothing.
+
+```sh
+reflex audit                                   # the last 7 days, csv on stdout
+reflex audit --since 90d --format csv > agent-changes-q3.csv
+reflex audit --since 24h --prod-only --format json
+reflex audit --agent claude-code --format jsonl
+```
+
+| Column | Meaning |
+|---|---|
+| `time` | When the gate decided (UTC, ISO 8601). |
+| `agent`, `session` | The agent (`claude-code`, `codex`, `opencode`, `pi`, `hermes`, `shell`) and its session id. |
+| `cwd` | The working directory. |
+| `env_tier`, `env_reason` | `prod` or `non-prod`, and the marker that made it production (`cwd=/infra/envs/prod`, `aws_profile=production`, `command: prd`). `unknown` for rows logged by an earlier version. |
+| `command` | The command, with secrets redacted when it was logged and again on export. |
+| `decision` | What the agent was told: `pass`, `allow`, `ask` or `deny`. |
+| `judged`, `mode`, `source` | What the judgment was before the mode applied (in shadow mode a Jev ask is logged, not shown), the mode, and who decided: `rule`, `fast-lane`, `jev`, `local`, `judge` (System 2), `queue`, `runaway`. |
+| `rule_id`, `rule` | The rule or reason, such as `freeze`, `prod-destroy` or `team:prod`. |
+| `approved_by` | Who answered, when that is known: `approved in the approval queue (q-1a2b3c4d5e by alice at ...)`, `System 2 approved (confidence 0.9)`, `approved at the agent's prompt (it ran)`, `rejected at the agent's prompt`, or `no answer recorded`. The queue records the account that ran `reflex queue approve`. |
+
+`--format` is `csv` (default), `json` or `jsonl`. In csv, a cell that a spreadsheet would run as a
+formula (starting with `=`, `+`, `-` or `@`) starts with a quote. `--since` takes `7d`, `12h` or
+`30m`; `--prod-only` keeps production rows; `--agent` keeps one agent.
+
+What an auditor should know about it:
+
+- Read-only commands (`ls`, `git status`, `kubectl get`) are not logged, so they are not in the
+  export. Everything else the gate judged is, whatever the decision.
+- The trace is a local file owned by the user, and rotates at 50 MB into files the export still
+  reads. It is evidence of what the gate decided, not tamper-proof storage: an agent or a person
+  with shell access as that user can edit it. For retention, export on a schedule, or send
+  decisions to a system you control with the webhook below.
+- An approval at the agent's own prompt is inferred: the command ran after an ask. The export says
+  so in the `approved_by` text.
+
+### Decision webhook
+
+Reflex can post decisions to a webhook, for a Slack channel or a log pipeline:
+
+```json
+{"notify": {"url": "https://hooks.slack.com/services/T000/B000/XXXX", "on": ["deny", "ask", "prod"], "format": "slack"}}
+```
+
+`on` lists what is sent: `deny` and `ask` (what the agent was told) and `prod` (any judged
+production command, whatever the decision). The default is `["deny"]`. `format` is `json` (default:
+an object with `event: "reflex.decision"`, time, agent, session, cwd, `prod`, `prod_by`, command,
+decision, judged, mode, source, `rule_id` and reason) or `slack` (a `text` message, with `<`, `>`
+and `&` escaped so a command cannot mention a channel).
+
+A webhook is data egress, so it is held to these rules:
+
+- The URL is `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`, with no user name or
+  password in it. Anything else is a doctor error and nothing is sent.
+- The URL comes from `config.json`. A team policy's `notify` is used only while you trust that
+  exact file (`reflex trust .` shows its host), because a committed file must not send your
+  decisions somewhere.
+- The command and the reason are redacted with the same patterns as the trace, and no environment
+  value is sent: `prod_by` names the marker (`aws_profile`, `kube_context`, `cwd`), not its value.
+  Doctor and `reflex policy` show the webhook's host, never its path, since a Slack webhook's path
+  is its secret.
+- The hook never waits for it. A detached child posts each message once, with a 2 second timeout,
+  no retries and no redirects, while the hook returns its decision. A webhook that is down or slow
+  loses messages; it never delays or changes a decision.
+
+`reflex doctor --notify-test` sends one dry-run message (`"dry_run": true`, no command) to each
+configured webhook and reports the HTTP status. Doctor sends nothing without that flag.
 
 ## Metrics
 
@@ -717,6 +863,9 @@ each command with the team policy of its own working directory.
 - **Engine laya**: everything above that would go to TypeSafe goes to the Laya server on 127.0.0.1
   instead, and nothing leaves the machine. The server keeps no log of requests (only its own
   start-up and errors, in `laya.log`).
+- **Decision webhook** (opt-in, `notify` in `config.json`): per matching decision, the redacted
+  command, the redacted reason, the cwd, the agent, the session id and the decision, to the URL you
+  set. No environment value is sent. See [decision webhook](#decision-webhook).
 - **Locally**, logs contain the same redacted data and stay in `~/.local/state/reflex/`. Trace and
   feedback files rotate at 50 MB. Command output is never stored.
 
