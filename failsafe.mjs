@@ -186,6 +186,7 @@ export async function run() {
     // Test only (test.mjs sets REFLEX_TEST=1): a load crash or an unhandled rejection before the gate decides.
     const crash = ENV.REFLEX_TEST === "1" ? ENV.REFLEX_TEST_CRASH : undefined;
     if (crash === "reject") Promise.reject(Object.assign(new Error("simulated unhandled rejection (REFLEX_TEST_CRASH)"), {simulated: true}));
+    if (crash === "reject") await new Promise(r => setImmediate(r));   // handled before the gate loads
     if (crash === "load") throw Object.assign(new Error("simulated load crash (REFLEX_TEST_CRASH)"), {simulated: true});
     await import(pathToFileURL(target).href);
   } catch (e) { hookFailure(e, {simulated: e?.simulated === true}); }
