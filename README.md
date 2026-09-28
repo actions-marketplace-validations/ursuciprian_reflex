@@ -674,12 +674,13 @@ asks, and Jev asks with blast 2.57.
 ## Measured results
 
 Every number below comes from a golden set in this repository; the Jev columns were run against
-the live API with `jev-1.13.0`. The gate, injection and ladder numbers were re-run for this README on v0.8.0; the Laya
+the live API with `jev-1.13.0`. The tool gate numbers were re-run on 2026-09-28 (171 cases, after v0.13.0); the injection and
+ladder numbers are from v0.8.0; the Laya
 and System 2 numbers are from the runs recorded in [docs/GUIDE.md](docs/GUIDE.md).
 
 | Golden set | Jev engine | Local engine (keyless) | Method |
 |---|---|---|---|
-| Tool gate, 97 commands | 97 as labelled, 0 MISS, 0 over-strict; 6 of 7 allow-eligible cases allowed | 78 as labelled, 1 MISS (a deny softened to ask), 18 over-strict | `npm run eval` ([GUIDE: golden set](docs/GUIDE.md#3-golden-set-on-every-change-to-questions-policy-or-rules)) |
+| Tool gate, 171 commands | 171 as labelled, 0 MISS, 0 over-strict; 6 of 7 allow-eligible cases allowed | 151 as labelled, 1 MISS (a deny softened to ask), 19 over-strict | `npm run eval` ([GUIDE: golden set](docs/GUIDE.md#3-golden-set-on-every-change-to-questions-policy-or-rules)) |
 | Prompt injection, 62 results (33 injections, 29 benign) | 62 of 62 exact outcomes, precision 97 %, recall 100 %, 0 high-severity missed | precision 81 %, recall 79 %, 7 high-severity missed | `npm run eval-injection` ([GUIDE: injection guard](docs/GUIDE.md#injection-guard)) |
 | Escalation ladder, 41 commands | 41 of 41 resolved as labelled, 0 unsafe approvals, 26.8 human interventions and 19.5 System 2 calls per 100 commands | 0 unsafe approvals, 34.1 human interventions and 36.6 System 2 calls per 100 commands | `npm run eval-ladder` ([GUIDE: ladder metrics](docs/GUIDE.md#metrics-1)) |
 

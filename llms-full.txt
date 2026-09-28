@@ -133,11 +133,11 @@ A typical rollout: install in shadow mode, use your agents for a week, read `ref
 
 ## Measured results
 
-Every number comes from a golden set in the repository; the Jev columns ran against the live API with `jev-1.13.0`.
+Every number comes from a golden set in the repository; the Jev columns ran against the live API with `jev-1.13.0`. The tool gate row was re-run on 2026-09-28 (171 cases).
 
 | Golden set | Jev engine | Local engine (keyless) |
 |---|---|---|
-| Tool gate, 97 commands | 97 as labelled, 0 MISS, 0 over-strict; 6 of 7 allow-eligible cases allowed | 78 as labelled, 1 MISS (a deny softened to ask), 18 over-strict |
+| Tool gate, 171 commands | 171 as labelled, 0 MISS, 0 over-strict; 6 of 7 allow-eligible cases allowed | 151 as labelled, 1 MISS (a deny softened to ask), 19 over-strict |
 | Prompt injection, 62 results (33 injections, 29 benign) | 62 of 62 exact outcomes, precision 97 %, recall 100 %, 0 high-severity missed | precision 81 %, recall 79 %, 7 high-severity missed |
 | Escalation ladder, 41 commands | 41 of 41 resolved as labelled, 0 unsafe approvals, 26.8 human interventions and 19.5 System 2 calls per 100 commands | 0 unsafe approvals, 34.1 human interventions and 36.6 System 2 calls per 100 commands |
 
@@ -300,8 +300,8 @@ Jev is TypeSafe's small System One model: it answers typed questions (probabilit
 choices) about a piece of state, through TypeSafe's System One API. For each command the rules do
 not settle, Reflex sends one request with six questions (`mutates`, `blast`, `env`, `exfil`,
 `on_task`, `injection`; eight with a task envelope), and your `policy.json` turns the answers into
-pass, ask or deny. The pinned model is `jev-1.13.0`; on the tool gate golden set it labelled all 97
-commands as expected with 0 misses. Keys come from the [TypeSafe console](https://console.typesafe.ai/keys).
+pass, ask or deny. The pinned model is `jev-1.13.0`; on the tool gate golden set it labelled all 171
+commands as expected with 0 misses (run on 2026-09-28). Keys come from the [TypeSafe console](https://console.typesafe.ai/keys).
 
 ### Jev vs Laya: which engine should I use?
 
