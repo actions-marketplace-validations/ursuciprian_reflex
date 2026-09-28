@@ -115,10 +115,11 @@ const AGENTS = {
     stripOurs(s.hooks);
     // The agent must not quietly edit its own gate or its settings; a human confirms each change.
     // ~/.config/reflex holds personal instruction fragments, injected into every repo's sessions.
+    // A repo's .reflex/ holds its team policy and instruction fragments: a human edits them.
     // Edit(path) rules cover every file-editing tool; Claude Code ignores Write(path) rules and warns
     // about them, so earlier installs' Write(...) entries are removed here too.
     const paths = [REPO, process.env.REFLEX_DATA_DIR ?? join(process.env.XDG_STATE_HOME ?? join(HOME, ".local/state"), "reflex"), dirname(USER_CONFIG_FILE)]
-      .map(d => `${d.replace(HOME, "~")}/**`).concat(["~/.claude/settings*.json"]);
+      .map(d => `${d.replace(HOME, "~")}/**`).concat(["~/.claude/settings*.json", "**/.reflex/**"]);
     const guard = paths.map(p => `Edit(${p})`), legacy = paths.map(p => `Write(${p})`);
     s.permissions ??= {};
     s.permissions.ask = (s.permissions.ask ?? []).filter(r => !guard.includes(r) && !legacy.includes(r));
@@ -273,7 +274,7 @@ if (argv.includes("--selfcheck")) {
         const pre = hooks.PreToolUse.find(g => g.hooks.some(h => h.command.includes(q(GATE))));
         const s = JSON.parse(first);
         ok(pre.matcher === "Bash|Task|Agent" && s.model === "opus" && s.env.FOO === "1" && s.permissions.allow[0] === "Bash(ls)" &&
-           s.permissions.ask.includes("Bash(rm *)") && s.permissions.ask.some(r => r.startsWith("Edit(")) &&
+           s.permissions.ask.includes("Bash(rm *)") && s.permissions.ask.some(r => r.startsWith("Edit(")) && s.permissions.ask.includes("Edit(**/.reflex/**)") &&
            !s.permissions.ask.some(r => r.startsWith("Write(")), "claude: matcher, foreign settings and guard rules (Edit only; an old Write rule is removed)");
       } else ok(hooks.PreToolUse.some(g => g.matcher === "^(Bash|spawn_agent)$"), "codex: Bash and spawn_agent");
       run("--agent", agent);

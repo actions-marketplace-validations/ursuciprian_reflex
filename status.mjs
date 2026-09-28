@@ -11,6 +11,7 @@ import {judgeKey, probe, budgetState} from "./judge2.mjs";
 import {breaker, listItems, runawayTrips} from "./autonomy.mjs";
 import {health as layaHealth} from "./laya.mjs";
 import {FASTLANE_FILE, loadFastLane} from "./fastlane.mjs";
+import {teamPolicy} from "./team.mjs";
 
 const doctor = process.argv.includes("--doctor"), json = process.argv.includes("--json");
 const errors = [], warnings = [], agents = [];
@@ -28,6 +29,14 @@ const keyless = CONFIG.engine === "local" && CONFIG.judge.enabled;
 if (CONFIG.engine === "local") warnings.push(`Local coverage: shell rules and deterministic instructions; ${keyless ? "keyless autonomy: commands they do not cover go to System 2, which allows only small ones" : "uncertain commands ask in enforce mode"}. Hosted features are disabled.`);
 const fastlane = loadFastLane();
 if (fastlane.error) warnings.push(`${FASTLANE_FILE} is ignored: ${fastlane.error}. Fix it or remove it; until then only the bundled fast lane applies.`);
+// The team policy of the repository this runs in (.reflex/policy.json, team.mjs).
+const tp = teamPolicy(process.cwd());
+const team_policy = tp && {file: tp.file, sha256: tp.sha256, trust: tp.trust, fastlane_active: tp.active_fastlane, valid: !tp.errors.length,
+  rules: tp.rules.filter(r => r.id !== "team:prod").length, always_human: tp.always_human.length, prod_markers: tp.rules.filter(r => r.id === "team:prod").length,
+  mode_floor: tp.mode, fastlane_entries: tp.fastlane_count ?? 0, errors: tp.errors};
+if (tp?.errors.length) warnings.push(`Team policy ${tp.file} is invalid: ${tp.errors.join("; ")}. Its valid stricter parts apply; its fast lane does not.`);
+if (tp?.trust === "changed") warnings.push(`Team policy ${tp.file} changed since you trusted it: its fast lane is off until you review it and run reflex trust again.`);
+if (tp?.mode === "enforce" && CONFIG.mode === "shadow") warnings.push(`Team policy sets a mode floor: enforce applies in ${tp.root}.`);
 if (CONFIG.mode === "shadow") warnings.push("Shadow mode enforces deterministic rules. Other decisions are logged without blocking.");
 const policy = setupFile("policy.json");
 try { compile(load("policy.json")); load("rules.json"); load("questions.json"); }
@@ -250,7 +259,7 @@ const trips = runawayTrips(Date.now() - 36e5);
 const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
 if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, agents, errors, warnings};
+  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
@@ -259,6 +268,9 @@ else {
     `${judge.reachable ? (cliJudge ? "found" : `reachable (HTTP ${judge.status})`) : judge.reachable === false ? "NOT reachable" : "not checked"}` +
     (judge.budget ? `; budget left today ${judge.budget.calls_left} calls, $${judge.budget.usd_left}` : "") : "off"}`);
   console.log(`Queue: ${queue.enabled ? "on" : "off"}; ${queue.pending} pending of ${queue.total} · checkpoints ${CONFIG.checkpoints ? "on" : "off"}`);
+  console.log(`Team policy: ${team_policy ? `${team_policy.file}; ${team_policy.trust}${team_policy.valid ? "" : ", INVALID"}; sha256 ${team_policy.sha256?.slice(0, 12) ?? "unreadable"}; ` +
+    `rules ${team_policy.rules}, always-human ${team_policy.always_human}, prod markers ${team_policy.prod_markers}, mode floor ${team_policy.mode_floor ?? "none"}, ` +
+    `fast lane ${team_policy.fastlane_entries} (${team_policy.fastlane_active ? "active" : "inactive"})` : "none in this directory"}`);
   console.log(`Runaway guard: ${runaway.enabled ? `on (${CONFIG.mode === "enforce" ? "stops" : CONFIG.mode === "shadow" ? "logs only, shadow" : "off with the mode"}); ${runaway.stops_last_hour} stop${runaway.stops_last_hour === 1 ? "" : "s"} in the last hour` : "off"}`);
   console.log(`Claude Code hooks: ${claudeHooks}${plugin.checks.length ? `; plugin probes ${plugin.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);
   console.log(`Codex CLI hooks: ${codex_hooks}${codex_plugin.checks.length ? `; plugin probes ${codex_plugin.checks.every(c => c.ok) ? "passed" : "FAILED"}` : ""}`);

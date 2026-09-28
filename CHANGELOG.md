@@ -12,6 +12,59 @@ All notable changes to Reflex are documented here. The format follows
   `reflex replay` output with the local engine. It is recorded with VHS from `docs/demo/demo.tape`,
   in a scratch `HOME` and `REFLEX_DATA_DIR` built by `docs/demo/setup.sh` with a synthetic
   transcript; `docs/demo/README.md` explains how to re-render it.
+- Team policy: a repository can commit `.reflex/policy.json`, and every teammate's Reflex applies it
+  while an agent works there. It adds rules (the `rules.json` shape, ask or deny; a team deny is
+  checked before the bundled rules, a team ask after them), always-human patterns, production
+  markers (a matching command that is not read-only asks) and a mode floor (`enforce` raises shadow;
+  off stays off). It has no key that removes or relaxes anything, and an unknown key makes it
+  invalid. Patterns are checked so they finish in time (no backreferences, no nested repetition, one
+  unbounded repetition each, 64 per file), and a command over 8 KB asks in a repo with team rules.
+  The file is read only at the repository root (the nearest `.git`), never from a parent directory,
+  and never through a symlink.
+- `reflex trust [dir]` and `reflex trust --revoke [dir]`: a team policy's `fastlane` entries apply
+  only while the user trusts that exact file. Trust records the repository and the file's sha256 in
+  `~/.config/reflex/trusted.json`; any change to the file drops it until it is trusted again. It
+  needs a terminal and refuses inside an agent session. Team fast lane entries are validated like
+  `fastlane.json` and never pass over a deny, a secret read, the tamper check, a prod marker or the
+  always-human class. An invalid file never loosens; its valid stricter parts still apply.
+- `reflex policy [dir]` shows a repository's team policy; `reflex policy init [dir]` writes a starter
+  with stricter examples only and never overwrites.
+- `reflex status` and `reflex doctor` show the team policy of the current directory: path, trust,
+  hash and what it adds; doctor warns when it is invalid or changed since it was trusted.
+
+### Changed
+
+- Tamper check: a shell command that writes under `.reflex/`, or runs `reflex trust` or
+  `reflex policy init`, asks a human. `reflex setup` adds `Edit(**/.reflex/**)` to Claude Code's ask
+  rules.
+
+### Fixed
+
+Fourth review of the read-only parser (#43). Each change asks more often; none passes anything new.
+
+- Option-sensitive tools (every tool in the unsafe-flag list or with a read-only subcommand list, plus
+  sed, date and file) are read-only only when their words hold no expansion at all: no variable, no
+  command substitution, no arithmetic, no brace list and no glob, before or after `--` (`xxd -- *`
+  can write the second file, `awk -- *` runs a file name as its program). The per-binding exceptions
+  (`F=notes.txt; sed -n 1p "$F"`) are gone. The one word kept is a double-quoted `$name` inside a
+  word that starts with a literal path, such as `gh api "repos/$R/pulls"`, and never for sed or awk.
+  `printf` keeps its own rule (options in the first word only).
+- awk is read-only only when its program text has no `@`, `system`, `getline`, `|`, `>`, `close`,
+  `fflush`, `PROCINFO` or `ENVIRON`, and there is no `-f` or `-i`. A `>` comparison now asks too.
+- The rules read brace sequences (`ma{i..i}n`), nested lists and several braces per word, with quotes
+  kept, so the force-push rules still deny. Past 1,024 expanded words the command asks.
+- Over 32 KB the deny rules run before the size ask, on overlapping windows and in every spelling,
+  until the deadline: a large command never turns a deny into an ask.
+- `precheck` shares one deadline across the spellings it recurses into, and scans each local script
+  once per call, so the total stays under the hook timeout.
+- `shell-startup` (rules-v17) also catches a startup file copied into a directory (a destination
+  that ends in `/` or is `~` or `$HOME`) and `tee` with several files.
+- The user fast lane and the report's fast-lane candidates drop git's global options before the
+  always-human and rule checks (`rulesHit`, shared with `alwaysHuman`).
+- An escaped `\(` in `find . \( -name a -o -name b \)` no longer trips the zsh glob-qualifier guard.
+- In a nested worktree, cd targets and path words are resolved with `realpathSync` before they count
+  as staying inside it; a symlink out of it, or a path that cannot be resolved, restores the checkout
+  view.
 
 ## [0.13.0] - 2026-09-28
 
