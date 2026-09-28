@@ -1382,7 +1382,7 @@ export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now
 // print, and nothing when every pipeline is inert and writes only notes; the others read it with
 // data heredocs dropped. ponytail: past the deadline the rest is not read and the command asks.
 function largeDeny(command, cwd, env, deadline) {
-  const rules = load("rules.json"), deny = {rules: rules.rules.filter(r => r.outcome === "deny")};
+  const rules = teamRules(load("rules.json"), cwd), deny = {rules: rules.rules.filter(r => r.outcome === "deny")};
   const c = command.replace(/\\\n/g, ""), bare = stripDataHeredocs(c), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join("");
   const code = onlyNotes(pipelines(c, 2 * COMMAND_BYTES, deadline)) ? null : stripDataHeredocs(c, true);
   if (Date.now() > deadline) return null;
