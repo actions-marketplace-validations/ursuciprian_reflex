@@ -1368,7 +1368,7 @@ export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now
   let best = own;
   for (const alt of depth < 2 ? [ruleSpelling(c), wordSpelling(c)] : []) {
     if (Date.now() > run.deadline) break;
-    const other = alt === TOO_MANY ? size(`over ${BRACE_WORDS * 4} words after brace expansion`) : alt ? precheck(alt, cwd, env, depth + 1, run) : null;
+    const other = alt ? precheck(alt, cwd, env, depth + 1, run) : null;
     if (other?.source === "rule" && !(best?.source === "rule" && (SEVERITY[best.outcome] ?? 0) >= (SEVERITY[other.outcome] ?? 0))) best = other;
   }
   if (depth === 0 && Date.now() > run.deadline && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
@@ -1394,7 +1394,7 @@ function largeDeny(command, cwd, env, deadline) {
 // Brace expansion as the shell does it, on a word's raw text: lists ({a,b}, nested), sequences
 // ({1..3}, {a..c}, {01..9..2}) and any number per word. Quoted or escaped braces and ${…} are text.
 // Each result keeps its quotes, so the rules read it with the other spellings. null: over BRACE_WORDS.
-const BRACE_WORDS = 256, TOO_MANY = Symbol("braces");
+const BRACE_WORDS = 256;
 function braceSeq([, x, y, step]) {
   const num = /\d/.test(x);
   if (num !== /\d/.test(y)) return undefined;
@@ -1428,16 +1428,18 @@ function braceWords(raw) {
 // The command with each word the shell reads differently from its text written plainly: escapes
 // and $'…' decoded (`ma\\in`, `$'ma\\x69n'`, `-\\f`, `pu\\sh`, only words whose value needs no
 // quoting), brace lists and sequences expanded into their words (`m{a,}in` is `main min`,
-// `ma{i..i}n` is `main`). null when nothing changes; TOO_MANY past BRACE_WORDS * 4 expanded words in all.
+// `ma{i..i}n` is `main`). null when nothing changes. A word whose expansion would pass BRACE_WORDS
+// (or BRACE_WORDS * 4 in all) is not expanded but marked unknown, `$_` in front of its text: to the
+// rules an unknown ref (a push to it is a push to a variable), and `for i in {1..300}` is no ask.
 const wordSpelling = s => {
   const words = shellWords(s);
   if (!words) return null;
   let out = s, n = 0;
   for (const w of [...words].reverse()) {
     const m = maskQuotes(w.raw, "_"), b = /[{}]/.test(m) ? braceWords(w.raw) : [w.raw];
-    if (b === null || (b.length > 1 && (n += b.length) > BRACE_WORDS * 4)) return TOO_MANY;
     let v = null;
-    if (b.length > 1 || b[0] !== w.raw) v = b.join(" ");
+    if (b === null || (b.length > 1 && (n += b.length) > BRACE_WORDS * 4)) v = "$_" + w.raw;
+    else if (b.length > 1 || b[0] !== w.raw) v = b.join(" ");
     else if (!w.exps.length && /\\|\$'/.test(m) && /^[^\s'"`$;&|<>()\\{}*?[\]#]*$/.test(w.value)) v = w.value;
     if (v !== null) out = out.slice(0, w.start) + v + out.slice(w.end);
   }
@@ -2366,8 +2368,8 @@ async function selfcheck() {
     "git --work-tree=$(pwd) push -f origin main", "git -C $((1)) push -f origin main", "git -C `pwd` push -f origin main", "git -C ${D} push -f origin main",
     "git -C $(git rev-parse --show-toplevel) push -f origin main"]) ok(pw(c) === "force-push-main", `force push main, an expanded git option value: ${c}`);
   ok(pw("git -C $(pwd) push --mirror") === "push-mirror" && pw("git -C $(pwd) push -f") === "force-push-unknown-branch", "expanded git -C: mirror, unknown branch");
-  ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin x{1..9999}") === "command-size",
-     "brace sequences and several braces per word are expanded for the rules; too many words ask");
+  ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin {main,x{1..999}}") === "force-push-main" &&
+     pw("for i in {1..300}; do echo $i; done") === null, "brace sequences and several braces per word are expanded for the rules; past the limit a word is an unknown ref, not a size ask");
   { const t0 = Date.now(); redact("echo " + "'a' ".repeat(40) + "done > gen.txt; make build"); ok(Date.now() - t0 < 500, "redact: a run of quoted words is linear"); }
   { const human = {rules: load("escalation.json").always_human.rules};
     ok(rulesHit("git -C . reset --hard", human)?.id === "destructive-delete" && !checkRules("git -C . reset --hard", human) && !rulesHit("git -C . status", human),
