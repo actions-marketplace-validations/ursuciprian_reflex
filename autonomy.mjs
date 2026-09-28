@@ -48,7 +48,7 @@ const inside = (dir, key) => key === "/" || dir === key || dir.startsWith(`${key
 export function alwaysHuman(j, call, env, {system1 = false} = {}) {
   if (!system1 && j.source === "rule") return {id: j.id ?? "rule", rule: "a deterministic rule decided it"};
   if (!system1 && j.source === "error") return {id: "error", rule: "Reflex could not judge it"};
-  const esc = teamEscalation(load("escalation.json"), call.cwd, String(call.command ?? "")).always_human;
+  const esc = teamEscalation(load("escalation.json"), call.cwd).always_human;
   if (!system1 && j.gate && esc.gates.includes(j.gate)) return {id: `gate:${j.gate}`, rule: `policy gate ${j.gate}`};
   const bare = stripDataHeredocs(String(call.command ?? ""));
   const haystack = [bare, `cwd=${call.cwd ?? ""}`, ...Object.entries(env ?? {}).map(([k, v]) => `${k}=${v}`)].join(" ");

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run every existing selfcheck and the onboarding journey without the user's configuration or keys.
 import assert from "node:assert/strict";
-import {cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync} from "node:fs";
+import {cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync} from "node:fs";
 import {spawn, spawnSync} from "node:child_process";
 import {createServer} from "node:http";
 import {tmpdir} from "node:os";
@@ -663,7 +663,9 @@ try {
   {
     const {precheck, decideSafe, CONFIG} = await import("./gate.mjs");
     const {alwaysHuman} = await import("./autonomy.mjs");
-    const {TRUST_FILE, parseTeam, regexError, teamPolicy, trustRepo, TEAM_BYTES} = await import("./team.mjs");
+    const {TRUST_FILE, parseTeam, regexError, teamPolicy} = await import("./team.mjs");
+    // trust as `reflex trust` records it (the function is private to the CLI)
+    const trustRepo = (dir, hash) => { mkdirSync(dirname(TRUST_FILE), {recursive: true}); writeFileSync(TRUST_FILE, JSON.stringify({version: 1, repos: {[realpathSync(dir)]: {sha256: hash}}})); };
     const home = join(scratch, "team-home"), repo = join(home, "work/api"), file = join(repo, ".reflex/policy.json");
     mkdirSync(join(repo, ".git"), {recursive: true});
     mkdirSync(join(repo, ".reflex"));
@@ -687,7 +689,6 @@ try {
     assert.equal(pc("git push --force origin main")?.outcome, "deny", "bundled rules still apply");
     assert.equal(pc("terraform destroy", join(home, "work"))?.id !== "team:no-tf-destroy", true, "outside the repo: no team policy");
     assert.ok(alwaysHuman({source: "jev", outcome: "ask"}, {command: "make check", cwd: repo}, {})?.id === "team:make-check", "team always-human patterns");
-    assert.ok(pc("x".repeat(TEAM_BYTES + 1))?.id === "team:size", "a command too large for the team patterns asks");
     // loosening: not without trust
     let t = teamPolicy(repo);
     assert.ok(t.trust === "untrusted" && !t.active_fastlane && !t.fastlane.length && !t.errors.length, JSON.stringify(t.errors));
@@ -712,11 +713,17 @@ try {
     assert.ok(t.trust === "trusted" && t.errors.length === 2 && !t.active_fastlane && pc("make lint") === null, JSON.stringify(t.errors));
     assert.ok(pc("terraform destroy")?.outcome === "deny" && pc("./seed-db")?.outcome === "ask", "valid parts of an invalid file apply");
     assert.ok(parseTeam("{").errors.length && parseTeam(JSON.stringify({version: 1, disable: {guard: true}})).errors[0].includes('unknown key "disable"'), "no key loosens");
-    for (const p of ["a.*b.*c", "(a+)+", "(a|b)*x", String.raw`(\w)\1`, "(?<=a)b", "(", "x".repeat(501)]) assert.ok(regexError(p), `rejected: ${p}`);
-    for (const p of [String.raw`\bkubectl\b.*\bdelete\b`, String.raw`\bdrop\s+(table|schema)\b`, "clusters/main-eu"]) assert.equal(regexError(p), null, p);
-    const slow = "kubectl ".repeat(1000) + "a".repeat(TEAM_BYTES - 8000 - 1), t0 = Date.now();
-    pc(slow);
-    assert.ok(Date.now() - t0 < 2000, `team patterns stay fast on a large command (${Date.now() - t0} ms)`);
+    // team patterns run in linear time: what the linear engine cannot run is rejected
+    const redos = String.raw`[\s\S]?`.repeat(24) + String.raw`[\s\S]{24}\x00`;
+    for (const p of [redos, String.raw`[\s\S]{0,60}`.repeat(6), String.raw`(\w)\1`, "(?=a)b", "(", "x".repeat(501)]) assert.ok(regexError(p), `rejected: ${p}`);
+    for (const p of [String.raw`\bkubectl\b.*\bdelete\b`, "a.*a.*b", "(a+)+b", String.raw`\bDROP\s+(table|schema)\b`, "clusters/main-eu"]) assert.equal(regexError(p), null, p);
+    write({version: 1, rules: [{id: "slow", outcome: "deny", before_read_only: true, rule: "slow", all: ["a.*a.*a.*b"]},
+      {id: "caps", outcome: "deny", rule: "caps", all: [String.raw`\bTERRAFORM\s+Destroy\b`]}]});
+    let t0 = Date.now();
+    pc("a".repeat(30000));
+    assert.ok(Date.now() - t0 < 2000, `team patterns stay fast on a hostile command (${Date.now() - t0} ms)`);
+    assert.equal(pc("Terraform DESTROY")?.id, "team:caps", "patterns stay case-insensitive");
+    write(policy);
     write(policy);
     // mode floor: shadow becomes enforce in the repo only, off stays off
     assert.equal(CONFIG.mode, "shadow");
@@ -727,6 +734,15 @@ try {
     CONFIG.mode = "off";
     assert.equal((await decideSafe({...open, cwd: repo})).effective, "pass", "off stays off");
     CONFIG.mode = "shadow";
+    // a .git an agent creates in a subdirectory does not shed the repository's policy; a relative cwd resolves
+    const sub = join(repo, "vendor/lib");
+    mkdirSync(join(sub, ".git"), {recursive: true});
+    assert.ok(pc("terraform destroy", sub)?.id === "team:no-tf-destroy" && teamPolicy(sub).mode === "enforce" && !teamPolicy(sub).fastlane.length,
+      "stricter parts of the enclosing repository still apply, its fast lane does not");
+    assert.equal((await decideSafe({...open, cwd: sub})).effective, "ask", "and its mode floor");
+    const here = process.cwd();
+    process.chdir(repo);
+    try { assert.equal(pc("terraform destroy", ".")?.id, "team:no-tf-destroy", "a relative cwd"); } finally { process.chdir(here); }
     // a .reflex above the repository root, or outside any repository, is never read
     const planted = join(home, "shared"), inner = join(planted, "proj");
     mkdirSync(join(planted, ".reflex"), {recursive: true});
@@ -739,13 +755,17 @@ try {
     const linked = join(home, "linked");
     mkdirSync(join(linked, ".git"), {recursive: true});
     mkdirSync(join(linked, ".reflex"));
-    (await import("node:fs")).symlinkSync(file, join(linked, ".reflex/policy.json"));
+    symlinkSync(file, join(linked, ".reflex/policy.json"));
     t = teamPolicy(linked);
     assert.ok(t.errors.length && !t.rules.length && !t.active_fastlane, "symlink: nothing read");
-    // tamper: an agent editing .reflex/ or granting trust is a human's call
+    // tamper: an agent editing .reflex/ or granting trust is a human's call, also from a script it runs
+    writeFileSync(join(repo, "grant.sh"), "#!/bin/sh\nx=1\nreflex trust .\n");
     for (const c of ["echo '{}' > .reflex/policy.json", "sed -i '' s/deny/ask/ .reflex/policy.json", "rm -rf .reflex", "cd .reflex && echo x > policy.json",
-      "cp /tmp/p.json .reflex/policy.json", "reflex trust .", "reflex trust --revoke .", "node team.mjs trust .", "reflex policy init", `python3 -c "open('.reflex/policy.json','w')"`])
+      "cp /tmp/p.json .reflex/policy.json", "reflex trust .", "reflex trust --revoke .", "node team.mjs trust .", "reflex policy init", `python3 -c "open('.reflex/policy.json','w')"`,
+      "rm -rf .ref*", "mv .r[e]flex /tmp/x", "git rm -r .ref*", "cd .ref* && rm policy.json", "find . -name policy.json -delete",
+      `node -e "import('/x/team.mjs').then(m => m.trustRepo('.'))"`, "cp t.json ~/.config/reflex/trusted.json", "bash grant.sh"])
       assert.equal(pc(c)?.id, "tamper", c);
+    assert.ok(pc("rm -rf build/*")?.id !== "tamper" && pc("rm -rf *.log")?.id !== "tamper", "a glob that cannot reach .reflex");
     assert.equal(pc("cat .reflex/policy.json")?.source, "read-only", "reading it is fine");
     // trust needs a human at a terminal: no terminal, or an agent session, is refused
     const before = readFileSync(TRUST_FILE, "utf8"), tenv = {...env, HOME: home, XDG_CONFIG_HOME: dirname(dirname(TRUST_FILE))};
