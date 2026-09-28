@@ -234,15 +234,15 @@ const READ_ONLY = new Set(("ls cat head tail less wc grep egrep rg fd find tree 
   "md5 shasum sha256sum od strings nl fold paste comm exit return free nproc lscpu seq").split(" "));
 // Flags that make an otherwise read-only tool run a program or write a file.
 const UNSAFE_FLAGS = new RegExp([
-  // sed is read by sedSafe, its options and its script, as sed parses them
-  String.raw`\bawk\b.*(system|getline|@include|@load)`, String.raw`\bawk\b[^']*'[^']*[|>][^']*'`, String.raw`\bawk\b[^"]*"[^"]*[|>][^"]*"`,
+  // sed and awk are read by sedSafe and awkSafe, their options and their programs, as they parse them
   String.raw`--pre\b`, String.raw`--(upload|receive)-pack`, String.raw`--hostname-bin\b`,
   String.raw`--post-renderer`, String.raw`--compress-program`, String.raw`\b(git|sort)\b[^|;&]*--output\b`, String.raw`--ext-diff`,
   String.raw`\s-f(print0?|printf|ls)\b`, String.raw`\s-ok(dir)?\b`, String.raw`\bfd\b.*\s-[a-zA-Z]*[xX]`,
   // -o clustered or with its value attached (-ro, -uo, -oFILE)
   String.raw`\b(sort|tree)\b[^|;&]*\s-[a-zA-Z]*o`, String.raw`--show-token`,
-  // a program from a file (awk and sed -f, gawk -i/-E/-l), yq writing in place or split files
-  String.raw`\b[gm]?awk\b[^|;&]*\s(-[a-zA-Z]*[fEilL]|--(file|exec|include|load|source))`,
+  // tree -R runs tree again in every directory, writing 00Tree.html with -H: any -R
+  String.raw`\btree\b[^|;&]*\s-[a-zA-Z]*R`,
+  // yq writing in place or split files
   String.raw`\byq\b[^|;&]*\s(-[a-zA-Z]*[is]|--(inplace|split-exp))`,
 ].join("|"));
 // Every prefix of an ip object that ip.c resolves to it (address comes before addrlabel, route before
@@ -563,6 +563,7 @@ const FLAG_SENSITIVE = new Set(["sed", "awk", "find", "fd", "rg", "sort", "tree"
   "git", "kubectl", "terraform", "aws", "helm", "gh", "docker", "npm", "brew", "nvidia-smi", "systemctl", "journalctl", "ip"]);
 const pathWord = (w, head) => !w.split && head !== "sed" && head !== "awk" && w.exps.every(x => x !== "?") &&
   /^[^-\0][^\0]*\//.test(w.value.slice(0, w.value.indexOf("\0")));
+const SORT_WRITES = ["output", "compress-program", "random-source", "temporary-directory"];
 function argsUnsafe(raw, head) {
   const words = shellWords(raw);
   if (!words) return true;
@@ -582,8 +583,11 @@ function argsUnsafe(raw, head) {
   const args = words.slice(k + 1);
   if (args.some(w => /[*?[]/.test(maskQuotes(w.raw, "_").replace(/\\./g, "__")))) return true;
   if (args.some(w => w.exps.length && !pathWord(w, head))) return true;
-  // printf reads options (-v) in its first word only
-  if (head === "printf") return !!args[0] && /^-\w*v/.test(args[0].value);
+  // printf reads options (-v) in its first word only, and a format that expands is unknown
+  if (head === "printf") return !!args[0] && (args[0].exps.length > 0 || /^-\w*v/.test(args[0].value));
+  // getopt_long takes any unique prefix: --o is --output, --t --temporary-directory
+  if (head === "sort" && args.some(w => /^--[\w-]+(=|$)/.test(w.value) &&
+      SORT_WRITES.some(o => ("--" + o).startsWith(w.value.split("=")[0])))) return true;
   if (head === "sed") return !sedSafe(args);
   if (head === "awk") return !awkSafe(args);
   return false;
@@ -1277,6 +1281,7 @@ function nestedCheckout(cwd) {
 // flag letters is tried). A path that cannot be resolved (a word with an expansion, a link realpath
 // refuses) or a check past run.deadline restores the checkout view. Real paths are cached per
 // directory for the call (run.real), and the first path that leaves root ends the check.
+const PATH_MAX = 4096;
 function staysNested(command, cwd, root, run = {deadline: Date.now() + PRECHECK_MS}) {
   const t = command.replace(/["'\\]/g, "");
   // CDPATH changes where a relative cd goes; a symlink made in the command can point anywhere
@@ -1313,12 +1318,14 @@ function staysNested(command, cwd, root, run = {deadline: Date.now() + PRECHECK_
   // a cd target that does not exist holds no link: what is under it resolves as it does
   for (const b of bases) if (b !== cwd && !realDir(b)) bases.delete(b);
   for (const w of words) {
+    if (late()) return false;
     const v = w.value, paths = new Set([v, v.replace(/^[^=]*=/, "")]);
-    // -Cdir, -tdir, -ofile, -rodir: the value after any number of flag letters
-    const flags = /^-[a-zA-Z]+/.exec(v)?.[0].length ?? 0;
+    // -Cdir, -tdir, -ofile, -rodir: the value after one to three flag letters
+    const flags = /^-[a-zA-Z]{1,3}/.exec(v)?.[0].length ?? 0;
     for (let k = 2; k <= flags && k < v.length; k++) paths.add(v.slice(k));
     for (const x of paths) for (const b of bases) {
       if (late()) return false;
+      if (x.length > PATH_MAX) continue;   // no file has that name: the command fails there
       const p = resolve(b, x);
       if ((p + "/").startsWith(root + "/") && !inside(p)) return false;
     }
@@ -1370,7 +1377,7 @@ export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now
   let best = own;
   for (const alt of depth < 2 ? [ruleSpelling(c), wordSpelling(c)] : []) {
     if (Date.now() > run.deadline) break;
-    const other = alt ? precheck(alt, cwd, env, depth + 1, run) : null;
+    const other = alt === TOO_MANY ? size(`over ${BRACE_WORDS} words from one brace word`) : alt ? precheck(alt, cwd, env, depth + 1, run) : null;
     if (other?.source === "rule" && !(best?.source === "rule" && (SEVERITY[best.outcome] ?? 0) >= (SEVERITY[other.outcome] ?? 0))) best = other;
   }
   if (depth === 0 && Date.now() > run.deadline && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
@@ -1381,6 +1388,7 @@ export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now
 // The views are precheckAs's: "shell" rules read the command without interpreter heredocs that only
 // print, and nothing when every pipeline is inert and writes only notes; the others read it with
 // data heredocs dropped. ponytail: past the deadline the rest is not read and the command asks.
+const same = x => x;
 function largeDeny(command, cwd, env, deadline) {
   const rules = teamRules(load("rules.json"), cwd), deny = {rules: rules.rules.filter(r => r.outcome === "deny")};
   const c = command.replace(/\\\n/g, ""), bare = stripDataHeredocs(c), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join("");
@@ -1388,9 +1396,13 @@ function largeDeny(command, cwd, env, deadline) {
   if (Date.now() > deadline) return null;
   for (let at = 0; ; at += COMMAND_BYTES / 2) {
     const b = bare.slice(at, at + COMMAND_BYTES), s = code?.slice(at, at + COMMAND_BYTES);
-    for (const f of [x => x, ruleSpelling, wordSpelling]) {
+    for (const f of [same, ruleSpelling, wordSpelling]) {
       if (Date.now() > deadline) return null;
-      const v = f(b) ?? b, sv = code === null ? null : f(s) ?? s;
+      // another spelling that changes nothing is not checked again, nor one view twice
+      const spell = x => { const r = f(x); return typeof r === "string" ? r : null; };
+      const bv = spell(b), cv = code === null ? null : code === bare ? bv : spell(s);
+      if (f !== same && bv === null && cv === null) continue;
+      const v = bv ?? b, sv = code === null ? null : cv ?? s;
       const hit = checkRules(v + ctx, deny, v, {shell: sv === null ? false : [sv + ctx, sv]});
       if (hit) return {outcome: hit.outcome, rule: hit.rule, id: hit.id, source: "rule", policy_version: rules.version};
     }
@@ -1431,25 +1443,47 @@ function braceWords(raw) {
   }
   return out;
 }
+// A word whose braces are all sequences ({1..300}, x{01..20}.log), at least one of them numeric:
+// every word it expands to has a digit where each numeric sequence was, so no ref or option comes
+// of it. The count only; one of its words stands for all. null for any other word.
+const RANGE = /\{(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?\}/g;
+function rangeWord(raw) {
+  const m = maskQuotes(raw, "_").replace(/\\[\s\S]/g, "__"), seqs = [...m.matchAll(RANGE)];
+  if (!seqs.length || /[{}]/.test(m.replace(RANGE, "")) || !seqs.some(q => /\d/.test(q[1]) && /\d/.test(q[2]))) return null;
+  let count = 1, word = "", last = 0;
+  for (const q of seqs) {
+    if (/\d/.test(q[1]) !== /\d/.test(q[2])) return null;
+    const a = /\d/.test(q[1]) ? +q[1] : q[1].charCodeAt(0), b = /\d/.test(q[2]) ? +q[2] : q[2].charCodeAt(0);
+    count *= Math.floor(Math.abs(b - a) / (Math.abs(+q[3] || 1) || 1)) + 1;
+    word += raw.slice(last, q.index) + q[1];
+    last = q.index + q[0].length;
+  }
+  return {count, word: word + raw.slice(last)};
+}
 // The command with each word the shell reads differently from its text written plainly: escapes
 // and $'…' decoded (`ma\\in`, `$'ma\\x69n'`, `-\\f`, `pu\\sh`, only words whose value needs no
 // quoting), brace lists and sequences expanded into their words (`m{a,}in` is `main min`,
-// `ma{i..i}n` is `main`). null when nothing changes. A word whose expansion would pass BRACE_WORDS
-// (or BRACE_WORDS * 4 in all) is not expanded but marked unknown, `$_` in front of its text: to the
-// rules an unknown ref (a push to it is a push to a variable), and `for i in {1..300}` is no ask.
+// `ma{i..i}n` is `main`). null when nothing changes. TOO_MANY when a word would expand past
+// BRACE_WORDS (or all of them past BRACE_WORDS * 4): nobody read what it expands to, so it asks.
+// A numeric sequence past the limit (rangeWord) is one of its words instead: `for i in {1..300}`.
+const TOO_MANY = Symbol("braces");
 const wordSpelling = s => {
   const words = shellWords(s);
   if (!words) return null;
-  let out = s, n = 0;
-  for (const w of [...words].reverse()) {
-    const m = maskQuotes(w.raw, "_"), b = /[{}]/.test(m) ? braceWords(w.raw) : [w.raw];
+  const out = [];
+  let n = 0, last = 0, changed = false;
+  for (const w of words) {
+    const m = maskQuotes(w.raw, "_"), r = /[{}]/.test(m) ? rangeWord(w.raw) : null;
+    const b = r && r.count > BRACE_WORDS ? [r.word] : /[{}]/.test(m) ? braceWords(w.raw) : [w.raw];
+    if (b === null || (b.length > 1 && (n += b.length) > BRACE_WORDS * 4)) return TOO_MANY;
     let v = null;
-    if (b === null || (b.length > 1 && (n += b.length) > BRACE_WORDS * 4)) v = "$_" + w.raw;
-    else if (b.length > 1 || b[0] !== w.raw) v = b.join(" ");
+    if (b.length > 1 || b[0] !== w.raw) v = b.join(" ");
     else if (!w.exps.length && /\\|\$'/.test(m) && /^[^\s'"`$;&|<>()\\{}*?[\]#]*$/.test(w.value)) v = w.value;
-    if (v !== null) out = out.slice(0, w.start) + v + out.slice(w.end);
+    if (v === null) continue;
+    out.push(s.slice(last, w.start), v);
+    last = w.end; changed = true;
   }
-  return out !== s ? out : null;
+  return changed ? out.join("") + s.slice(last) : null;
 };
 function precheckAs(command, cwd, env, run, alt = false) {
   // plus the repo's team policy (.reflex/policy.json, team.mjs): its rules only add asks and denies
@@ -2242,7 +2276,10 @@ async function selfcheck() {
   // option-sensitive tool's words (a binding or -- is no exception)
   ok(readOnly("awk '{print $2}' f") && !readOnly("awk '{print ENVIRON[\"HOME\"]}' f") && !readOnly("awk 'BEGIN{close(\"x\")}'"), "awk: program text without @ system getline | > close fflush PROCINFO ENVIRON");
   ok(readOnly("find . \\( -name a -o -name b \\)") && !readOnly("find . \\( -name a \\) f(+x)"), "find: an escaped ( is no zsh glob qualifier");
-  ok(readOnly("awk '/closed/' f") && !readOnly("awk 'BEGIN{fflush()}'"), "awk: function names as whole words");
+  ok(readOnly("awk '/closed/' f") && !readOnly("awk 'BEGIN{fflush()}'") && !readOnly("awk 'BEGIN{system(\"x\")}'"), "awk: function names as whole words, awkSafe alone");
+  ok(!readOnly("sort --o=out f") && !readOnly("sort --temp=/tmp f") && readOnly("sort --reverse f"), "sort: a prefix of a long option that writes");
+  ok(!readOnly("tree -R -H . -o x") && !readOnly("tree -R") && readOnly("tree -L 2"), "tree -R runs tree again, writing with -H");
+  ok(!readOnly('printf "a/$X" x') && readOnly("printf a/b x"), "printf: a format that expands is unknown");
   ok(!readOnly("printf '%s' *") && !readOnly("printf '%s' $X") && readOnly("printf '%s\\n' x"), "printf: the glob and expansion guard comes first");
   ok(!readOnly("sort -ro out f") && !readOnly("sort -oout f") && !readOnly("fd x -xrm") && !readOnly("yq -s.a f") && readOnly("sort -r f"), "short output flags clustered or with a value attached");
   ok(readOnly('gh api "repos/$R/pulls"') && !readOnly('F=notes.txt; sed -n 1p "$F"') && !readOnly("sed -n 1p src/*.md") && !readOnly("xxd -- *"),
@@ -2374,8 +2411,10 @@ async function selfcheck() {
     "git --work-tree=$(pwd) push -f origin main", "git -C $((1)) push -f origin main", "git -C `pwd` push -f origin main", "git -C ${D} push -f origin main",
     "git -C $(git rev-parse --show-toplevel) push -f origin main"]) ok(pw(c) === "force-push-main", `force push main, an expanded git option value: ${c}`);
   ok(pw("git -C $(pwd) push --mirror") === "push-mirror" && pw("git -C $(pwd) push -f") === "force-push-unknown-branch", "expanded git -C: mirror, unknown branch");
-  ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin {main,x{1..999}}") === "force-push-main" &&
-     pw("for i in {1..300}; do echo $i; done") === null, "brace sequences and several braces per word are expanded for the rules; past the limit a word is an unknown ref, not a size ask");
+  ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin {main,x{1..999}}") === "command-size" &&
+     pw("for i in {1..300}; do echo $i; done") === null && pw("rm -rf ~; echo {a..z}{a..z}") === "rm-root",
+     "brace words: expanded for the rules; past the limit an ask (a deny still wins), a numeric sequence counted only");
+  { const t = Date.now(); wordSpelling("echo " + "a\\b ".repeat(8000)); ok(Date.now() - t < 100, "wordSpelling: 8,000 decoded words in under 100 ms"); }
   { const t0 = Date.now(); redact("echo " + "'a' ".repeat(40) + "done > gen.txt; make build"); ok(Date.now() - t0 < 500, "redact: a run of quoted words is linear"); }
   { const human = {rules: load("escalation.json").always_human.rules};
     ok(rulesHit("git -C . reset --hard", human)?.id === "destructive-delete" && !checkRules("git -C . reset --hard", human) && !rulesHit("git -C . status", human),
@@ -2402,16 +2441,19 @@ async function selfcheck() {
     "php <<'EOF'\n<?php\n// ?><?php system('rm -rf ~'); ?>\nEOF", "ruby - <<'EOF'\n#!ruby -r./x\nputs 'rm -rf ~'\nEOF", "python3 - <<'EOF'\nprint('rm -rf ~ é')\nEOF"])
     ok(pw(c) === "rm-root", `heredoc body with a comment or non-ASCII is code: ${c}`);
   ok(!stripDataHeredocs("perl - <<'EOF'\n#!/usr/bin/env -Ssh\\_-c\\_\"touch\\_D1;:\"\nprint 'x';\nEOF", true).includes("<<DATA"), "a perl #! line keeps the body in");
+  ok(pw("git push -f origin main; echo " + "x".repeat(33 * 1024)) === "force-push-main", "over 32 KB: the deny rules run on each spelling that changes the text, once per view");
   ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size" && pw("rm -rf ~; echo " + "x".repeat(33 * 1024)) === "rm-root" &&
      pw("echo '- rm -rf ~ " + "x".repeat(33 * 1024) + "' >> NOTES.md") === "command-size", "over 32 KB asks, unless a deny rule fires on the views precheck reads");
   { const t = Date.now(); pw("ssh -o ".repeat(4600)); ok(Date.now() - t < 3500, "32 KB of ssh -o is checked in time"); }
   for (const c of ["echo x >> ~/.zshrc", "echo x > ~/.bash_aliases", "echo 'use nix' > .envrc", "tee -a ~/.profile < /tmp/p", "sed -i '' s/a/b/ ~/.zprofile",
     "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f",
-    "cp dots/.zshrc ~/", "cp dots/.zshrc ~/.", "tee a.txt ~/.zshrc"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
-  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "tee a.txt b.txt", "cp dots/.zshrc /tmp/", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
+    "cp dots/.zshrc ~/", "cp dots/.zshrc ~/.", "tee a.txt ~/.zshrc", "cp dots/.zshrc /tmp/"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
+  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "tee a.txt b.txt", "cp a.txt /tmp/", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
     "diff <(sort ~/.zshrc) x"]) ok(pw(c) !== "shell-startup", `not a shell startup write: ${c}`);
   { const startup = {rules: load("rules.json").rules.filter(r => r.id === "shell-startup")}, c = "tee ".repeat(8192), t = Date.now();
-    ok(!checkRules(c, startup, c) && Date.now() - t < 50, "shell-startup: 32 KB of tee is checked in under 50 ms"); }
+    ok(!checkRules(c, startup, c) && Date.now() - t < 50, "shell-startup: 32 KB of tee is checked in under 50 ms");
+    const d = "cat .zshrc ".repeat(2979), t2 = Date.now();
+    ok(!checkRules(d, startup, d) && Date.now() - t2 < 10, "shell-startup: 32 KB of cat .zshrc is checked in under 10 ms"); }
   ok(precheck("bash -n ~/.bashrc", "/w", {})?.source === "fast-lane", "bash -n stays in the fast lane");
   for (const c of ["git push -f origin ma\\in", "git push -f origin $'ma\\x69n'", "git push -f origin m{a,}in", "git push -f origin \\main", "git pu\\sh -f origin main",
     "git push -\\f origin main", "git push --\\force origin main", "git push origin --\\delete main", "git push -f origin HEAD:ma\\ster"])
@@ -2521,6 +2563,8 @@ async function selfcheck() {
     ok(pw("cp -tup gate.mjs", nested) === "tamper" && pw("cp -tin gate.mjs", nested) !== "tamper", "nested checkout: an attached option value is resolved too");
     { const t = Date.now(), c = Array.from({length: 600}, (_, i) => `cd d${i} && ls x${i}`).join(" ; ").slice(0, 8192);
       ok(pw(c, nested) !== "tamper" && Date.now() - t < 500, "nested checkout: 8 KB with many cds is checked in under 500 ms"); }
+    { const t = Date.now(), c = "ls " + ("-a" + "b".repeat(4000) + " ").repeat(2);
+      ok(pw(c, nested) !== "tamper" && Date.now() - t < 500, "nested checkout: long option words are cut after 1 to 3 flag letters, in under 500 ms"); }
   } finally { rmSync(nested, {recursive: true, force: true}); }
 
   // policy
