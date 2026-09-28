@@ -1,6 +1,6 @@
 {
   "name": "reflex",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Pre-execution risk gate and prompt injection guard for Codex CLI: judges every Bash command and subagent spawn before it runs, with local rules, an editable policy, optional TypeSafe Jev (System One) judgments, System 2 escalation and a human approval queue. Shadow mode by default, no API key needed.",
   "author": {
     "name": "Ciprian Ursu",
