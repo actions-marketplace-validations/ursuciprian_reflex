@@ -274,7 +274,7 @@ if (argv.includes("--selfcheck")) {
         const pre = hooks.PreToolUse.find(g => g.hooks.some(h => h.command.includes(q(GATE))));
         const s = JSON.parse(first);
         ok(pre.matcher === "Bash|Task|Agent" && s.model === "opus" && s.env.FOO === "1" && s.permissions.allow[0] === "Bash(ls)" &&
-           s.permissions.ask.includes("Bash(rm *)") && s.permissions.ask.some(r => r.startsWith("Edit(")) &&
+           s.permissions.ask.includes("Bash(rm *)") && s.permissions.ask.some(r => r.startsWith("Edit(")) && s.permissions.ask.includes("Edit(**/.reflex/**)") &&
            !s.permissions.ask.some(r => r.startsWith("Write(")), "claude: matcher, foreign settings and guard rules (Edit only; an old Write rule is removed)");
       } else ok(hooks.PreToolUse.some(g => g.matcher === "^(Bash|spawn_agent)$"), "codex: Bash and spawn_agent");
       run("--agent", agent);

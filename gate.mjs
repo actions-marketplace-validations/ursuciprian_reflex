@@ -1406,7 +1406,7 @@ function precheckAs(command, cwd, env) {
       (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // A repo's team policy (.reflex/) and the user's trust in it (team.mjs): a human's call.
-  if (/\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b/.test(command.replace(/["'\\]/g, "")) || /(^|[\s\/=:>])\.reflex(?=[\/\s;&|)]|$)/.test(writes))
+  if (/\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b/.test(command.replace(/["'\\]/g, "")) || /(^|[^\w.-])\.reflex(?=[^\w.-]|$)/.test(writes))
     hold(ruled({outcome: "ask", rule: "changes a team policy (.reflex/) or trusts one (reflex trust)", id: "tamper"}));
   // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
   if (/\bsuggest\b[^\n;&|]*\s--write\b/.test(command.replace(/["'\\]/g, "")))
