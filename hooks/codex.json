@@ -1,0 +1,59 @@
+{
+  "description": "Reflex pre-execution gate, instruction layer and prompt injection guard for Codex CLI. Stands down when reflex setup already installed the same hooks in ~/.codex/hooks.json.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|spawn_agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/gate.mjs\" --codex --plugin",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|spawn_agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/gate.mjs\" --codex-post --plugin",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "^Bash$|^mcp__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/guard.mjs\" --codex --plugin",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/instructions.mjs\" --codex --plugin",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/guard.mjs\" --codex-prompt --plugin",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
