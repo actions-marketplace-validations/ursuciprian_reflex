@@ -530,21 +530,22 @@ function sedScriptSafe(s) {
 // --source): any spelling, any unique prefix, a value attached or not.
 const AWK_LONG = ["file", "exec", "include", "load", "source", "profile", "pretty-print", "dump-variables", "debug"];
 // -W takes a long option as its value (-W dump-variables=f). The program text is checked as the
-// shell passes it (sys''tem, $'\x73ystem'), with UNSAFE_FLAGS' awk words: system, getline, @include,
-// @load, and a pipe or redirect in the program.
+// shell passes it (sys''tem, $'\x73ystem'): no @ (gawk @include, @load, indirect calls), system,
+// getline, | or > (pipes and redirects, and > as a comparison too), close, fflush, PROCINFO or ENVIRON.
+const AWK_UNSAFE = /[@|>]|system|getline|close|fflush|PROCINFO|ENVIRON/;
 const awkLong = name => !name || AWK_LONG.some(o => o.startsWith(name.split("=")[0]));
 function awkSafe(args) {
   let program = false, dd = false;
   for (let i = 0; i < args.length; i++) {
     const v = args[i].value;
     if (/\b(system|getline)\b|@include|@load/.test(v)) return false;
-    if (dd || v === "-" || !v.startsWith("-")) { if (!program) { program = true; if (/[|>]/.test(v)) return false; } dd = true; continue; }
+    if (dd || v === "-" || !v.startsWith("-")) { if (!program) { program = true; if (AWK_UNSAFE.test(v)) return false; } dd = true; continue; }
     if (v === "--") { dd = true; continue; }
     if (v.startsWith("--")) { if (awkLong(v.slice(2))) return false; continue; }
     for (let k = 1; k < v.length; k++) {
       const f = v[k];
       if (f === "W") { if (awkLong(k < v.length - 1 ? v.slice(k + 1) : args[++i]?.value ?? "")) return false; break; }
-      if (f === "e") { const t = k < v.length - 1 ? v.slice(k + 1) : args[++i]?.value ?? ""; if (/[|>]/.test(t)) return false; program = true; break; }
+      if (f === "e") { const t = k < v.length - 1 ? v.slice(k + 1) : args[++i]?.value ?? ""; if (AWK_UNSAFE.test(t)) return false; program = true; break; }
       if (/[Fv]/.test(f)) { if (k === v.length - 1) i++; break; }
       if (/[fEilLpodD]/.test(f)) return false;
     }
@@ -2109,6 +2110,7 @@ async function selfcheck() {
     ok(readOnly(cmd), `read-only: ${cmd}`);
 
   // review of #43, item 1: no expansion of any kind in an option-sensitive tool's words, a binding or -- no exception
+  ok(readOnly("awk '{print $2}' f") && !readOnly("awk '{print ENVIRON[\"HOME\"]}' f") && !readOnly("awk 'BEGIN{close(\"x\")}'"), "awk: program text without @ system getline | > close fflush PROCINFO ENVIRON");
   ok(readOnly('gh api "repos/$R/pulls"') && !readOnly('F=notes.txt; sed -n 1p "$F"') && !readOnly("sed -n 1p src/*.md") && !readOnly("xxd -- *"),
      "option-sensitive tools: a quoted $name after a literal path only");
 
