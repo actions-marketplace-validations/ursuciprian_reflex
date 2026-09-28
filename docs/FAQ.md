@@ -24,6 +24,7 @@ docs. The short version of this page is the [FAQ section of the README](../READM
 - [Does Reflex protect coding agents against prompt injection?](#does-reflex-protect-coding-agents-against-prompt-injection)
 - [How do I reduce permission prompts in Claude Code and approve agent commands automatically but safely?](#how-do-i-reduce-permission-prompts-in-claude-code-and-approve-agent-commands-automatically-but-safely)
 - [Can Reflex run autonomous coding agents with no human watching?](#can-reflex-run-autonomous-coding-agents-with-no-human-watching)
+- [How do I share Reflex rules with my team, like Claude Code team settings?](#how-do-i-share-reflex-rules-with-my-team-like-claude-code-team-settings)
 - [How do I try Reflex safely before enforcing it?](#how-do-i-try-reflex-safely-before-enforcing-it)
 - [How do I uninstall Reflex?](#how-do-i-uninstall-reflex)
 
@@ -285,6 +286,19 @@ System 2 judging what the rules do not cover.
 
 See: [GUIDE: autonomous agents](GUIDE.md#autonomous-agents),
 [docs/SETUP.md: the autonomous profile](SETUP.md#7-optional-the-autonomous-profile).
+
+## How do I share Reflex rules with my team, like Claude Code team settings?
+
+Commit `.reflex/policy.json` at the repository root (`reflex policy init` writes a starter). Every
+teammate's Reflex applies it while Claude Code, Codex CLI or another supported agent works in that
+repository: extra ask and deny rules, always-human patterns, production markers and a mode floor
+such as `enforce`. These team guardrails for AI coding agents can only make Reflex stricter. A team
+fast lane, the one part that loosens, applies only after each teammate runs `reflex trust .` in
+their own terminal, and only while the file keeps the hash they trusted. An agent that edits
+`.reflex/` or runs `reflex trust` gets a tamper ask, and a `.reflex/` above the repository root is
+never read.
+
+See: [GUIDE: team policy](GUIDE.md#team-policy-share-reflex-rules-across-a-repo).
 
 ## How do I try Reflex safely before enforcing it?
 
