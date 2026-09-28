@@ -701,12 +701,16 @@ pipelines only write notes (`git commit -m "prod fix"`) is not production.
 **What the agent sees.** A frozen command gets a rule decision with a reason such as
 
 ```
-reflex (rule): change freeze: Friday after 15:00 (Europe/Bucharest); production (cwd=/infra/envs/prod)
+reflex (rule): change freeze: Friday after 15:00 (Europe/Bucharest); production (cwd)
 ```
+
+The reason names the kind of marker (`cwd`, `aws_profile`, `kube_context`, `command`), never its
+value, since it can reach a webhook. The trace and `reflex audit` keep the matched text.
 
 It is a deterministic decision, so it applies in shadow mode too, and in the autonomous profile it
 is in the always-human class: System 2 never approves it. A human's approval in the approval queue
-can lift a freeze ask for that one command; nothing lifts a deny.
+can lift a freeze ask for that one command, but only when the item was parked and answered inside
+the window, so an approval given before the freeze never carries into it. Nothing lifts a deny.
 
 **It only tightens.** A window has no outcome that passes. A freeze outcome replaces a pass (the
 read-only list excepted), a fast lane pass, a Jev or local judgment, and a rule ask when the window
@@ -715,8 +719,8 @@ an unknown field, a day such as `friday`, a time such as `9:00`, a date that doe
 unknown time zone or an outcome other than `ask` or `deny` is an error, never a smaller window.
 In a team policy, an invalid window makes the file invalid, so its fast lane and webhook are off
 while its valid stricter parts, other windows included, still apply. In `config.json`, an invalid
-window is a configuration error, and until you fix it every command asks, as with any invalid
-setting. `reflex doctor` names the window and the problem.
+window is never dropped: until you fix it, every command that is not read-only asks, while the
+rules keep running (a rule deny stays a deny). `reflex doctor` names the window and the problem.
 
 **Seeing it.** `reflex status` prints `Change freeze: ACTIVE now: ...` or `none active`, with the
 number of windows, for `config.json` and the team policy of the directory it runs in.
@@ -724,7 +728,10 @@ number of windows, for `config.json` and the team policy of the directory it run
 command would get. `reflex audit --prod-only` lists what happened during a freeze.
 
 **Limits.** The window is read from the machine's clock. You can edit your own `config.json` or
-turn Reflex off (`--mode off`); a freeze is a control on the agent, not on you. A team policy's
+turn Reflex off (`--mode off`, where no freeze applies); a freeze is a control on the agent, not on
+you. Production is read from the command and its context, not from the scripts it runs: a
+`./deploy.sh` whose only production reference is inside the script is not frozen by a `prod` window
+(use `"applies_to": "all"` for a full stop). A team policy's
 windows are protected like the rest of the file: an agent shell command that writes `.reflex/` gets a
 tamper ask, and code review protects the committed file. The production markers read text, so a
 command that names production in an argument (`gh pr create --title "prod fix"`) counts, which only
@@ -783,7 +790,7 @@ Reflex can post decisions to a webhook, for a Slack channel or a log pipeline:
 `on` lists what is sent: `deny` and `ask` (what the agent was told) and `prod` (any judged
 production command, whatever the decision). The default is `["deny"]`. `format` is `json` (default:
 an object with `event: "reflex.decision"`, time, agent, session, cwd, `prod`, `prod_by`, command,
-decision, judged, mode, source, `rule_id` and reason) or `slack` (a `text` message, with `<`, `>`
+decision, judged, mode, source, `rule_id` and reason; the cwd has your home directory as `~`) or `slack` (a `text` message, with `<`, `>`
 and `&` escaped so a command cannot mention a channel).
 
 A webhook is data egress, so it is held to these rules:

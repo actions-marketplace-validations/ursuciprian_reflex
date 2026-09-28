@@ -32,7 +32,7 @@ import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
 import {globsReflex, teamMode, teamPolicy, teamRules} from "./team.mjs";
-import {activeFreeze, parseFreeze} from "./freeze.mjs";
+import {activeFreeze, inWindow, parseFreeze} from "./freeze.mjs";
 import {notifyLater, notifyTarget} from "./notify.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -179,7 +179,7 @@ export const load = f => JSON.parse(readFileSync(setupFile(f), "utf8"));
 export function configurationError() {
   return USER_CONFIG_ERROR ?? (!ENGINES.includes(CONFIG.engine) ? "engine must be local, jev or laya"
     : !["off", "shadow", "enforce"].includes(CONFIG.mode) ? "mode must be off, shadow or enforce"
-    : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on" : layaError() ?? ladderError() ?? CONFIG.freeze.errors[0] ?? null);
+    : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on" : layaError() ?? ladderError());
 }
 // engine laya promises that nothing leaves the machine: a loopback URL, a known checkpoint, a sane port.
 function layaError() {
@@ -1410,12 +1410,20 @@ export function prodTier(command, cwd, env) {
 }
 // A change freeze (freeze.mjs) in force now, from config.json and the team policy, as a rule decision:
 // it asks or denies in every mode, and a rule's deny or an equal rule outcome keeps its own reason.
+// An invalid window in config.json is never dropped: it asks for every command that is not read-only
+// until it is fixed, while the rules keep running (a rule deny stays a deny).
+// The reason names the marker's kind, never its value: it reaches the agent, the trace and a webhook.
 function frozen(quick, cwd, tier, now = new Date()) {
   if (quick?.source === "read-only") return quick;
-  const w = activeFreeze([...CONFIG.freeze.windows, ...(teamPolicy(cwd)?.freeze ?? [])], now, tier.prod);
+  const bad = CONFIG.freeze.errors.length ? [{outcome: "ask", applies_to: "all", reason: `invalid change freeze in ${USER_CONFIG_FILE} (${CONFIG.freeze.errors[0]}); every command asks until it is fixed`}] : [];
+  const w = activeFreeze([...bad, ...CONFIG.freeze.windows, ...(teamPolicy(cwd)?.freeze ?? [])], now, tier.prod);
   if (!w || (quick?.source === "rule" && (SEVERITY[quick.outcome] ?? 0) >= SEVERITY[w.outcome])) return quick;
-  return {outcome: w.outcome, rule: `${w.reason}${tier.prod ? `; production (${tier.why})` : ""}`, id: "freeze", source: "rule", policy_version: load("rules.json").version};
+  return {outcome: w.outcome, rule: `${w.reason}${tier.prod ? `; production (${tier.by})` : ""}`, id: "freeze", window: w, source: "rule", policy_version: load("rules.json").version};
 }
+// A queue approval lifts a freeze ask only when the item was parked and answered inside that window,
+// so the human saw the freeze: an approval from before the window never carries into it.
+export const freezeApproved = (w, q) => !w.days && !w.after && !w.before && !w.from && !w.to ? false
+  : [q.ladder?.queue_created, q.ladder?.decided_at].every(t => t && inWindow(w, new Date(t)));
 // The deny rules on a command over COMMAND_BYTES: windows of that size, half of it apart (a match up
 // to COMMAND_BYTES / 2 long is inside one), each as written and in the other spellings, until `deadline`.
 // The views are precheckAs's: "shell" rules read the command without interpreter heredocs that only
@@ -1759,7 +1767,8 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   // session, within its TTL. A deterministic deny is never lifted, not even by an approval.
   let resumed = false;
   if (CONFIG.mode === "enforce" && !background && CONFIG.queue.enabled && !(quick?.source === "rule" && quick.outcome === "deny")) {
-    const q = quick?.source === "read-only" ? null : queueAnswer(call);
+    let q = quick?.source === "read-only" ? null : queueAnswer(call);
+    if (q && q.outcome !== "deny" && quick?.id === "freeze" && !freezeApproved(quick.window, q)) q = null;
     if (q) return finish(q, call, q.outcome === "deny" ? "deny" : allowSetting(holdAllow(q, call)).outcome === "allow" ? "allow" : "pass", {env});
     // a human lifted a runaway stop of this command: the guard steps aside once, the gate does not.
     // A human's deny of the stop is a deny.
@@ -2003,6 +2012,8 @@ export function append(path, obj) {
   appendFileSync(path, [obj].flat().map(o => JSON.stringify(o) + "\n").join(""));   // one write: a batch stays together
 }
 
+// The home directory as ~, so a webhook does not carry the local account name.
+const tilde = p => p === homedir() || p.startsWith(homedir() + "/") ? `~${p.slice(homedir().length)}` : p;
 function trace(j, call, effective) {
   const cmd = redact(call.command);
   const state = j.state ?? {call: {title: cmd.slice(0, 160), command: cmd, cwd: call.cwd}};
@@ -2017,7 +2028,7 @@ function trace(j, call, effective) {
   // the decision webhook (notify.mjs): redacted, detached, never waited for; a trusted team policy may add one
   const targets = [CONFIG.notify.target, teamPolicy(call.cwd)?.notify].filter(Boolean);
   if (targets.length) notifyLater(targets, {ts: new Date().toISOString(), agent: call.agent ?? null, session_id: call.session_id ?? null,
-    cwd: redact(call.cwd ?? ""), prod: !!call.tier?.prod, prod_by: call.tier?.prod ? call.tier.by : null, command: cmd.slice(0, 500),
+    cwd: tilde(redact(call.cwd ?? "")), prod: !!call.tier?.prod, prod_by: call.tier?.prod ? call.tier.by : null, command: cmd.slice(0, 500),
     decision: effective === "pass" || !effective ? "pass" : effective, judged: j.outcome, mode: CONFIG.mode, source: j.source, rule_id: j.id ?? null,
     reason: redact(j.rule ?? "").slice(0, 300)});
 }

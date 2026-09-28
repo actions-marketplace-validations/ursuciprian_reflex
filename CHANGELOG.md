@@ -16,7 +16,9 @@ All notable changes to Reflex are documented here. The format follows
   decision such as `change freeze: Friday after 15:00 (Europe/Bucharest)`. It applies in every
   mode, is in the always-human class, overrides a fast lane pass and never softens a rule deny.
   Validation is strict: an invalid window makes a team policy invalid (no fast lane, no webhook;
-  valid windows still apply) and is a configuration error in `config.json` (every command asks).
+  valid windows still apply), and in `config.json` it makes every command that is not read-only
+  ask while the rules keep running. A queue approval lifts a freeze ask only when it was parked and
+  answered inside the window. The reason names the marker's kind, never its value.
   `reflex status` shows whether a freeze is active now.
 - `reflex audit [--since 7d] [--format csv|json|jsonl] [--prod-only] [--agent a]`: one row per
   decision with time, agent, session, cwd, production tier and why, the redacted command, the

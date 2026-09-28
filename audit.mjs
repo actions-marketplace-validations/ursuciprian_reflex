@@ -32,11 +32,19 @@ const rejected = new Set(feedback.filter(r => r.event === "denied").map(r => r.c
 // Who approved or answered it, when that is known: a human in the approval queue, System 2, or the
 // agent's own prompt (the command ran after an ask, or the agent reported the prompt was refused).
 function approval(r) {
-  const L = r.ladder ?? {}, it = L.queue && items.get(L.queue);
+  // A queue id is reused when the same command is parked again: the item counts only while it is the
+  // one this row parked or used (same created time; rows from before that field was logged match by id).
+  const L = r.ladder ?? {}, found = L.queue && items.get(L.queue);
+  const it = found && (!L.queue_created || found.created === L.queue_created) ? found : null;
   const who = it ? `${it.decided_by ? ` by ${it.decided_by}` : ""}${it.decided_at ? ` at ${it.decided_at}` : ""}` : "";
-  if (r.source === "queue") return `${L.answered ?? "answered"} in the approval queue (${L.queue}${who})`;
-  if (it) return it.status === "pending" ? `waiting in the approval queue (${it.id})`
-    : `${it.status === "denied" ? "denied" : "approved"} in the approval queue (${it.id}${who})${it.status === "used" ? ", then run" : ""}`;
+  if (r.source === "queue") return `${L.answered ?? "answered"} in the approval queue (${L.queue}${who || (L.decided_at ? ` at ${L.decided_at}` : "")})`;
+  if (L.queue && !it) return `parked in the approval queue (${L.queue}); its answer is no longer on record`;
+  if (it) {
+    const expired = it.expires && Date.now() > Date.parse(it.expires);
+    return it.status === "pending" ? `waiting in the approval queue (${it.id})`
+      : it.status === "used" ? `approved in the approval queue (${it.id}${who}), then run`
+      : `${it.status === "denied" ? "denied" : "approved"} in the approval queue (${it.id}${who})${expired ? `, expired ${it.expires}${it.status === "approved" ? " unused" : ""}` : ""}`;
+  }
   if (["approve", "deny"].includes(L.judge?.verdict))
     return `${L.dry ? "System 2 would " : "System 2 "}${L.judge.verdict === "approve" ? (L.dry ? "approve" : "approved") : (L.dry ? "deny" : "denied")}` +
       `${L.judge.confidence != null ? ` (confidence ${L.judge.confidence})` : ""}${L.dry ? " (shadow)" : ""}`;

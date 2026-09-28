@@ -15,7 +15,7 @@ const NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
 const KEYS = new Set(["days", "after", "before", "from", "to", "tz", "applies_to", "outcome", "note"]);
 const MAX_WINDOWS = 20;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-const validDate = s => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
+const validDate = s => { if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false; const d = new Date(`${s}T00:00:00Z`); return !isNaN(d) && d.toISOString().slice(0, 10) === s; };
 const formats = new Map();
 function formatter(tz) {
   if (!formats.has(tz)) formats.set(tz, new Intl.DateTimeFormat("en-US", {timeZone: tz, hourCycle: "h23", weekday: "short",
@@ -41,6 +41,7 @@ function windowError(w) {
   if (w.days !== undefined && (!Array.isArray(w.days) || !w.days.length || w.days.some(d => !DAYS.includes(d)) || new Set(w.days).size !== w.days.length))
     return `days must be a list of distinct ${DAYS.join(", ")}`;
   for (const k of ["after", "before"]) if (w[k] !== undefined && !(typeof w[k] === "string" && TIME.test(w[k]))) return `${k} must be HH:MM, 00:00 to 23:59`;
+  if (w.before === "00:00") return "before 00:00 never holds; leave before out to mean midnight";
   if (w.after && w.before && w.after >= w.before) return "after must be earlier than before; for a window across midnight, write two windows";
   for (const k of ["from", "to"]) if (w[k] !== undefined && !validDate(w[k])) return `${k} must be a date, YYYY-MM-DD`;
   if (w.from && w.to && w.from > w.to) return "from must not be later than to";
@@ -60,7 +61,8 @@ export function parseFreeze(value, where = "freeze") {
   if (!Array.isArray(value)) { out.errors.push(`${where} must be a list of windows`); return out; }
   if (value.length > MAX_WINDOWS) out.errors.push(`${where}: more than ${MAX_WINDOWS} windows, the rest are ignored`);
   for (const [i, w] of value.slice(0, MAX_WINDOWS).entries()) {
-    const why = windowError(w);
+    let why;
+    try { why = windowError(w); } catch (e) { why = `cannot be read (${e.message})`; }   // an error, never a crash: a crash fails open
     if (why) { out.errors.push(`${where} ${i + 1}: ${why}`); continue; }
     const v = {applies_to: "prod", outcome: "ask", ...w, tz: w.tz ?? "UTC"};
     out.windows.push({...v, reason: describe(v)});
@@ -102,7 +104,7 @@ function selfcheck() {
      !inWindow(night, new Date("2026-09-28T08:00:00Z")), "before is exclusive");
   // strict validation: every problem is an error, never a smaller window
   for (const bad of [{days: ["friday"]}, {days: []}, {days: ["fri", "fri"]}, {after: "25:00"}, {after: "9:00"}, {after: "18:00", before: "08:00"},
-    {from: "2026-02-30"}, {from: "2027-01-03", to: "2026-12-20"}, {tz: "Mars/Olympus", days: ["fri"]}, {days: ["fri"], outcome: "allow"},
+    {from: "2026-02-30"}, {from: "2026-13-01"}, {from: "2026-02-32"}, {to: "2026-00-10"}, {before: "00:00"}, {from: "2027-01-03", to: "2026-12-20"}, {tz: "Mars/Olympus", days: ["fri"]}, {days: ["fri"], outcome: "allow"},
     {days: ["fri"], outcome: "pass"}, {days: ["fri"], applies_to: "dev"}, {days: ["fri"], until: "x"}, {tz: "UTC"}, {}, "fri", null, [], {days: ["fri"], note: 5}])
     ok(one(bad).errors.length === 1 && one(bad).windows.length === 0, `invalid: ${JSON.stringify(bad)}`);
   const mixed = parseFreeze([{days: ["fri"]}, {days: ["xyz"]}]);

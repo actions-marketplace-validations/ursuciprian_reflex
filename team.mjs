@@ -124,13 +124,18 @@ export function parseTeam(text) {
   if (doc.mode !== undefined && !["shadow", "enforce"].includes(doc.mode)) out.errors.push('mode must be "shadow" or "enforce" (a floor: it can only raise the mode)');
   else out.mode = doc.mode ?? null;
   // Change freezes (freeze.mjs): stricter only, so they apply untrusted; a bad window is an error.
-  const fz = parseFreeze(doc.freeze, "freeze");
-  out.freeze = fz.windows;
-  out.errors.push(...fz.errors);
+  // Each section on its own: a throw must not drop the stricter parts already read.
+  try {
+    const fz = parseFreeze(doc.freeze, "freeze");
+    out.freeze = fz.windows;
+    out.errors.push(...fz.errors);
+  } catch (e) { out.errors.push(`freeze: ${e.message}`); }
   // A webhook sends decisions off the machine: like the fast lane, it needs the user's trust.
-  const n = notifyTarget(doc.notify, "team policy notify");
-  out.notify = n.target;
-  if (n.error) out.errors.push(n.error);
+  try {
+    const n = notifyTarget(doc.notify, "team policy notify");
+    out.notify = n.target;
+    if (n.error) out.errors.push(n.error);
+  } catch (e) { out.errors.push(`notify: ${e.message}`); }
   for (const [i, e] of list("fastlane", 100).entries()) {
     const why = !e || typeof e !== "object" || Array.isArray(e) ? "not an object"
       : Object.keys(e).find(k => !["pattern", "note"].includes(k)) ? "only pattern and note (the scope is the repository)" : patternError(e.pattern);

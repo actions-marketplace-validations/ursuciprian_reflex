@@ -48,6 +48,7 @@ if (onNow.length) warnings.push(`Change freeze in force now: ${onNow.map(w => `$
 // The decision webhook (notify.mjs). Only --notify-test sends anything: one dry-run message per target.
 const hooks = [CONFIG.notify.target, tp?.notify].filter(Boolean);
 const notify = {targets: hooks.map(targetLabel), test: null};
+for (const e of CONFIG.freeze.errors) errors.push(`${e}. Until it is fixed, every command that is not read-only asks.`);
 if (CONFIG.notify.error) errors.push(`${CONFIG.notify.error}. Nothing is sent until it is fixed.`);
 if (process.argv.includes("--notify-test")) {
   if (!hooks.length) warnings.push("--notify-test: no notify webhook is configured (config.json notify).");

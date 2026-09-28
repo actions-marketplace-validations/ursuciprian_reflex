@@ -1001,12 +1001,12 @@ try {
     setConfig({});
     setTeam({freeze: [{...ALWAYS, outcome: "deny", note: "year-end"}]});
     let d = decide("kubectl apply -f app.yaml", prodDir);
-    assert.ok(d.effective === "deny" && d.source === "rule" && /change freeze: from 2000-01-01 \(UTC\): year-end; production \(cwd=.*envs\/prod\)/.test(d.reason), `freeze denies a prod change, in shadow too: ${JSON.stringify(d)}`);
+    assert.ok(d.effective === "deny" && d.source === "rule" && /change freeze: from 2000-01-01 \(UTC\): year-end; production \(cwd\)/.test(d.reason), `freeze denies a prod change, in shadow too: ${JSON.stringify(d)}`);
     assert.equal(decide("kubectl apply -f app.yaml", devDir).effective, "pass", "not production: no freeze");
     assert.equal(decide("kubectl get pods -A", prodDir).effective, "pass", "read-only passes during a freeze");
     assert.equal(decide("git commit -m 'prod hotfix notes'", devDir).effective, "pass", "a commit that only writes notes is not production");
     d = decide("kubectl apply -f app.yaml", devDir, {AWS_PROFILE: "acct-prod-7788"});
-    assert.ok(d.effective === "deny" && /aws_profile=acct-prod-7788/.test(d.reason), "production by the AWS profile");
+    assert.ok(d.effective === "deny" && /production \(aws_profile\)$/.test(d.reason), "production by the AWS profile, named by kind");
     // never loosens: a freeze ask never softens a rule's deny, and it overrides a fast lane pass
     setTeam({freeze: [ALWAYS]});
     d = decide("terraform destroy -auto-approve", prodDir);
@@ -1033,9 +1033,27 @@ try {
     assert.ok(/change freeze/.test(decide("kubectl apply -f app.yaml", devDir).reason) && decide("ls", devDir).effective === "pass", "config.json freeze, applies_to all");
     let st = JSON.parse(invoke("status.mjs", ["--json"], {env: fenv, cwd: prodDir}).stdout);
     assert.ok(st.freeze.active.length === 1 && st.freeze.active[0].applies_to === "all" && st.warnings.some(w => /Change freeze in force now/.test(w)), "status shows an active freeze");
-    setConfig({freeze: [{days: ["x"]}]});
-    d = decide("ls", devDir);
-    assert.ok(d.effective === "ask" && /config\.json freeze 1: days/.test(d.reason), `an invalid user window never loosens: ${JSON.stringify(d)}`);
+    // an invalid window in config.json: never dropped, never a crash (a crashed hook fails open), and a rule deny stays a deny
+    for (const bad of [{days: ["x"]}, {from: "2026-13-01", outcome: "deny"}, {to: "2026-02-32"}]) {
+      setConfig({freeze: [bad]});
+      d = decide("kubectl apply -f app.yaml", devDir);
+      assert.ok(d.effective === "ask" && /invalid change freeze .*config\.json freeze 1/.test(d.reason), `an invalid user window asks: ${JSON.stringify(d)}`);
+      assert.equal(decide("git push --force origin main", devDir).effective, "deny", `a rule deny stays a deny beside ${JSON.stringify(bad)}`);
+      assert.equal(decide("ls", devDir).effective, "pass", "read-only still passes");
+    }
+    // a bad date in a team policy is an error; the file's other stricter parts still apply
+    setConfig({});
+    setTeam({rules: [{id: "no-seed", outcome: "deny", rule: "seeds", all: [String.raw`\bseed-db\b`]}], freeze: [{from: "2026-13-01"}]});
+    assert.ok(/team policy/.test(decide("./seed-db --all", devDir).reason) && decide("./seed-db --all", devDir).effective === "deny", "a bad team window keeps the team rules");
+    setTeam({});
+    // a queue approval lifts a freeze ask only when it was parked and answered inside that window
+    const {freezeApproved} = await import("./gate.mjs");
+    const {parseFreeze} = await import("./freeze.mjs");
+    const [yearEnd] = parseFreeze([{from: "2026-12-20", to: "2027-01-03"}]).windows;
+    const answer = (created, decided) => ({ladder: {queue_created: created, decided_at: decided}});
+    assert.ok(freezeApproved(yearEnd, answer("2026-12-21T10:00:00Z", "2026-12-21T10:05:00Z")) && !freezeApproved(yearEnd, answer("2026-12-19T10:00:00Z", "2026-12-21T10:05:00Z")) &&
+      !freezeApproved(yearEnd, answer("2026-12-19T10:00:00Z", "2026-12-19T23:00:00Z")) && !freezeApproved(yearEnd, {ladder: {}}) &&
+      !freezeApproved({outcome: "ask", applies_to: "all", reason: "invalid"}, answer("2026-12-21T10:00:00Z", "2026-12-21T10:05:00Z")), "an approval from before the freeze does not carry into it");
     setConfig({freeze: [NEVER]});
     st = JSON.parse(invoke("status.mjs", ["--json"], {env: fenv, cwd: prodDir}).stdout);
     assert.ok(st.freeze.windows === 1 && !st.freeze.active.length, "status: no freeze active now");
@@ -1065,6 +1083,13 @@ try {
       assert.ok(ev.event === "reflex.decision" && ev.decision === "deny" && ev.prod === true && ev.prod_by === "aws_profile" && ev.agent === "claude-code" &&
         ev.command.includes("<redacted>") && ev.rule_id === "force-push-main", `webhook body: ${raw}`);
       assert.ok(!raw.includes(token) && !raw.includes("acct-prod-7788"), "no secret and no environment value leaves the machine");
+      // a freeze reason names the marker's kind, never its value
+      setConfig({notify: {url: url("/ok"), on: ["deny"]}, freeze: [{from: "2000-01-01", outcome: "deny"}]});
+      d = decide("kubectl apply -f app.yaml", devDir, {AWS_PROFILE: "acct-prod-7788"});
+      assert.ok(d.effective === "deny" && /production \(aws_profile\)/.test(d.reason) && !d.reason.includes("acct-prod-7788"), `freeze reason: ${d.reason}`);
+      assert.ok(await until(() => got.length === 2) && !got[1].body.includes("acct-prod-7788") && JSON.parse(got[1].body).rule_id === "freeze", "the freeze webhook carries no environment value");
+      got.splice(1);
+      setConfig({notify: {url: url("/ok"), on: ["deny", "prod"]}});
       assert.equal(decide("kubectl apply -f app.yaml", devDir).effective, "pass");
       await new Promise(r => setTimeout(r, 400));
       assert.equal(got.length, 1, "a pass outside production is not sent");
@@ -1117,6 +1142,8 @@ try {
       {ts: now, tag: "tool-gate", agent: "codex", session_id: "A", call_id: "x2", state: {call: {command: "npm run gen"}}, decision: "allow", emitted: "allow", source: "judge", rule: "ok",
        ladder: {resolver: "system2", judge: {verdict: "approve", confidence: 0.9}}, tier: {prod: false}},
       {ts: now, tag: "tool-gate", agent: "codex", session_id: "A", call_id: "x3", state: {call: {command: "make deploy"}}, decision: "ask", emitted: "ask", source: "local", rule: "local", tier: {prod: false}},
+      {ts: now, tag: "tool-gate", agent: "hermes", call_id: "x4", state: {call: {command: "make seed"}}, decision: "ask", emitted: "deny", source: "rule", rule: "r",
+       ladder: {resolver: "human", queue: "q-0123456789", queue_created: "2001-01-01T00:00:00.000Z", parked: "new"}, tier: {prod: false}},
       {ts: "2000-01-01T00:00:00.000Z", tag: "tool-gate", agent: "codex", state: {call: {command: "old"}}, decision: "ask"}];
     writeFileSync(join(data, "trace.1700000000000.jsonl"), extra.map(r => JSON.stringify(r)).join("\n") + "\n{torn\n");
     writeFileSync(join(data, "feedback.jsonl"), JSON.stringify({event: "ran", call_id: "x3"}) + "\n", {flag: "a"});
@@ -1130,6 +1157,7 @@ try {
     assert.equal(rows.find(r => r.session === "A" && r.source === "queue").approved_by, `approved in the approval queue (q-0123456789 by alice at ${now})`);
     assert.equal(rows.find(r => r.command === "npm run gen").approved_by, "System 2 approved (confidence 0.9)");
     assert.equal(rows.find(r => r.command === "make deploy").approved_by, "approved at the agent's prompt (it ran)");
+    assert.equal(rows.find(r => r.command === "make seed").approved_by, "parked in the approval queue (q-0123456789); its answer is no longer on record", "audit: a reused queue id is not attributed to an older row");
     const prodRows = JSON.parse(success(invoke("audit.mjs", ["--format", "json", "--prod-only"], {env: fenv})));
     assert.ok(prodRows.length && prodRows.every(r => r.env_tier === "prod"), "audit: --prod-only");
     assert.ok(JSON.parse(success(invoke("audit.mjs", ["--format", "json", "--agent", "codex"], {env: fenv}))).every(r => r.agent === "codex"), "audit: --agent");

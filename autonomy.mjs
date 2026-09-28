@@ -71,7 +71,7 @@ export async function ladder(j, call, effective, {env = envContext(call.cwd), ju
     // queue off: the agent's own prompt; a System 1 pass or allow of the always-human class becomes that prompt too
     if (!CONFIG.queue.enabled) return {j: {...j, rule: `${j.rule}. Needs a human (${cls.rule})`}, effective: "ask"};
     const {item, fresh} = park(call, j, cls);
-    Object.assign(L, {queue: item.id, parked: fresh ? "new" : "pending"});
+    Object.assign(L, {queue: item.id, queue_created: item.created, parked: fresh ? "new" : "pending"});
     return {j: {...j, rule: `${j.rule}. Needs a human (${cls.rule}): parked in the approval queue as ${item.id}. Continue with other work and ` +
       `retry this exact command later from the same directory; \`reflex queue show ${item.id}\` shows whether it was answered. Do not rephrase ` +
       "the command to get around this check"}, effective: "deny"};
@@ -432,11 +432,11 @@ export function queueAnswer(call) {
     rmSync(claim, {force: true});
     // a runaway stop the human lifted: the guard steps aside once, the gate still judges the command
     if (it.class === "runaway") return {resume: true};
-    return {outcome: "allow", source: "queue", rule: `approved by a human in the approval queue (${id})`, ladder: {resolver: "human", queue: id, answered: "approved"}};
+    return {outcome: "allow", source: "queue", rule: `approved by a human in the approval queue (${id})`, ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "approved", decided_at: it.decided_at}};
   }
   if (it.status === "denied" && live)
     return {outcome: "deny", source: "queue", rule: `a human denied this in the approval queue (${id})${it.note ? `: ${it.note}` : ""}. Do not retry it; find another way or ask the user`,
-            ladder: {resolver: "human", queue: id, answered: "denied"}};
+            ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "denied", decided_at: it.decided_at}};
   return null;
 }
 export function answer(id, verdict, {ttlHours = CONFIG.queue.ttl_hours, note} = {}) {
