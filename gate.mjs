@@ -2407,9 +2407,11 @@ async function selfcheck() {
   { const t = Date.now(); pw("ssh -o ".repeat(4600)); ok(Date.now() - t < 3500, "32 KB of ssh -o is checked in time"); }
   for (const c of ["echo x >> ~/.zshrc", "echo x > ~/.bash_aliases", "echo 'use nix' > .envrc", "tee -a ~/.profile < /tmp/p", "sed -i '' s/a/b/ ~/.zprofile",
     "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f",
-    "cp dots/.zshrc ~/", "tee a.txt ~/.zshrc"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
-  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "tee a.txt b.txt", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
+    "cp dots/.zshrc ~/", "cp dots/.zshrc ~/.", "tee a.txt ~/.zshrc"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
+  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "tee a.txt b.txt", "cp dots/.zshrc /tmp/", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
     "diff <(sort ~/.zshrc) x"]) ok(pw(c) !== "shell-startup", `not a shell startup write: ${c}`);
+  { const startup = {rules: load("rules.json").rules.filter(r => r.id === "shell-startup")}, c = "tee ".repeat(8192), t = Date.now();
+    ok(!checkRules(c, startup, c) && Date.now() - t < 50, "shell-startup: 32 KB of tee is checked in under 50 ms"); }
   ok(precheck("bash -n ~/.bashrc", "/w", {})?.source === "fast-lane", "bash -n stays in the fast lane");
   for (const c of ["git push -f origin ma\\in", "git push -f origin $'ma\\x69n'", "git push -f origin m{a,}in", "git push -f origin \\main", "git pu\\sh -f origin main",
     "git push -\\f origin main", "git push --\\force origin main", "git push origin --\\delete main", "git push -f origin HEAD:ma\\ster"])
