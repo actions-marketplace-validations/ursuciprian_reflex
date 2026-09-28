@@ -238,11 +238,12 @@ const UNSAFE_FLAGS = new RegExp([
   String.raw`\bawk\b.*(system|getline|@include|@load)`, String.raw`\bawk\b[^']*'[^']*[|>][^']*'`, String.raw`\bawk\b[^"]*"[^"]*[|>][^"]*"`,
   String.raw`--pre\b`, String.raw`--(upload|receive)-pack`, String.raw`--hostname-bin\b`,
   String.raw`--post-renderer`, String.raw`--compress-program`, String.raw`\b(git|sort)\b[^|;&]*--output\b`, String.raw`--ext-diff`,
-  String.raw`\s-f(print0?|printf|ls)\b`, String.raw`\s-ok(dir)?\b`, String.raw`\bfd\b.*\s-[a-zA-Z]*[xX]\b`,
-  String.raw`\b(sort|tree)\b[^|;&]*\s-o\b`, String.raw`--show-token`,
+  String.raw`\s-f(print0?|printf|ls)\b`, String.raw`\s-ok(dir)?\b`, String.raw`\bfd\b.*\s-[a-zA-Z]*[xX]`,
+  // -o clustered or with its value attached (-ro, -uo, -oFILE)
+  String.raw`\b(sort|tree)\b[^|;&]*\s-[a-zA-Z]*o`, String.raw`--show-token`,
   // a program from a file (awk and sed -f, gawk -i/-E/-l), yq writing in place or split files
   String.raw`\b[gm]?awk\b[^|;&]*\s(-[a-zA-Z]*[fEilL]|--(file|exec|include|load|source))`,
-  String.raw`\byq\b[^|;&]*\s(-[a-zA-Z]*[is]\b|--(inplace|split-exp))`,
+  String.raw`\byq\b[^|;&]*\s(-[a-zA-Z]*[is]|--(inplace|split-exp))`,
 ].join("|"));
 // Every prefix of an ip object that ip.c resolves to it (address comes before addrlabel, route before
 // rule, neighbor before ntable, link before l2tp), and every prefix of list or lst.
@@ -533,13 +534,12 @@ const AWK_LONG = ["file", "exec", "include", "load", "source", "profile", "prett
 // -W takes a long option as its value (-W dump-variables=f). The program text is checked as the
 // shell passes it (sys''tem, $'\x73ystem'): no @ (gawk @include, @load, indirect calls), system,
 // getline, | or > (pipes and redirects, and > as a comparison too), close, fflush, PROCINFO or ENVIRON.
-const AWK_UNSAFE = /[@|>]|system|getline|close|fflush|PROCINFO|ENVIRON/;
+const AWK_UNSAFE = /[@|>]|\b(system|getline|close|fflush)\b|PROCINFO|ENVIRON/;
 const awkLong = name => !name || AWK_LONG.some(o => o.startsWith(name.split("=")[0]));
 function awkSafe(args) {
   let program = false, dd = false;
   for (let i = 0; i < args.length; i++) {
     const v = args[i].value;
-    if (/\b(system|getline)\b|@include|@load/.test(v)) return false;
     if (dd || v === "-" || !v.startsWith("-")) { if (!program) { program = true; if (AWK_UNSAFE.test(v)) return false; } dd = true; continue; }
     if (v === "--") { dd = true; continue; }
     if (v.startsWith("--")) { if (awkLong(v.slice(2))) return false; continue; }
@@ -580,10 +580,10 @@ function argsUnsafe(raw, head) {
   }
   if (words[k].raw.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "") !== head) return true;
   const args = words.slice(k + 1);
-  // printf reads options (-v) in its first word only; the rest is data
-  if (head === "printf") return !!args[0] && (args[0].exps.length > 0 || /^-\w*v/.test(args[0].value));
   if (args.some(w => /[*?[]/.test(maskQuotes(w.raw, "_").replace(/\\./g, "__")))) return true;
   if (args.some(w => w.exps.length && !pathWord(w, head))) return true;
+  // printf reads options (-v) in its first word only
+  if (head === "printf") return !!args[0] && /^-\w*v/.test(args[0].value);
   if (head === "sed") return !sedSafe(args);
   if (head === "awk") return !awkSafe(args);
   return false;
@@ -860,8 +860,10 @@ export const fastPass = (cmd, rules) => readOnly(cmd, rules.pass.map(p => new Re
 // expansion ($, `), a heredoc, a process substitution or unbalanced quotes.
 // `reflex check` only judges: the command it is given is data. (Not `node --check`, which still runs
 // -r / --import preloads, nor a file named gate.mjs, which could be anything.)
+// `cap`, `deadline`: a pipeline longer than cap, or reached after the deadline, is not read (not
+// inert), so a huge command stays linear-ish (largeDeny).
 const INERT = [/^(mkdir|touch)\s[^<>`$]*$/i, /^git\s+(add|commit)\b[^<>`$]*$/i, /^reflex\s+check(\s[^<>`$]*)?$/i];
-export function pipelines(command) {
+export function pipelines(command, cap = Infinity, deadline = Infinity) {
   const c = command.replace(/\\\n/g, "");
   if (/[$`]|<<|<\(|>\(/.test(c)) return null;
   const m = maskQuotes(c, "_");
@@ -878,7 +880,7 @@ export function pipelines(command) {
       for (let k = r.index; k < r.index + r[0].length; k++) core[k] = " ";
     }
     const rest = core.join("").trim();
-    if (rest) out.push({text: text.trim(), targets, core: rest, inert: readOnly(rest, INERT)});
+    if (rest) out.push({text: text.trim(), targets, core: rest, inert: rest.length <= cap && Date.now() <= deadline && readOnly(rest, INERT)});
     else if (targets.length) out.push({text: text.trim(), targets, core: "", inert: false});
   };
   for (const s of m.matchAll(/&&|\|\||[;\n]|(?<![<>|&])&(?![>&])/g)) { cut(s.index); last = s.index + s[0].length; }
@@ -1270,34 +1272,58 @@ function nestedCheckout(cwd) {
 // out (..), names the previous directory or the directory stack ($OLDPWD, cd -, popd, pushd ±N), or
 // changes to a directory this cannot resolve inside root (an expansion, ~, an absolute path elsewhere).
 // Symlinks are resolved (a link in root can point at the checkout): each cd target, and each word
-// that names a path in root (from cwd or from a cd target), must resolve inside root. A path that
-// cannot be resolved (a word with an expansion, a link realpath refuses) restores the checkout view.
-function staysNested(command, cwd, root) {
+// that names a path in root (from cwd or from a cd target), must resolve inside root, and so must
+// the value of a short option with the value attached (-Cdir, -tdir, -ofile: every split after the
+// flag letters is tried). A path that cannot be resolved (a word with an expansion, a link realpath
+// refuses) or a check past run.deadline restores the checkout view. Real paths are cached per
+// directory for the call (run.real), and the first path that leaves root ends the check.
+function staysNested(command, cwd, root, run = {deadline: Date.now() + PRECHECK_MS}) {
   const t = command.replace(/["'\\]/g, "");
   // CDPATH changes where a relative cd goes; a symlink made in the command can point anywhere
   if (/(^|[\s/=:])\.\.([\s/;&|)]|$)/.test(t) || /\b(OLDPWD|DIRSTACK|CDPATH)\b/.test(t) || /\bln\b[^;&|\n]*\s(-[a-zA-Z]*s|--symbolic)\b/.test(t)) return false;
-  let real;
-  try { real = realpathSync(root); } catch { return false; }
+  const cache = run.real ??= new Map(), seen = new Map();
+  const realDir = d => {   // the real path of d, null when d does not exist, false when it cannot be read
+    if (!cache.has(d)) { let v; try { lstatSync(d); try { v = realpathSync(d); } catch { v = false; } } catch { v = null; } cache.set(d, v); }
+    return cache.get(d);
+  };
+  const real = realDir(root);
+  if (!real) return false;
   // the real path of p, through its deepest part that exists: inside root's real path?
   const inside = p => {
-    const tail = [];
-    for (let d = p; ; tail.unshift(basename(d)), d = dirname(d)) {
-      try { lstatSync(d); } catch { if (dirname(d) === d) return false; continue; }
-      try { return (join(realpathSync(d), ...tail) + "/").startsWith(real + "/"); } catch { return false; }
+    if (seen.has(p)) return seen.get(p);
+    let ok = false;
+    for (let d = p, tail = []; ; tail.unshift(basename(d)), d = dirname(d)) {
+      const r = realDir(d);
+      if (r === false) break;
+      if (r) { ok = (join(r, ...tail) + "/").startsWith(real + "/"); break; }
+      if (dirname(d) === d) break;
     }
+    seen.set(p, ok);
+    return ok;
   };
-  const bases = [cwd];
+  const late = () => Date.now() > run.deadline;
+  const bases = new Set([cwd]);
   for (const m of t.matchAll(/(?<![\w.\/-])(cd|pushd|popd|chdir)(?![\w.\/-])((?:\s+-[LPe@]+)*)(?:\s+--)?(?:\s+([^\s;&|<>()]+))?/g)) {
     const d = m[3];
-    if (m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/") || !inside(resolve(cwd, d))) return false;
-    bases.push(resolve(cwd, d));
+    if (late() || m[1] === "popd" || d === undefined || /^[-+]/.test(d) || /[$\x60~?*[{]/.test(d) || !(resolve(cwd, d) + "/").startsWith(root + "/") || !inside(resolve(cwd, d))) return false;
+    bases.add(resolve(cwd, d));
   }
   const words = shellWords(command);
   if (!words || words.some(w => w.exps.length)) return false;
-  return words.every(w => [w.value, w.value.replace(/^[^=]*=/, "")].every(v => bases.every(b => {
-    const p = resolve(b, v);
-    return !(p + "/").startsWith(root + "/") || inside(p);
-  })));
+  // a cd target that does not exist holds no link: what is under it resolves as it does
+  for (const b of bases) if (b !== cwd && !realDir(b)) bases.delete(b);
+  for (const w of words) {
+    const v = w.value, paths = new Set([v, v.replace(/^[^=]*=/, "")]);
+    // -Cdir, -tdir, -ofile, -rodir: the value after any number of flag letters
+    const flags = /^-[a-zA-Z]+/.exec(v)?.[0].length ?? 0;
+    for (let k = 2; k <= flags && k < v.length; k++) paths.add(v.slice(k));
+    for (const x of paths) for (const b of bases) {
+      if (late()) return false;
+      const p = resolve(b, x);
+      if ((p + "/").startsWith(root + "/") && !inside(p)) return false;
+    }
+  }
+  return true;
 }
 
 // A quoted part of a word: quotes with no space, operator, escape or expansion inside, next to other
@@ -1344,7 +1370,7 @@ export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now
   let best = own;
   for (const alt of depth < 2 ? [ruleSpelling(c), wordSpelling(c)] : []) {
     if (Date.now() > run.deadline) break;
-    const other = alt === TOO_MANY ? size(`over ${BRACE_WORDS * 4} words after brace expansion`) : alt ? precheck(alt, cwd, env, depth + 1, run) : null;
+    const other = alt ? precheck(alt, cwd, env, depth + 1, run) : null;
     if (other?.source === "rule" && !(best?.source === "rule" && (SEVERITY[best.outcome] ?? 0) >= (SEVERITY[other.outcome] ?? 0))) best = other;
   }
   if (depth === 0 && Date.now() > run.deadline && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
@@ -1352,25 +1378,29 @@ export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now
 }
 // The deny rules on a command over COMMAND_BYTES: windows of that size, half of it apart (a match up
 // to COMMAND_BYTES / 2 long is inside one), each as written and in the other spellings, until `deadline`.
-// ponytail: past the deadline the rest is not read and the command asks.
+// The views are precheckAs's: "shell" rules read the command without interpreter heredocs that only
+// print, and nothing when every pipeline is inert and writes only notes; the others read it with
+// data heredocs dropped. ponytail: past the deadline the rest is not read and the command asks.
 function largeDeny(command, cwd, env, deadline) {
-  const rules = load("rules.json"), deny = {rules: rules.rules.filter(r => r.outcome === "deny")};
-  const c = stripDataHeredocs(command.replace(/\\\n/g, ""), true), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join("");
+  const rules = teamRules(load("rules.json"), cwd), deny = {rules: rules.rules.filter(r => r.outcome === "deny")};
+  const c = command.replace(/\\\n/g, ""), bare = stripDataHeredocs(c), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join("");
+  const code = onlyNotes(pipelines(c, 2 * COMMAND_BYTES, deadline)) ? null : stripDataHeredocs(c, true);
+  if (Date.now() > deadline) return null;
   for (let at = 0; ; at += COMMAND_BYTES / 2) {
-    const w = c.slice(at, at + COMMAND_BYTES);
+    const b = bare.slice(at, at + COMMAND_BYTES), s = code?.slice(at, at + COMMAND_BYTES);
     for (const f of [x => x, ruleSpelling, wordSpelling]) {
       if (Date.now() > deadline) return null;
-      const v = f(w), hit = typeof v === "string" && checkRules(v + ctx, deny, v);
+      const v = f(b) ?? b, sv = code === null ? null : f(s) ?? s;
+      const hit = checkRules(v + ctx, deny, v, {shell: sv === null ? false : [sv + ctx, sv]});
       if (hit) return {outcome: hit.outcome, rule: hit.rule, id: hit.id, source: "rule", policy_version: rules.version};
     }
-    if (at + COMMAND_BYTES >= c.length) return null;
+    if (at + COMMAND_BYTES >= Math.max(bare.length, code?.length ?? 0)) return null;
   }
-  return null;
 }
 // Brace expansion as the shell does it, on a word's raw text: lists ({a,b}, nested), sequences
 // ({1..3}, {a..c}, {01..9..2}) and any number per word. Quoted or escaped braces and ${…} are text.
 // Each result keeps its quotes, so the rules read it with the other spellings. null: over BRACE_WORDS.
-const BRACE_WORDS = 256, TOO_MANY = Symbol("braces");
+const BRACE_WORDS = 256;
 function braceSeq([, x, y, step]) {
   const num = /\d/.test(x);
   if (num !== /\d/.test(y)) return undefined;
@@ -1404,16 +1434,18 @@ function braceWords(raw) {
 // The command with each word the shell reads differently from its text written plainly: escapes
 // and $'…' decoded (`ma\\in`, `$'ma\\x69n'`, `-\\f`, `pu\\sh`, only words whose value needs no
 // quoting), brace lists and sequences expanded into their words (`m{a,}in` is `main min`,
-// `ma{i..i}n` is `main`). null when nothing changes; TOO_MANY past BRACE_WORDS * 4 expanded words in all.
+// `ma{i..i}n` is `main`). null when nothing changes. A word whose expansion would pass BRACE_WORDS
+// (or BRACE_WORDS * 4 in all) is not expanded but marked unknown, `$_` in front of its text: to the
+// rules an unknown ref (a push to it is a push to a variable), and `for i in {1..300}` is no ask.
 const wordSpelling = s => {
   const words = shellWords(s);
   if (!words) return null;
   let out = s, n = 0;
   for (const w of [...words].reverse()) {
     const m = maskQuotes(w.raw, "_"), b = /[{}]/.test(m) ? braceWords(w.raw) : [w.raw];
-    if (b === null || (b.length > 1 && (n += b.length) > BRACE_WORDS * 4)) return TOO_MANY;
     let v = null;
-    if (b.length > 1 || b[0] !== w.raw) v = b.join(" ");
+    if (b === null || (b.length > 1 && (n += b.length) > BRACE_WORDS * 4)) v = "$_" + w.raw;
+    else if (b.length > 1 || b[0] !== w.raw) v = b.join(" ");
     else if (!w.exps.length && /\\|\$'/.test(m) && /^[^\s'"`$;&|<>()\\{}*?[\]#]*$/.test(w.value)) v = w.value;
     if (v !== null) out = out.slice(0, w.start) + v + out.slice(w.end);
   }
@@ -1443,7 +1475,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
   const ps = pipelines(command), writes = (ps ? writesView(ps, false, cwd) : `${bare} ; ${writesView(roughPipelines(bare), true, cwd)}`).replace(/["'\\]/g, "");
   // The checkout itself is protected wherever it was cloned, not only under a directory named reflex.
   // A git worktree or clone nested inside it is another checkout, unless the command climbs out (..).
-  const nested = cwd && nestedCheckout(cwd), inRepo = cwd && (cwd + "/").startsWith(HERE + "/") && !(nested && staysNested(command, cwd, nested));
+  const nested = cwd && nestedCheckout(cwd), inRepo = cwd && (cwd + "/").startsWith(HERE + "/") && !(nested && staysNested(command, cwd, nested, run));
   // ~ and $HOME are the home directory: ~/src/x/gate.mjs names the checkout wherever it was cloned
   const home = writes.replace(/(^|[\s=:>])(~|\$HOME|\$\{HOME\})(?=\/|\s|$)/g, (m, p) => p + homedir());
   if ([HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => writes.includes(p) || home.includes(p)) ||
@@ -2091,7 +2123,7 @@ async function selfcheck() {
      !readOnly("echo x # '\ntouch x\n# '") && readOnly("ls # it's a comment\ncat f") && readOnly("ssh h 'uptime' < /dev/null"),
      "backslash-newline joins, $'…' and # comments are masked, stdin from /dev/null");
   ok(readOnly("ssh -n -p 2222 -l ops -i ~/.ssh/id_ed25519 -oBatchMode=yes -tt h 'df -h'") && readOnly(`ssh h "grep -c \\"x\\" /var/log/syslog"`) &&
-     readOnly("for h in web-1 web-2; do printf '%s: ' $h; ssh ops@$h 'uptime' 2>&1 | tail -1; done") && readOnly(`for h in a b; do echo "$h: $(ssh $h 'nproc')"; done`),
+     readOnly("for h in web-1 web-2; do echo $h; ssh ops@$h 'uptime' 2>&1 | tail -1; done") && readOnly(`for h in a b; do echo "$h: $(ssh $h 'nproc')"; done`),
      "ssh: allowed options, escaped double quotes, a loop over literal hosts");
   ok(readOnly("ssh h 'systemctl is-active api; journalctl -u api -n 20 --no-pager; free -g; ip -br addr'") && readOnly("docker exec -t api tail -n 50 /var/log/app.log") &&
      !readOnly("journalctl --vacuum-time=1d") && !readOnly("ip -batch cmds") && !readOnly("ip route add default via 10.0.0.1") && !readOnly("systemctl restart api") &&
@@ -2210,6 +2242,9 @@ async function selfcheck() {
   // option-sensitive tool's words (a binding or -- is no exception)
   ok(readOnly("awk '{print $2}' f") && !readOnly("awk '{print ENVIRON[\"HOME\"]}' f") && !readOnly("awk 'BEGIN{close(\"x\")}'"), "awk: program text without @ system getline | > close fflush PROCINFO ENVIRON");
   ok(readOnly("find . \\( -name a -o -name b \\)") && !readOnly("find . \\( -name a \\) f(+x)"), "find: an escaped ( is no zsh glob qualifier");
+  ok(readOnly("awk '/closed/' f") && !readOnly("awk 'BEGIN{fflush()}'"), "awk: function names as whole words");
+  ok(!readOnly("printf '%s' *") && !readOnly("printf '%s' $X") && readOnly("printf '%s\\n' x"), "printf: the glob and expansion guard comes first");
+  ok(!readOnly("sort -ro out f") && !readOnly("sort -oout f") && !readOnly("fd x -xrm") && !readOnly("yq -s.a f") && readOnly("sort -r f"), "short output flags clustered or with a value attached");
   ok(readOnly('gh api "repos/$R/pulls"') && !readOnly('F=notes.txt; sed -n 1p "$F"') && !readOnly("sed -n 1p src/*.md") && !readOnly("xxd -- *"),
      "option-sensitive tools: a quoted $name after a literal path only");
 
@@ -2339,8 +2374,8 @@ async function selfcheck() {
     "git --work-tree=$(pwd) push -f origin main", "git -C $((1)) push -f origin main", "git -C `pwd` push -f origin main", "git -C ${D} push -f origin main",
     "git -C $(git rev-parse --show-toplevel) push -f origin main"]) ok(pw(c) === "force-push-main", `force push main, an expanded git option value: ${c}`);
   ok(pw("git -C $(pwd) push --mirror") === "push-mirror" && pw("git -C $(pwd) push -f") === "force-push-unknown-branch", "expanded git -C: mirror, unknown branch");
-  ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin x{1..9999}") === "command-size",
-     "brace sequences and several braces per word are expanded for the rules; too many words ask");
+  ok(pw("git push -f origin ma{i..i}n") === "force-push-main" && pw("git push -f origin {x,y}{a,b}") === null && pw("git push -f origin {main,x{1..999}}") === "force-push-main" &&
+     pw("for i in {1..300}; do echo $i; done") === null, "brace sequences and several braces per word are expanded for the rules; past the limit a word is an unknown ref, not a size ask");
   { const t0 = Date.now(); redact("echo " + "'a' ".repeat(40) + "done > gen.txt; make build"); ok(Date.now() - t0 < 500, "redact: a run of quoted words is linear"); }
   { const human = {rules: load("escalation.json").always_human.rules};
     ok(rulesHit("git -C . reset --hard", human)?.id === "destructive-delete" && !checkRules("git -C . reset --hard", human) && !rulesHit("git -C . status", human),
@@ -2367,13 +2402,16 @@ async function selfcheck() {
     "php <<'EOF'\n<?php\n// ?><?php system('rm -rf ~'); ?>\nEOF", "ruby - <<'EOF'\n#!ruby -r./x\nputs 'rm -rf ~'\nEOF", "python3 - <<'EOF'\nprint('rm -rf ~ é')\nEOF"])
     ok(pw(c) === "rm-root", `heredoc body with a comment or non-ASCII is code: ${c}`);
   ok(!stripDataHeredocs("perl - <<'EOF'\n#!/usr/bin/env -Ssh\\_-c\\_\"touch\\_D1;:\"\nprint 'x';\nEOF", true).includes("<<DATA"), "a perl #! line keeps the body in");
-  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size" && pw("rm -rf ~; echo " + "x".repeat(33 * 1024)) === "rm-root", "over 32 KB asks, unless a deny rule fires");
+  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size" && pw("rm -rf ~; echo " + "x".repeat(33 * 1024)) === "rm-root" &&
+     pw("echo '- rm -rf ~ " + "x".repeat(33 * 1024) + "' >> NOTES.md") === "command-size", "over 32 KB asks, unless a deny rule fires on the views precheck reads");
   { const t = Date.now(); pw("ssh -o ".repeat(4600)); ok(Date.now() - t < 3500, "32 KB of ssh -o is checked in time"); }
   for (const c of ["echo x >> ~/.zshrc", "echo x > ~/.bash_aliases", "echo 'use nix' > .envrc", "tee -a ~/.profile < /tmp/p", "sed -i '' s/a/b/ ~/.zprofile",
     "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f",
-    "cp dots/.zshrc ~/", "tee a.txt ~/.zshrc"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
-  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "tee a.txt b.txt", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
+    "cp dots/.zshrc ~/", "cp dots/.zshrc ~/.", "tee a.txt ~/.zshrc"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
+  for (const c of ["source ~/.zshrc", ". ~/.zshrc", "cp ~/.zshrc /tmp/zshrc.bak", "tee a.txt b.txt", "cp dots/.zshrc /tmp/", "cat ~/.zshrc | pbcopy", "bat ~/.zshrc", "shellcheck ~/.bashrc", "zsh -n ~/.zshrc",
     "diff <(sort ~/.zshrc) x"]) ok(pw(c) !== "shell-startup", `not a shell startup write: ${c}`);
+  { const startup = {rules: load("rules.json").rules.filter(r => r.id === "shell-startup")}, c = "tee ".repeat(8192), t = Date.now();
+    ok(!checkRules(c, startup, c) && Date.now() - t < 50, "shell-startup: 32 KB of tee is checked in under 50 ms"); }
   ok(precheck("bash -n ~/.bashrc", "/w", {})?.source === "fast-lane", "bash -n stays in the fast lane");
   for (const c of ["git push -f origin ma\\in", "git push -f origin $'ma\\x69n'", "git push -f origin m{a,}in", "git push -f origin \\main", "git pu\\sh -f origin main",
     "git push -\\f origin main", "git push --\\force origin main", "git push origin --\\delete main", "git push -f origin HEAD:ma\\ster"])
@@ -2480,6 +2518,9 @@ async function selfcheck() {
     symlinkSync(join(nested, "sub"), join(nested, "in"));
     ok(pw("sed -i '' s/a/b/ up/gate.mjs", nested) === "tamper" && pw("cd up && sed -i '' s/a/b/ gate.mjs", nested) === "tamper" &&
        pw("sed -i '' s/a/b/ in/gate.mjs", nested) !== "tamper", "nested checkout: symlinks are resolved, one out of it restores the checkout view");
+    ok(pw("cp -tup gate.mjs", nested) === "tamper" && pw("cp -tin gate.mjs", nested) !== "tamper", "nested checkout: an attached option value is resolved too");
+    { const t = Date.now(), c = Array.from({length: 600}, (_, i) => `cd d${i} && ls x${i}`).join(" ; ").slice(0, 8192);
+      ok(pw(c, nested) !== "tamper" && Date.now() - t < 500, "nested checkout: 8 KB with many cds is checked in under 500 ms"); }
   } finally { rmSync(nested, {recursive: true, force: true}); }
 
   // policy
