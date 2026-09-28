@@ -1301,22 +1301,43 @@ const SEVERITY = {deny: 2, ask: 1};
 /** Everything decided without Jev, or null when Jev has to judge. A rule that fires on the command
  * as the rules know it (ruleSpelling) counts too; the more severe of the two rule outcomes wins. */
 // Over this size a command is not checked but asked about: the rules' work grows with it, and the
-// hook's timeout must not let an unchecked command through.
+// hook's timeout must not let an unchecked command through. Only the deny rules still run, on
+// overlapping windows until the deadline, so a large command never turns a deny it shows into an ask.
 // A check that took longer than PRECHECK_MS is not trusted to pass either: it asks (a deny stands).
+// `run`: one budget for the whole call, shared by every spelling precheck recurses into, and the
+// local scripts already scanned, so each is scanned once.
 const COMMAND_BYTES = 32 * 1024, PRECHECK_MS = 3000;
-export function precheck(command, cwd, env, depth = 0) {
-  const t0 = Date.now(), size = n => ({outcome: "ask", rule: `command too large to check (${n})`, id: "command-size", source: "rule", policy_version: load("rules.json").version});
-  if (command.length > COMMAND_BYTES) return size(`over ${COMMAND_BYTES / 1024} KB`);
-  const c = command.replace(/\\\n/g, ""), own = precheckAs(command, cwd, env);
+export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now() + PRECHECK_MS, scan: Date.now() + SCAN_MS, scripts: new Set()}) {
+  const size = n => ({outcome: "ask", rule: `command too large to check (${n})`, id: "command-size", source: "rule", policy_version: load("rules.json").version});
+  if (command.length > COMMAND_BYTES) return largeDeny(command, cwd, env, run.deadline) ?? size(`over ${COMMAND_BYTES / 1024} KB`);
+  const c = command.replace(/\\\n/g, ""), own = precheckAs(command, cwd, env, run, depth > 0);
   // the other spellings: quoted parts joined and system paths (ruleSpelling), and the words as the
   // shell passes them (wordSpelling); a rule on any of them counts, the most severe wins
   let best = own;
   for (const alt of depth < 2 ? [ruleSpelling(c), wordSpelling(c)] : []) {
-    const other = alt === TOO_MANY ? size(`over ${BRACE_WORDS * 4} words after brace expansion`) : alt ? precheck(alt, cwd, env, depth + 1) : null;
+    if (Date.now() > run.deadline) break;
+    const other = alt === TOO_MANY ? size(`over ${BRACE_WORDS * 4} words after brace expansion`) : alt ? precheck(alt, cwd, env, depth + 1, run) : null;
     if (other?.source === "rule" && !(best?.source === "rule" && (SEVERITY[best.outcome] ?? 0) >= (SEVERITY[other.outcome] ?? 0))) best = other;
   }
-  if (depth === 0 && Date.now() - t0 > PRECHECK_MS && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
+  if (depth === 0 && Date.now() > run.deadline && best?.outcome !== "deny") return size(`took over ${PRECHECK_MS / 1000} s`);
   return best;
+}
+// The deny rules on a command over COMMAND_BYTES: windows of that size, half of it apart (a match up
+// to COMMAND_BYTES / 2 long is inside one), each as written and in the other spellings, until `deadline`.
+// ponytail: past the deadline the rest is not read and the command asks.
+function largeDeny(command, cwd, env, deadline) {
+  const rules = load("rules.json"), deny = {rules: rules.rules.filter(r => r.outcome === "deny")};
+  const c = stripDataHeredocs(command.replace(/\\\n/g, ""), true), ctx = [`cwd=${cwd ?? ""}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].map(x => " " + x).join("");
+  for (let at = 0; ; at += COMMAND_BYTES / 2) {
+    const w = c.slice(at, at + COMMAND_BYTES);
+    for (const f of [x => x, ruleSpelling, wordSpelling]) {
+      if (Date.now() > deadline) return null;
+      const v = f(w), hit = typeof v === "string" && checkRules(v + ctx, deny, v);
+      if (hit) return {outcome: hit.outcome, rule: hit.rule, id: hit.id, source: "rule", policy_version: rules.version};
+    }
+    if (at + COMMAND_BYTES >= c.length) return null;
+  }
+  return null;
 }
 // Brace expansion as the shell does it, on a word's raw text: lists ({a,b}, nested), sequences
 // ({1..3}, {a..c}, {01..9..2}) and any number per word. Quoted or escaped braces and ${…} are text.
@@ -1370,7 +1391,7 @@ const wordSpelling = s => {
   }
   return out !== s ? out : null;
 };
-function precheckAs(command, cwd, env) {
+function precheckAs(command, cwd, env, run, alt = false) {
   const rules = load("rules.json");
   // The shell deletes a backslash-newline: `git push --force \⏎ origin main` is one line.
   command = command.replace(/\\\n/g, "");
@@ -1417,9 +1438,11 @@ function precheckAs(command, cwd, env) {
   // The scripts it runs, even behind a held ask: a deny in a script still wins, before the fast lane: `npm test` is only as safe as the test script.
   const perLine = {rules: rules.rules.filter(r => on(r, "script") && !r.whole_script)};
   const whole = {rules: rules.rules.filter(r => on(r, "script") && r.whole_script)};
-  // A time budget, so a pathological script cannot outrun the hook's timeout (which would let it run).
-  const t0 = Date.now(), late = () => Date.now() - t0 > SCAN_MS;
-  for (const s of localScripts(command, cwd).filter(s => s.body)) {
+  // A time budget, so a pathological script cannot outrun the hook's timeout (which would let it run):
+  // one for the whole call, and each script scanned once whatever spelling named it.
+  const late = () => Date.now() > run.scan;
+  for (const s of localScripts(command, cwd).filter(s => s.body && !run.scripts.has(s.path))) {
+    run.scripts.add(s.path);
     if (s.body.includes(HERE) || s.body.includes(CONFIG.data))
       { hold(ruled({outcome: "ask", rule: `touches the Reflex gate, its setup or its logs (in ${s.path})`, id: "tamper"})); continue; }
     const {lines} = scriptLines(s.body), all = lines.join("\n");
@@ -1429,7 +1452,8 @@ function precheckAs(command, cwd, env) {
     if (sh) hold(ruled({...sh, rule: `${sh.rule} (in ${s.path})`}));
     if (late()) { hold(ruled({outcome: "ask", rule: `script too large to check in time (${s.path})`, id: "script-budget"})); break; }
   }
-  if (held) return held;
+  // another spelling counts by its rules only: skip the fast lanes (and the scripts they read again)
+  if (held || alt) return held;
   if (fastPass(command, rules)) return {outcome: "pass", rule: "fast lane", source: "fast-lane", policy_version: rules.version};
   if (userFastPass(command, cwd, env)) return {outcome: "pass", rule: "fast lane (fastlane.json)", source: "fast-lane", policy_version: rules.version};
   return null;
@@ -2283,7 +2307,8 @@ async function selfcheck() {
   for (const c of ["git push -f -o merge_request.target=main origin feat/x", "git push -f --push-option=target=main origin feat/x", "git push -f origin feat/x -o ci.skip=main"])
     ok(pw(c) === null, `a push option is not a ref: ${c}`);
   const big = "git push -f origin " + "main>".repeat(8000), t1 = Date.now();
-  ok(pw(big) === "command-size" && pw("git push " + "main ".repeat(6000)) === null && pw("git push -f origin " + "main>".repeat(6000)) === "force-push-main" && Date.now() - t1 < 1500, "a huge command asks, quickly");
+  ok(pw(big) === "force-push-main" && pw("git push " + "main ".repeat(6000)) === null && pw("git push -f origin " + "main>".repeat(6000)) === "force-push-main" && Date.now() - t1 < 1500,
+     "a huge command: the deny rules run before the size ask, quickly");
   for (const c of ["python3 - <<'EOF'\nimport localmod\nprint('rm -rf ~')\nEOF", "/tmp/x/python - <<'EOF'\nprint('rm -rf ~')\nEOF",
     "./python - <<'EOF'\nprint('rm -rf ~')\nEOF", "node - <<'EOF'\nimport('child_' + 'process').then(m => m['ex'+'ecSync']('rm -rf ~'))\nEOF",
     "ruby - <<'EOF'\nKernel.__send__(:sys, 'rm -rf ~')\nEOF", "perl - <<'EOF'\nopen my $f, '-|', 'rm -rf ~';\nEOF", "python3 - <<'EOF'\nlocals()['x']('rm -rf ~')\nEOF",
@@ -2300,7 +2325,7 @@ async function selfcheck() {
     "php <<'EOF'\n<?php\n// ?><?php system('rm -rf ~'); ?>\nEOF", "ruby - <<'EOF'\n#!ruby -r./x\nputs 'rm -rf ~'\nEOF", "python3 - <<'EOF'\nprint('rm -rf ~ é')\nEOF"])
     ok(pw(c) === "rm-root", `heredoc body with a comment or non-ASCII is code: ${c}`);
   ok(!stripDataHeredocs("perl - <<'EOF'\n#!/usr/bin/env -Ssh\\_-c\\_\"touch\\_D1;:\"\nprint 'x';\nEOF", true).includes("<<DATA"), "a perl #! line keeps the body in");
-  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size", "over 32 KB asks");
+  ok(pw("echo " + "x".repeat(33 * 1024)) === "command-size" && pw("rm -rf ~; echo " + "x".repeat(33 * 1024)) === "rm-root", "over 32 KB asks, unless a deny rule fires");
   { const t = Date.now(); pw("ssh -o ".repeat(4600)); ok(Date.now() - t < 3500, "32 KB of ssh -o is checked in time"); }
   for (const c of ["echo x >> ~/.zshrc", "echo x > ~/.bash_aliases", "echo 'use nix' > .envrc", "tee -a ~/.profile < /tmp/p", "sed -i '' s/a/b/ ~/.zprofile",
     "cp /tmp/z ~/.zshenv", "mv /tmp/b ~/.bash_profile", "echo x > ~/.config/fish/config.fish", "sort $'\\0'-o ~/.zshrc f"]) ok(pw(c) === "shell-startup", `shell startup write: ${c}`);
@@ -2538,6 +2563,11 @@ async function selfcheck() {
     ok(pt("python3 t.py") === null && pt("bash clean.sh") === "destroy" && pt("bash push.sh") === null, "script rules: per line, no false prod or main");
     put("td.sh", `DB=prod-orders\naws rds delete-db-instance --db-instance-identifier "$DB"\n`);
     ok(pt("bash td.sh") === "prod-destroy", "script rules: the script's own variables are expanded");
+    // one budget per call: every spelling shares the deadline, and a script is scanned once
+    { const run = {deadline: Date.now() + 3000, scan: Date.now() + 1500, scripts: new Set()};
+      ok(precheck("bash 't'd.sh", T, {}, 0, run)?.id === "prod-destroy" && run.scripts.size === 1 &&
+         precheck("ls", T, {}, 0, {deadline: 0, scan: 0, scripts: new Set()})?.id === "command-size" &&
+         precheck("rm -rf ~", T, {}, 0, {deadline: 0, scan: 0, scripts: new Set()})?.id === "rm-root", "precheck: one deadline and one scan per script per call"); }
     put("tam.sh", `echo "{}" > ~/.claude/settings.json\n`);
     put("tam2.sh", `sed -i '' s/enforce/off/ ${join(HERE, "policy.mjs")}\n`);
     ok(pt("bash tam.sh") === "tamper" && pt("bash tam2.sh") === "tamper", "script rules: a script cannot switch the gate off");
