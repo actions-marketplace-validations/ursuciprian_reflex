@@ -11,7 +11,7 @@
 import {readFileSync} from "node:fs";
 import {homedir} from "node:os";
 import {dirname, isAbsolute, join, resolve} from "node:path";
-import {checkRules, load, localScripts, maskQuotes, readOnly, stripDataHeredocs} from "./gate.mjs";
+import {load, localScripts, maskQuotes, readOnly, rulesHit, stripDataHeredocs} from "./gate.mjs";
 import {teamEscalation, teamFastLane} from "./team.mjs";
 
 export const FASTLANE_FILE = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "reflex/fastlane.json");
@@ -144,5 +144,5 @@ export function userFastPass(command, cwd, env = {}, entries = [...loadFastLane(
   if (localScripts(command, cwd).some(s => !scriptOk(s))) return false;
   if (npmrcRedirects(cwd)) return false;
   const bare = stripDataHeredocs(command), haystack = [bare, `cwd=${cwd}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].join(" ");
-  return !checkRules(haystack, {rules: teamEscalation(load("escalation.json"), cwd, command).always_human.rules}, bare);
+  return !rulesHit(haystack, {rules: teamEscalation(load("escalation.json"), cwd, command).always_human.rules}, bare);
 }

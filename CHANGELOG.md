@@ -34,6 +34,34 @@ All notable changes to Reflex are documented here. The format follows
   `reflex policy init`, asks a human. `reflex setup` adds `Edit(**/.reflex/**)` to Claude Code's ask
   rules.
 
+### Fixed
+
+Fourth review of the read-only parser (#43). Each change asks more often; none passes anything new.
+
+- Option-sensitive tools (every tool in the unsafe-flag list or with a read-only subcommand list, plus
+  sed, date and file) are read-only only when their words hold no expansion at all: no variable, no
+  command substitution, no arithmetic, no brace list and no glob, before or after `--` (`xxd -- *`
+  can write the second file, `awk -- *` runs a file name as its program). The per-binding exceptions
+  (`F=notes.txt; sed -n 1p "$F"`) are gone. The one word kept is a double-quoted `$name` inside a
+  word that starts with a literal path, such as `gh api "repos/$R/pulls"`, and never for sed or awk.
+  `printf` keeps its own rule (options in the first word only).
+- awk is read-only only when its program text has no `@`, `system`, `getline`, `|`, `>`, `close`,
+  `fflush`, `PROCINFO` or `ENVIRON`, and there is no `-f` or `-i`. A `>` comparison now asks too.
+- The rules read brace sequences (`ma{i..i}n`), nested lists and several braces per word, with quotes
+  kept, so the force-push rules still deny. Past 1,024 expanded words the command asks.
+- Over 32 KB the deny rules run before the size ask, on overlapping windows and in every spelling,
+  until the deadline: a large command never turns a deny into an ask.
+- `precheck` shares one deadline across the spellings it recurses into, and scans each local script
+  once per call, so the total stays under the hook timeout.
+- `shell-startup` (rules-v17) also catches a startup file copied into a directory (a destination
+  that ends in `/` or is `~` or `$HOME`) and `tee` with several files.
+- The user fast lane and the report's fast-lane candidates drop git's global options before the
+  always-human and rule checks (`rulesHit`, shared with `alwaysHuman`).
+- An escaped `\(` in `find . \( -name a -o -name b \)` no longer trips the zsh glob-qualifier guard.
+- In a nested worktree, cd targets and path words are resolved with `realpathSync` before they count
+  as staying inside it; a symlink out of it, or a path that cannot be resolved, restores the checkout
+  view.
+
 ## [0.13.0] - 2026-09-28
 
 ### Added
