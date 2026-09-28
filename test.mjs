@@ -719,9 +719,10 @@ try {
     for (const p of [String.raw`\bkubectl\b.*\bdelete\b`, "a.*a.*b", "(a+)+b", String.raw`\bDROP\s+(table|schema)\b`, "clusters/main-eu"]) assert.equal(regexError(p), null, p);
     write({version: 1, rules: [{id: "slow", outcome: "deny", before_read_only: true, rule: "slow", all: ["a.*a.*a.*b"]},
       {id: "caps", outcome: "deny", rule: "caps", all: [String.raw`\bTERRAFORM\s+Destroy\b`]}]});
-    let t0 = Date.now();
-    pc("a".repeat(30000));
-    assert.ok(Date.now() - t0 < 2000, `team patterns stay fast on a hostile command (${Date.now() - t0} ms)`);
+    // measure what the team patterns add, not precheck's own cost on 30 KB (slow CI runners vary)
+    const hostile = "a".repeat(30000), timed = cwd => { const t = Date.now(); precheck(hostile, cwd, {}); return Date.now() - t; };
+    const base = timed(home), withTeam = timed(repo);
+    assert.ok(withTeam - base < 1000, `team patterns stay fast on a hostile command (${withTeam} ms vs ${base} ms without)`);
     assert.equal(pc("Terraform DESTROY")?.id, "team:caps", "patterns stay case-insensitive");
     write(policy);
     write(policy);
