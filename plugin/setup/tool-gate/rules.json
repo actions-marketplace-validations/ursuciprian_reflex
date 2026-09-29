@@ -1,0 +1,197 @@
+{
+  "version": "rules-v22",
+  "note": "Deterministic and authoritative: checked before Jev, enforced even in shadow mode. Patterns are case-insensitive and run over the command plus its context (cwd=, aws_profile=, kube_context=, tf_workspace=, git_branch=). A rule fires when every pattern in `all` matches. `pass` patterns apply per segment: a command passes the fast lane when every segment is read-only or matches one. `applies_to` says what a rule reads: the command (the default) and/or the local scripts the command runs. Script rules run line by line, with the script's simple VAR=value assignments expanded and whole-line comments dropped; `whole_script` rules see the whole body. `context: false` rules read the command without the cwd=/profile context. `tainted` rules apply only in a session whose agent read a suspected prompt injection (guard.mjs); like Jev decisions, they are enforced in enforce mode only. `shell` rules read shell commands: they skip a command whose every pipeline only reads (or is mkdir, touch, git add, git commit or reflex check) and writes nothing but notes (.md, .txt, .log, .csv, /dev/null), and the program of a bare `python3 - <<'EOF'` (the whole command) when nothing in it could run, load, write or delete anything. `writes` rules read what the command changes: a pipeline that only reads counts by its redirect targets.",
+  "rules": [
+    {
+      "id": "secret-read",
+      "outcome": "ask",
+      "before_read_only": true,
+      "rule": "prints the Jev API key or reads a secret store value",
+      "all": [
+        "(\\$\\{?typesafe_api_key|find-generic-password\\b(?!(?!(?:[^;&|\\n]|(?<=[<>])&|&(?=>))*\\s-[a-zA-Z]*g\\b)(?:[^;&|\\n]|(?<=[<>])&|&(?=>))*\\s[1&]?>\\s*/dev/null(?=$|[\\s;&|)])(?!(?:[^;&|\\n]|(?<=[<>])&|&(?=>))*(?:^|[^2&])>(?!\\s*/dev/null(?=$|[\\s;&|)]))))[^\\n]*\\s-w|secretsmanager\\s+get-secret-value|ssm\\s+get-parameters?\\b.*--with-decryption)"
+      ]
+    },
+    {
+      "id": "secret-file-read",
+      "outcome": "ask",
+      "before_read_only": true,
+      "rule": "reads a private key, a credentials file, a .env file or Kubernetes secrets",
+      "all": [
+        "(?:^|[;&|(\\n\\x60]|\\$\\(|\\b(?:ba|z|k|da)?sh\\s+-c\\s+['\"]|\\beval\\s+['\"]|\\bssh\\s[^;&|\\n]*?\\s['\"]|\\bssh(?:[ \\t]+[^\\s;&|'\"]+)+?[ \\t]|\\bdocker\\s+exec(?:\\s+(?:-[uwe]\\s+\\S+|--(?:user|workdir|env)[=\\s]\\S+|-\\S+))*\\s+[\\w.-]+\\s)\\s*(?:(?:then|do|else|!|\\{|sudo|env|nohup|time|command|exec|rtk(?:\\s+proxy)?|timeout\\s+\\S+|xargs(?:\\s+-\\S+)*|\\w+=\\S*)\\s+)*(?:(?:cat|bat|b?less|more|head|tail|grep|egrep|fgrep|rg|ag|base64|xxd|strings|od|hexdump|nl|sort|uniq|cut|paste|fold|column|diff|comm|cmp|tac|rev|open|source|\\.(?=\\s+(?:--\\s+)?[^\\s-])|nc|ncat|netcat|socat|tar|zip|gzip|jq|yq|awk|sed|mcp\\s+\\S+)\\s(?:[^;&|\\n'\"]|'[^'\\n]*'|\"[^\"\\n]*\")*?(?:(?:['\"][^'\"\\n]*?)?(?:\\.ssh/id_(?![\\w*?-]*\\.pub\\b)|\\.aws/credentials\\b|\\.(?:netrc|git-credentials|pgpass)\\b)|['\"][^'\"\\n]*?(?<=^|[\\s/'\"=@<:])\\.env(?:\\.(?!(?:example|sample|template|dist|defaults)\\b)[\\w-]+)?(?=['\"])|(?<=^|[\\s/'\"=@<:])\\.env(?:\\.(?!(?:example|sample|template|dist|defaults)\\b)[\\w-]+)?(?=$|[\\s'\"),;&|\\x60]))|(?:cp|scp|rsync)\\s(?:[^;&|\\n'\"]|'[^'\\n]*'|\"[^\"\\n]*\")*?(?:(?:['\"][^'\"\\n]*?)?(?:\\.ssh/id_(?![\\w*?-]*\\.pub\\b)|\\.aws/credentials\\b|\\.(?:netrc|git-credentials|pgpass)\\b)|['\"][^'\"\\n]*?(?<=^|[\\s/'\"=@<:])\\.env(?:\\.(?!(?:example|sample|template|dist|defaults)\\b)[\\w-]+)?(?=['\"])|(?<=^|[\\s/'\"=@<:])\\.env(?:\\.(?!(?:example|sample|template|dist|defaults)\\b)[\\w-]+)?(?=$|[\\s'\"),;&|\\x60]))\\S*\\s+(?!cwd=)[^\\s;&|]|curl\\b[^;&|\\n]*?\\s(?:-[a-zA-Z]*[dFT]|--data[\\w-]*|--form[\\w-]*|--upload-file|--json)(?:[\\s=]+|(?=['\"@]))['\"]?[^\\s'\";&|]*(?:\\.ssh/id_(?![\\w*?-]*\\.pub\\b)|\\.aws/credentials\\b|\\.(?:netrc|git-credentials|pgpass)\\b|(?<=^|[\\s/'\"=@<:])\\.env(?:\\.(?!(?:example|sample|template|dist|defaults)\\b)[\\w-]+)?(?=$|[\\s'\"),;&|\\x60]))|kubectl\\b[^;&|\\n]*\\sget\\s+(?:-\\S+\\s+(?:[^-\\s]\\S*\\s+)?)*(?:[\\w.]+,)*secrets?(?![\\w-]))|<\\s*['\"]?[^\\s;&|'\"]*(?:\\.ssh/id_(?![\\w*?-]*\\.pub\\b)|\\.aws/credentials\\b|\\.(?:netrc|git-credentials|pgpass)\\b|(?<=^|[\\s/'\"=@<:])\\.env(?:\\.(?!(?:example|sample|template|dist|defaults)\\b)[\\w-]+)?(?=$|[\\s'\"),;&|\\x60]))"
+      ]
+    },
+    {
+      "id": "secret-file-read",
+      "outcome": "ask",
+      "before_read_only": true,
+      "rule": "runs a command on the private keys, credentials or .env files find matches",
+      "all": [
+        "\\bfind\\b[^;&|\\n]*\\s-i?(name|path|regex)\\s+['\\\"]?[^\\s;&|]*(\\.env\\b|id_[a-z0-9]+\\b|credentials\\b|\\.netrc\\b|\\.pgpass\\b)[^;&|\\n]*\\s-(exec|execdir|ok|okdir)\\b"
+      ]
+    },
+    {
+      "id": "rm-root",
+      "outcome": "deny",
+      "rule": "recursive delete of / or home",
+      "shell": true,
+      "applies_to": [
+        "command",
+        "script"
+      ],
+      "all": [
+        "\\brm\\s+(-[a-z-]+\\s+)*(--\\s+)?\\\"?(/|~|\\$home|\\$\\{home\\})\\\"?/?\\*?(\\s|$|[;&|)`'\"])"
+      ]
+    },
+    {
+      "id": "prod-destroy",
+      "outcome": "deny",
+      "rule": "destructive operation on production",
+      "shell": true,
+      "applies_to": [
+        "command",
+        "script"
+      ],
+      "all": [
+        "(?<!(non|pre)[-_])\\b(prod(uction)?|prd)(\\d+|\\b|_)(?![\\w.-]{0,64}\\.(md|markdown|txt|rst|adoc|log|csv|tsv|png|jpe?g|gif|svg|pdf|html?)(?![\\w.-]))|\\b(envs?|environments?|stages?|deploy(ments)?|overlays|accounts|workspaces|clusters)/live\\b|\\binfrastructure-live\\b|(^|[\\s/=])live/[a-z]{2}(-[a-z]+)+-\\d\\b|\\blive[\\w-]{0,64}\\.tfvars\\b|-chdir=([^\\s/]{0,64}/){0,8}live\\b|\\bcd\\s+([^\\s/;&|]{0,64}/){0,8}live(?=$|[/\\s;&|])|(--(env|environment|stage|context|kube-context|profile|workspace|cluster|namespace|target|tier|host|(terragrunt-)?working-dir)(=|\\s+)|\\s-[nh](=|\\s+)|\\b\\w{0,64}(env|environment|stage|profile|context|workspace|tier|namespace)=)[\"']?[\\w:/.@-]{0,64}\\blive\\b|\\bworkspace\\s+(select|new)\\s+live\\b|--live(?![\\w-])|\\b(aws_profile|kube_context|tf_workspace)=[^\\s=]{0,128}\\blive(\\d+|\\b|_)|\\bgit_branch=([\\w.-]{1,64}/){0,8}live\\d*(?=\\s|$)|\\s-n[\"']?(prod(uction)?|prd|live)(\\d+|\\b|_)",
+        "(\\baws\\s+\\S+\\s+(delete|terminate|remove|deregister)-|\\baws\\s+s3\\s+(rm\\b.*--recursive|rb\\b)|\\bkubectl\\b.*\\s(delete|drain)\\s|\\bkubectl\\b.*\\sscale\\b.*--replicas[= ]0\\b|\\b(terraform|tofu)\\s+(-\\S+\\s+)*(destroy|state\\s+rm|apply\\b.*\\s--?(destroy|replace))|\\bterragrunt\\s+([^;&|\\n]*\\s)?(destroy(-all)?|state\\s+rm)\\b|\\bterragrunt\\s+([^;&|\\n]*\\s)?apply\\b[^;&|\\n]*\\s--?(destroy|replace)|\\bhelm\\s+(--?[\\w-]+((=|\\s+)[^\\s;&|-]\\S*)?\\s+)*(uninstall|delete|rollback)\\s|\\b(drop\\s+(database|table|schema)\\b|truncate\\s+(table\\s+)?[\\w.\"]+\\s*(;|'|\"|$|\\bcascade\\b|\\brestart\\b)|delete\\s+from\\b)|\\b(gcloud|az)\\b.*\\sdelete\\b)"
+      ]
+    },
+    {
+      "id": "force-push-main",
+      "outcome": "deny",
+      "rule": "force push or delete of main/master",
+      "shell": true,
+      "applies_to": [
+        "command",
+        "script"
+      ],
+      "all": [
+        "\\bgit\\s+push\\b[^;&|]*(--force\\b|--force-with-lease\\b|--delete\\b|\\s-[a-zA-Z]*[fd][a-zA-Z]*\\b|\\s['\"]?[+:])",
+        "\\bgit\\s+push\\b[^;&|\\n]*?(\\s|[:+'\"]|--force-with-lease=|\\bheads/)(main|master)(?=$|[\\s:;&|)'\"<>#}\\x60\\\\])|\\bgit_branch=(main|master)(?=\\s|$)|^(?=[\\s\\S]*?\\bgit\\s+push\\b[^;&|\\n]*[$\\x60])(?=[\\s\\S]*?\\b(main|master)\\b)"
+      ]
+    },
+    {
+      "id": "force-push-unknown-branch",
+      "outcome": "ask",
+      "rule": "force push of the current branch (HEAD, or no ref given) where the branch is unknown",
+      "shell": true,
+      "applies_to": [
+        "command",
+        "script"
+      ],
+      "all": [
+        "\\bgit\\s+push\\b[^;&|]*(--force\\b|--force-with-lease\\b|\\s-[a-zA-Z]*f[a-zA-Z]*\\b|\\s['\"]?\\+)",
+        "\\bgit\\s+push\\b([^;&|\\n]*?(\\s|[+'\"])HEAD(?=$|[\\s;&|)'\"<>#}\\x60\\\\])|(\\s+-\\S+)*(\\s+[^\\s;&|<>()-]\\S*)?(\\s+-\\S+)*\\s*(?=$|[;&|\\n)<>#}]|\\s+cwd=))",
+        "^(?![\\s\\S]*\\bgit_branch=)"
+      ]
+    },
+    {
+      "id": "push-mirror",
+      "outcome": "deny",
+      "rule": "mirror push rewrites every remote ref",
+      "shell": true,
+      "applies_to": [
+        "command",
+        "script"
+      ],
+      "all": [
+        "\\bgit\\s+push\\b[^;&|]*--mirror\\b"
+      ]
+    },
+    {
+      "id": "secret-exfil",
+      "outcome": "ask",
+      "applies_to": [
+        "script"
+      ],
+      "rule": "script reads credentials or a .env file and talks to the network",
+      "whole_script": true,
+      "all": [
+        "(\\bcat\\b|\\bbase64\\b|\\b(tar|zip|gzip|openssl|scp|rsync)\\b[^\\n]{0,300}|\\bcurl\\b[^\\n]{0,300}(-T|--upload-file|-F|--form|-d|--data[\\w-]*)\\s*[^\\s<@;]{0,100}|<|@)\\s*[\"']?(?<!-i\\s*[\"']?)((~|\\$home|\\$\\{home\\})/\\.(ssh|aws|kube|gnupg)\\b|([^\\s<@;]{0,200}/)?\\.env(?![\\w.]))",
+        "\\b(curl|wget|nc|ncat|netcat|socat|scp|rsync|sftp|ftp)\\b|/dev/(tcp|udp)/"
+      ]
+    },
+    {
+      "id": "tamper",
+      "outcome": "ask",
+      "rule": "touches the Reflex gate or agent settings",
+      "context": false,
+      "writes": true,
+      "applies_to": [
+        "command",
+        "script"
+      ],
+      "all": [
+        "((?<!https?://[^\\s<>;&|'\"]*|\\bgh\\s[^;&|\\n]*?(\\brepos/|(--repo|-R)[=\\s]+)[\\w.-]*)/reflex(/|\\s|$)|(\\.local/state|\\.config|xdg_(state|config)_home)\\b[^\\n]{0,200}\\breflex\\b|\\.claude[\\w-]*/(settings|hooks|plugins/)|\\bclaude\\s+plugins?\\s+(disable|uninstall|remove|rm|marketplace\\s+(remove|rm))\\b|\\bcodex\\s+plugins?\\s+(remove|rm|uninstall|marketplace\\s+(remove|rm))\\b|\\.codex/(hooks\\.json|config\\.toml|rules)|\\.hermes/.*config\\.yaml|opencode/(plugins?|opencode\\.jsonc?)|\\.(pi|omp)/agent/(extensions|settings)|reflex_(mode|allow|guard|judge|queue|checkpoints|engine|setup_dir|data_dir|injection_dir))"
+      ]
+    },
+    {
+      "id": "shell-startup",
+      "outcome": "ask",
+      "rule": "writes a shell startup file (.zshrc, .bashrc, .profile, .envrc, fish config), which runs in every new shell",
+      "context": false,
+      "applies_to": [
+        "command"
+      ],
+      "all": [
+        "(>\\|?|&>|\\bdd\\b[^;&|\\n]*\\bof=|[=,]|(?<![\\w-])-[a-zA-Z]*o|(?<=['\"/;\\s\\d$}])[wW])\\s*['\"]?(~|\\$HOME|\\$\\{HOME\\}|[^\\s'\";&|<>]*/)?(\\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|envrc)(?![\\w.-])|\\.config/fish/)|\\bsed\\b[^;&|\\n]*\\s(-[a-zA-Z]*[iI]\\S*|--in-place\\S*)\\s[^;&|\\n]*['\"]?(~|\\$HOME|\\$\\{HOME\\}|[^\\s'\";&|<>]*/)?(\\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|envrc)(?![\\w.-])|\\.config/fish/)|(\\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|envrc)(?![\\w.-])|\\.config/fish/)[^\\s;&|<>)]*['\"]?\\s*(?=$|[;&|\\n)])(?<=\\b(cp|mv|install|rsync|ln)\\b[^;&|\\n]{0,1024}?\\s['\"]?(~|\\$HOME|\\$\\{HOME\\}|[^\\s'\";&|<>]*/)?(\\.\\w+|\\.config/fish/)[^\\s;&|<>)]*['\"]?\\s*)|(\\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|envrc)(?![\\w.-])|\\.config/fish/)(?<=\\btee\\b[^;&|<>\\n]{0,256}?\\s['\"]?(~|\\$HOME|\\$\\{HOME\\}|[^\\s'\";&|<>]*/)?(\\.\\w+|\\.config/fish/))|((~|\\$HOME|\\$\\{HOME\\})(/\\.?)?|/\\.?)['\"]?\\s*(?=$|[;&|\\n)])(?<=\\b(cp|mv|install|rsync|ln)\\b[^;&|\\n]{0,1024}?\\s['\"]?([^\\s'\";&|<>]*/)?(\\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|envrc)|\\.config/fish)(?![\\w.-])['\"]?(\\s[^;&|\\n]{0,1024}?)?\\s['\"]?[^\\s'\";&|<>]{0,1024}((~|\\$HOME|\\$\\{HOME\\})(/\\.?)?|/\\.?)['\"]?\\s*)"
+      ]
+    },
+    {
+      "id": "tamper",
+      "outcome": "ask",
+      "rule": "changes files in an agent settings or hooks directory",
+      "all": [
+        "cwd=\\S*(\\.claude/(settings|hooks)|\\.codex/(hooks|rules)|\\.hermes/|opencode/plugins?|\\.(pi|omp)/agent/(extensions|settings))"
+      ]
+    },
+    {
+      "id": "ssh-local-command",
+      "outcome": "ask",
+      "before_read_only": true,
+      "context": false,
+      "rule": "ssh option that runs a local command (ProxyCommand, LocalCommand, Match exec, a jump hop that is an option)",
+      "all": [
+        "\\bssh\\s[^;&|\\n]*?(-o\\s*['\"]?\\s*(proxycommand|localcommand|permitlocalcommand|knownhostscommand|match)\\b|(-J\\s*|proxyjump[=\\s]+)['\"]?([^\\s;&|'\"]*[,/])?-)"
+      ]
+    },
+    {
+      "id": "destroy",
+      "outcome": "ask",
+      "rule": "destructive operation",
+      "shell": true,
+      "applies_to": [
+        "command",
+        "script"
+      ],
+      "all": [
+        "(\\baws\\s+\\S+\\s+(delete|terminate|remove|deregister)-|\\baws\\s+s3\\s+(rm\\b.*--recursive|rb\\b)|\\bkubectl\\b.*\\s(delete|drain)\\s|\\bkubectl\\b.*\\sscale\\b.*--replicas[= ]0\\b|\\b(terraform|tofu)\\s+(-\\S+\\s+)*(destroy|state\\s+rm|apply\\b.*\\s--?(destroy|replace))|\\bterragrunt\\s+([^;&|\\n]*\\s)?(destroy(-all)?|state\\s+rm)\\b|\\bterragrunt\\s+([^;&|\\n]*\\s)?apply\\b[^;&|\\n]*\\s--?(destroy|replace)|\\bhelm\\s+(--?[\\w-]+((=|\\s+)[^\\s;&|-]\\S*)?\\s+)*(uninstall|delete|rollback)\\s|\\b(drop\\s+(database|table|schema)\\b|truncate\\s+(table\\s+)?[\\w.\"]+\\s*(;|'|\"|$|\\bcascade\\b|\\brestart\\b)|delete\\s+from\\b)|\\b(gcloud|az)\\b.*\\sdelete\\b)"
+      ]
+    }
+  ],
+  "pass": [
+    "^(go\\s+(build|test|vet|fmt)|pytest|uv\\s+run\\s+pytest|python3?\\s+-m\\s+(pytest|py_compile)|cargo\\s+(build|test|check|clippy|fmt)|npm\\s+(test|ci|run\\s+(test|lint|build|smoke))|node\\s+--check(?![^<>`$]*\\s(-r|--require|--import|--loader|--experimental-loader|--env-file[\\w-]*|--experimental-(default-)?config-file|--run|--build-snapshot[\\w-]*|--snapshot-blob)(\\s|=|$))|terraform\\s+fmt)(?=\\s|$)[^<>`$]*$",
+    "^bash\\s+-n(\\s+[\\w./~][\\w./-]*)+$",
+    "^(mkdir|touch)\\s[^<>`$]*$",
+    "^chmod\\s+[+u]?x\\s[^<>`$]*$",
+    "^git\\s+(add|commit)(?=\\s|$)[^<>`$]*$",
+    "^git\\s+stash(\\s+push)?(\\s+(-u|--include-untracked|-k|--keep-index|-m\\s+(''|[\\w.-]+)|--message=[\\w.-]+))*$",
+    "^git\\s+(checkout\\s+-b|switch\\s+-c)\\s+(?!-)[\\w./-]+(\\s+(?!-)[\\w./-]+)?$",
+    "^git\\s+switch\\s+(?!-)[\\w./-]+$",
+    "^git\\s+restore\\s+--staged(\\s+((?!-)[\\w./-]+|''))+$",
+    "^git\\s+push\\s+(-u\\s+|--set-upstream\\s+)?origin\\s+(?!-)(?!(main|master|release|prod)\\b)[\\w./-]+$",
+    "^reflex\\s+(status|queue(\\s+(list|show)(\\s+[\\w-]+)?)?|envelope\\s+show|checkpoints(\\s+list)?)(\\s+--(json|cwd\\s+\\S+|session\\s+\\S+))*\\s*$",
+    "^reflex\\s+(check\\s+(''|\\\\')+|report(\\s+--(since\\s+\\d+|list\\s+(ask|deny|pass)|calibration))*|replay(\\s+(claude|codex|opencode|pi|omp|all))?(\\s+--since\\s+\\d+[dhw]?)?|suggest(\\s+(claude|codex|opencode|pi|omp|all))?(\\s+--(since\\s+\\d+[dhw]?|min\\s+\\d+))*)(\\s+--json)?\\s*$"
+  ],
+  "tainted": [
+    {
+      "id": "tainted-egress",
+      "outcome": "ask",
+      "rule": "network egress in a session that read a suspected prompt injection",
+      "all": [
+        "\\b(curl|wget|nc|ncat|netcat|socat|scp|sftp|rsync|ftp|telnet|ssh|xh|httpie)\\b|https?://|\\bgit\\s+(push|send-email|remote\\s+(add|set-url))\\b|\\bgh\\s+(api|gist|issue\\s+(create|comment|edit)|pr\\s+(create|comment|review|edit)|release\\s+(create|upload)|repo\\s+create)\\b|\\b(npm|pnpm|yarn|bun)\\s+publish\\b|\\b(docker|podman)\\s+push\\b|\\baws\\s+s3\\s+(cp|sync|mv)\\b|\\bopen\\s+[\"']?https?:|\\b(python[\\d.]*|node|ruby|perl|php)\\b[^\\n]{0,300}(socket|urllib|requests\\.|fetch\\(|http\\.request|Net::HTTP)"
+      ],
+      "context": false
+    }
+  ]
+}

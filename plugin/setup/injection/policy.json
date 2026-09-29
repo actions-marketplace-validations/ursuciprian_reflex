@@ -1,0 +1,195 @@
+{
+  "name": "Injection guard",
+  "version": "injection-v3",
+  "subject": "Tool results a coding agent reads (web pages, search results, MCP results, files from outside the project, network command output), judged for prompt injection before the agent acts on them. Pass leaves the result alone; warn tells the agent the result is untrusted data; block removes or neutralises the offending text where the agent lets a hook rewrite the result, and records a taint that makes the gate stricter for the rest of the session.",
+  "fallback": "deterministic",
+  "sources": {
+    "note": "Which tool results are inspected. A result is inspected when its tool name matches one kind's `tools` and, for `file`, when the path is outside the repository (the nearest directory holding .git above the working directory, else the working directory) or its path inside the repository matches `paths` (third-party trees), and never when the absolute path matches `exclude` (credential files, whose content must not go to Jev); for `shell`, when the command matches `commands`, or when a `readers` command is given a path the file rule would inspect (cat /tmp/page.html), or a `git` history command runs in a repository outside the project (git -C /tmp/clone log); a command that also names a credential file (`exclude`) is judged by the detectors only, never sent to Jev. `jev`: always (every inspected result goes to Jev, engine jev) or signals (only results with a deterministic hit). An adapter that knows a tool is an MCP tool says so, whatever its name.",
+    "jev": "always",
+    "web": {
+      "enabled": true,
+      "tools": "^(WebFetch|WebSearch|webfetch|websearch|codesearch|web_fetch|web_search|web_extract|fetch|browser_(?!vault_)\\w+|web_browse|x_search|feishu_doc_read|github)$"
+    },
+    "mcp": {
+      "enabled": true,
+      "tools": "^mcp__|^mcp[_.:]|^connectors__"
+    },
+    "file": {
+      "enabled": true,
+      "tools": "^(Read|read|read_file|view|view_file)$",
+      "paths": "(^|/)(node_modules|vendor|third_party|site-packages|\\.venv|\\.cache)/",
+      "exclude": "(^|/)\\.(ssh|aws|gnupg|kube|docker|azure|gcloud|password-store)/|(^|/)\\.config/(gh|gcloud|op|hub)/|(^|/)(\\.env(\\.[\\w.-]+)?|\\.netrc|\\.pgpass|\\.npmrc|\\.pypirc|\\.git-credentials|credentials(\\.json)?|id_[a-z0-9]+|[^/]*\\.(pem|key|p12|pfx|kdbx))$"
+    },
+    "shell": {
+      "enabled": true,
+      "tools": "^(Bash|bash|shell|exec_command|local_shell|terminal)$",
+      "commands": "\\b(curl|wget|xh|https?|lynx|w3m|links|aria2c|httpie)\\b|\\bgh\\s+(issue|pr|api|release|gist|search|repo\\s+view)\\b|\\bglab\\s+(issue|mr|api)\\b|\\b(npm|pnpm|yarn)\\s+(view|info)\\b|\\bpip[\\d.]*\\s+(show|download)\\b",
+      "readers": "^(cat|bat|batcat|head|tail|less|more|tac|nl|jq|yq|sed|awk|strings|zcat|zless|xxd|xmllint)$",
+      "git": "^(log|show|blame|shortlog)\\b"
+    }
+  },
+  "params": {
+    "blockAt": {
+      "label": "Block at addressed",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.7,
+      "note": "Jev probability that a chunk tries to direct the agent, for a block."
+    },
+    "severityAt": {
+      "label": "Block at severity",
+      "min": 0,
+      "max": 3,
+      "step": 0.1,
+      "default": 1.8,
+      "note": "Jev severity (0 none, 1 mild, 2 serious, 3 severe) for a block."
+    },
+    "warnAt": {
+      "label": "Warn at addressed",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.5
+    },
+    "warnSeverityAt": {
+      "label": "Warn at severity",
+      "min": 0,
+      "max": 3,
+      "step": 0.1,
+      "default": 0.8
+    },
+    "suspectAt": {
+      "label": "Warn at addressed, for a serious attack",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.25,
+      "note": "Jev names an attack and rates it serious (severity at or above Warn at severity, for a serious attack) but is unsure the chunk speaks to an AI: a polite request to 'have the helper you are using' send a key somewhere scores 0.37-0.49 (issue 19). Quoted or reported attacks are judged attack none, so they never reach this gate. Keep it at or above benignBelow: a chunk under benignBelow passes first."
+    },
+    "suspectSeverityAt": {
+      "label": "Warn at severity, for a serious attack",
+      "min": 0,
+      "max": 3,
+      "step": 0.1,
+      "default": 1.8
+    },
+    "benignBelow": {
+      "label": "Jev clears phrase hits below",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.2,
+      "note": "A phrase-level hit (override, role, to_ai) is cleared when Jev is this sure the chunk does not direct an AI, e.g. an article quoting an injection. Hidden text and exfiltration links are never cleared."
+    },
+    "invisibleAt": {
+      "label": "Warn at invisible characters",
+      "min": 1,
+      "max": 200,
+      "step": 1,
+      "default": 12
+    }
+  },
+  "flags": {},
+  "outcomes": {
+    "block": {
+      "label": "Block",
+      "color": "#8c2f3c",
+      "blurb": "Offending text removed where the agent allows; the session is tainted"
+    },
+    "warn": {
+      "label": "Warn",
+      "color": "#8a5300",
+      "blurb": "The agent is told the result is untrusted data; the session is tainted"
+    },
+    "pass": {
+      "label": "Pass",
+      "color": "#2b7f6c",
+      "blurb": "No sign of injection"
+    }
+  },
+  "gates": [
+    {
+      "id": "hidden",
+      "label": "Instructions hidden from a human?",
+      "test": "hidden >= 1",
+      "outcome": "block",
+      "detail": "hidden {hidden}",
+      "rule": "instructions hidden from a human reader (invisible text, HTML comment or hidden element, encoded blob)"
+    },
+    {
+      "id": "exfil-link",
+      "label": "Exfiltration link?",
+      "test": "exfil_link >= 1",
+      "outcome": "block",
+      "detail": "exfil_link {exfil_link}",
+      "rule": "a markdown image or link that would send data to a remote host"
+    },
+    {
+      "id": "jev-block",
+      "label": "Jev: directs the agent, seriously?",
+      "test": "addressed >= $blockAt and severity >= $severityAt and attack != 'none'",
+      "outcome": "block",
+      "detail": "addressed {addressed}, severity {severity}, {attack}",
+      "rule": "text that tries to make the agent act: {attack} (severity {severity})"
+    },
+    {
+      "id": "jev-benign",
+      "label": "Jev: only informs?",
+      "test": "addressed < $benignBelow",
+      "outcome": "pass",
+      "detail": "addressed {addressed}",
+      "rule": "phrase hits in text that informs rather than directs (addressed {addressed})"
+    },
+    {
+      "id": "jev-no-attack",
+      "label": "Jev: an override plus an action, but no attack?",
+      "test": "attack == 'none' and severity < $severityAt and override >= 1 and acts >= 1 or attack == 'none' and severity < $severityAt and to_ai >= 1 and acts >= 1 or attack == 'none' and severity < $severityAt and role >= 1 and acts >= 1",
+      "outcome": "warn",
+      "detail": "addressed {addressed}, severity {severity}, acts {acts}",
+      "rule": "text addressed to an AI agent next to a command, which Jev judged to carry no attack (severity {severity})"
+    },
+    {
+      "id": "override-act",
+      "label": "Override plus an action?",
+      "test": "override >= 1 and acts >= 1 or to_ai >= 1 and acts >= 1 or role >= 1 and acts >= 1",
+      "outcome": "block",
+      "detail": "override {override}, to_ai {to_ai}, role {role}, acts {acts}",
+      "rule": "text addressed to an AI agent that asks it to run code, read secrets or send data"
+    },
+    {
+      "id": "jev-warn",
+      "label": "Jev: directs the agent?",
+      "test": "addressed >= $warnAt and severity >= $warnSeverityAt and attack != 'none'",
+      "outcome": "warn",
+      "detail": "addressed {addressed}, severity {severity}, {attack}",
+      "rule": "text that tries to direct the agent: {attack}"
+    },
+    {
+      "id": "jev-suspect",
+      "label": "Jev: a serious attack, if it directs the agent?",
+      "test": "addressed >= $suspectAt and severity >= $suspectSeverityAt and attack != 'none'",
+      "outcome": "warn",
+      "detail": "addressed {addressed}, severity {severity}, {attack}",
+      "rule": "text that may be trying to make the agent act: {attack} (severity {severity}, addressed {addressed})"
+    },
+    {
+      "id": "phrases",
+      "label": "Override, role marker or text to an AI?",
+      "test": "override >= 1 or role >= 1 or to_ai >= 1",
+      "outcome": "warn",
+      "detail": "override {override}, role {role}, to_ai {to_ai}",
+      "rule": "text addressed to an AI agent (instruction override, role marker or direct address)"
+    },
+    {
+      "id": "invisible",
+      "label": "Invisible characters?",
+      "test": "invisible >= $invisibleAt",
+      "outcome": "warn",
+      "detail": "invisible {invisible}",
+      "rule": "{invisible} invisible characters (zero-width or bidi controls)"
+    }
+  ],
+  "default_outcome": "pass",
+  "default_rule": "no sign of injection"
+}

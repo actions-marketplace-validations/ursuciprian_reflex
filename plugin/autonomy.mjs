@@ -1,0 +1,639 @@
+#!/usr/bin/env node
+// The escalation ladder: humans as the last rung instead of the default (the autonomous profile).
+//
+//   System 1  Jev + the policy resolve the confident majority (gate.mjs). Keyless (engine local): only
+//             the rules, the read-only list and the fast lane; what they do not cover escalates.
+//   System 2  a decision that would be `ask` goes to a stronger model with everything Reflex knows
+//             (judge2.mjs): approve, deny or human.
+//   Human     the always-human class (setup/tool-gate/escalation.json: production mutations, IAM,
+//             secrets writes, destructive deletes, money, rule outcomes, tainted egress) and whatever
+//             System 2 hands up. With the queue on, the agent gets a deny that names a queue item and
+//             continues other work; a human answers with `reflex queue approve|deny`, and the identical
+//             command (same command, cwd and session, within the TTL) passes on retry. Deny + retry is
+//             all an adapter has to support, so it works for every agent.
+//
+// Checkpoints: before an effective pass or allow of a command that is not read-only, in a git
+// repository, a recovery point (`git stash create` against a copy of the index, kept under
+// refs/reflex/checkpoints/) records the tracked files. Never touches the working tree or the index.
+// Not a sandbox: untracked files, anything outside the repository and anything remote are not covered.
+//
+// Task envelope: what the user allows for this task (`reflex envelope set`), per session or
+// directory, fed to Jev and System 2. `.reflex/envelope.md` in a repository is untrusted like any
+// file there: it can only narrow (its own Jev question can only ask), never widen.
+//
+//   node autonomy.mjs queue [list|show <id>|approve <id> [--ttl 2h]|deny <id> [--reason text]|clear [--all]] [--json]
+//   node autonomy.mjs envelope set "<text>" [--session id | --cwd dir] [--ttl 8h] | show | list | clear
+//   node autonomy.mjs checkpoints [list|restore <name>] [--cwd dir]
+//   node autonomy.mjs --selfcheck
+import {copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync} from "node:fs";
+import {createHash} from "node:crypto";
+import {spawn, spawnSync} from "node:child_process";
+import {homedir, tmpdir, userInfo} from "node:os";
+import {dirname, join, resolve} from "node:path";
+import {fileURLToPath} from "node:url";
+import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, rulesHit, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
+        stripDataHeredocs, taint, tainted, taintedRule} from "./gate.mjs";
+import {judge2, stubServer, template} from "./judge2.mjs";
+import {hitsOf, terms} from "./context.mjs";
+import {teamEscalation} from "./team.mjs";
+
+const iso = (t = Date.now()) => new Date(t).toISOString();
+const numbers = answers => Object.fromEntries(Object.entries(answers ?? {}).map(([k, a]) => [k, a?.noul ?? a?.choice ?? a?.score ?? null]));
+
+const inside = (dir, key) => key === "/" || dir === key || dir.startsWith(`${key}/`);
+// ---------------------------------------------------------------------------------------------
+// The always-human class. A rule outcome is always a human's; a policy gate or a pattern in
+// escalation.json makes a Jev or local ask one too. `system1`: also check a System 1 pass or allow
+// (the autonomous profile turns a pass into "it runs"), except rules marked `system1: false`.
+export function alwaysHuman(j, call, env, {system1 = false} = {}) {
+  if (!system1 && j.source === "rule") return {id: j.id ?? "rule", rule: "a deterministic rule decided it"};
+  if (!system1 && j.source === "error") return {id: "error", rule: "Reflex could not judge it"};
+  const esc = teamEscalation(load("escalation.json"), call.cwd).always_human;
+  if (!system1 && j.gate && esc.gates.includes(j.gate)) return {id: `gate:${j.gate}`, rule: `policy gate ${j.gate}`};
+  const bare = stripDataHeredocs(String(call.command ?? ""));
+  const haystack = [bare, `cwd=${call.cwd ?? ""}`, ...Object.entries(env ?? {}).map(([k, v]) => `${k}=${v}`)].join(" ");
+  // and with git's global options dropped (git -C x push is git push)
+  const hit = rulesHit(haystack, {rules: esc.rules.filter(r => !system1 || r.system1 !== false)}, bare);
+  return hit && {id: hit.id, rule: hit.rule};
+}
+
+/** What the autonomous profile does with a decision: escalate an ask, park a human one, checkpoint a mutation. */
+export async function ladder(j, call, effective, {env = envContext(call.cwd), judger = judge2, egress = false, background = false} = {}) {
+  // Shadow never blocks: it logs what the autonomous profile would have done and changes nothing.
+  // System 2 is called only where nobody waits (the background judge); the hook path records "would".
+  const dry = CONFIG.mode !== "enforce";
+  const want = dry ? ({would_allow: "allow"}[j.outcome] ?? j.outcome) : effective;
+  const L = {...j.ladder, system1: j.ladder?.system1 ?? j.source};
+  const out = r => ({j: {...r.j, ladder: {...L, ...(dry && {dry: true})}}, effective: dry ? effective : r.effective});
+  const human = cls => {
+    Object.assign(L, {resolver: "human", always_human: cls.id});
+    if (dry) return {j, effective};
+    // queue off: the agent's own prompt; a System 1 pass or allow of the always-human class becomes that prompt too
+    if (!CONFIG.queue.enabled) return {j: {...j, rule: `${j.rule}. Needs a human (${cls.rule})`}, effective: "ask"};
+    const {item, fresh} = park(call, j, cls);
+    Object.assign(L, {queue: item.id, queue_created: item.created, parked: fresh ? "new" : "pending"});
+    return {j: {...j, rule: `${j.rule}. Needs a human (${cls.rule}): parked in the approval queue as ${item.id}. Continue with other work and ` +
+      `retry this exact command later from the same directory; \`reflex queue show ${item.id}\` shows whether it was answered. Do not rephrase ` +
+      "the command to get around this check"}, effective: "deny"};
+  };
+  let r = {j, effective};
+  if (want === "ask") {
+    const cls = alwaysHuman(j, call, env);
+    if (cls) r = human(cls);
+    else if (!CONFIG.judge.enabled) r = human({id: "no-system2", rule: "System 2 is off"});
+    else if (dry && !background) Object.assign(L, {resolver: "system2", judge: {verdict: "not called in the hook path"}});
+    else if (!dry && pendingFor(call)) r = human({id: "pending", rule: "already waiting in the approval queue"});   // a retry never re-asks
+    else if (breaker().open) {
+      const b = breaker();
+      r = human({id: "system2-paused", rule: `System 2 is paused: ${Math.round(100 * b.rate)}% of the last ${b.n} commands escalated in ${CONFIG.judge.breaker.window_minutes} min, above ${Math.round(100 * CONFIG.judge.breaker.rate)}%`});
+    } else {
+      const context = judgeContext(j, call, env);
+      const v = await judger(context, {call, key: verdictKey(j, call, env, context, egress)});
+      L.judge = {verdict: v.verdict, confidence: v.confidence, ...(v.error && {error: v.error}), ...(v.cached && {cached: true}),
+                 ...(v.cost_usd && {cost_usd: +v.cost_usd.toFixed(6)}), ...(v.usage?.input && {tokens: {in: v.usage.input, out: v.usage.output, cached: v.usage.cached ?? 0}})};
+      if (v.verdict === "deny") {
+        L.resolver = "system2";
+        r = {j: {...j, outcome: "deny", source: "judge", rule: `System 2 denied it: ${v.reason}`}, effective: "deny"};
+      } else if (v.verdict === "approve" && egress) {
+        r = human({id: "tainted-egress", rule: "network egress in a session that read a suspected prompt injection: System 2 may deny it, only a human may approve it"});
+      } else if (v.verdict === "approve") {
+        L.resolver = "system2";
+        // A tainted session never gets allow, as with System 1; holdAllow and allowSetting keep the
+        // unsandboxed-retry and plan-mode prompts and REFLEX_ALLOW exactly as calibrated allow does.
+        // allow_guard: what keeps System 1 from allowing (no fresh Jev answer, no stated intent, a redacted
+        // command, code not seen in full, a broad cwd). System 2 saw less than Jev did, so the same holds.
+        // Keyless (engine local) there is no Jev answer at all: keylessGuard decides instead.
+        const guard = tainted(call.session_id) ? "session read a suspected prompt injection"
+          : j.source === "local" ? keylessGuard(call, context, v) : j.source !== "jev" ? "no fresh Jev answer" : j.allow_guard;
+        const a = guard ? {...j, outcome: "pass", source: "judge", rule: `System 2 approved it (no allow: ${guard}): ${v.reason}`}
+          : allowSetting(holdAllow({...j, outcome: "allow", source: "judge", rule: `System 2 approved it: ${v.reason}`}, call));
+        r = {j: a, effective: a.outcome === "allow" ? "allow" : "pass"};
+      } else r = human({id: v.error ? `system2-${v.error}` : "system2", rule: v.reason || "System 2 handed it to a human"});
+    }
+  } else if (["pass", "allow"].includes(want) && !["read-only", "fast-lane", "queue", "judge"].includes(j.source)) {
+    // A System 1 pass or allow in the always-human class still needs a human: an answer can be wrong,
+    // a pattern cannot be argued with. Only tightens.
+    const cls = alwaysHuman(j, call, env, {system1: true});
+    if (cls) r = human(cls);
+    else L.resolver ??= "system1";
+  } else L.resolver ??= want === "deny" && j.source === "judge" ? "system2" : j.source === "queue" ? "human" : "system1";
+  if (!dry && CONFIG.checkpoints && ["pass", "allow"].includes(r.effective) && j.source !== "read-only") {
+    const c = checkpoint(call.cwd);
+    if (c) L.checkpoint = {ref: c.ref, ms: c.ms, ...(c.same && {same: true})};
+  }
+  return out(r);
+}
+
+// What System 2 sees, redacted and small: the command, cwd, environment names, System 1's answers and
+// rule, the envelope, the last line of the agent's intent, and from the script it runs only the lines
+// that share words with the command and intent or look like they change something (context.mjs
+// terms / hitsOf), numbered; never a credentials file (localScripts never excerpts one). No recent
+// commands. judge2 redacts every string again and trims the case to judge.max_input_tokens.
+const RISKY = /\b(rm|mv|dd|chmod|chown|sudo|curl|wget|scp|rsync|ssh|git\s+(push|reset|clean)|kubectl|helm|terraform|aws|gcloud|az|docker|psql|mysql|drop|delete|truncate|deploy|publish|apply|destroy|kill|shutdown|reboot|export|source|eval)\b|>|\|\s*(ba|z)?sh\b/i;
+export function scriptLines(excerpt, words, max = 12) {
+  const lines = String(excerpt ?? "").split("\n"), pick = new Set(hitsOf(lines, words).slice(0, max));
+  lines.forEach((l, i) => { if (pick.size < max * 2 && RISKY.test(l) && !/^\s*#/.test(l)) pick.add(i); });
+  return [...pick].sort((x, y) => x - y).slice(0, max * 2).map(i => `${i + 1}: ${lines[i].trim().slice(0, 160)}`);
+}
+const oneLine = t => String(t ?? "").trim().split(/\n+/).filter(l => l.trim()).at(-1)?.slice(-200);
+export function judgeContext(j, call, env) {
+  const s = j.state?.call ?? {};
+  const session = s.intent || s.recent || s.envelope ? s : callSession(call);
+  const command = redact(String(call.command ?? "")).slice(0, 4000), intent = oneLine(session.intent);
+  let script;
+  const seen = s.script ? [{path: s.script.path, excerpt: s.script.excerpt}] : localScripts(String(call.command ?? ""), call.cwd).filter(x => x.excerpt);
+  if (seen.length) {
+    const lines = scriptLines(seen.map(x => x.excerpt).join("\n"), terms(`${command} ${intent ?? ""}`));
+    if (lines.length) script = {path: seen.map(x => x.path).join(", "), lines};
+  }
+  const t = tainted(call.session_id);
+  return {command, cwd: call.cwd ?? null, env: env ?? {}, ...(intent && {intent}), ...(session.envelope && {envelope: session.envelope}),
+    ...(script && {script}), system1: {decision: j.outcome, rule: redact(j.rule ?? "").slice(0, 160), ...(j.gate && {gate: j.gate}), answers: numbers(j.answers)},
+    ...(t && {session_tainted: true})};
+}
+// Keyless (engine local): System 2 is the only model that judged the command, so its approval is a
+// pass (the agent's own permissions decide) unless a deterministic check keeps the command local. It
+// allows only at KEYLESS_ALLOW_AT or above, and never: network egress (the rules.json `tainted`
+// patterns; Jev's exfil gate, which is always-human, is not there to catch a leak), a cloud, cluster,
+// database or hosted-service CLI (REMOTE: Jev's environment answers, which feed the always-human prod
+// gate, are not there either, and a checkpoint cannot undo a remote change), a command that runs local
+// code (System 2 sees at most 24 lines of it) or code nobody read, and what System 1's guard excludes
+// too: no stated intent, a redacted command, a broad cwd. Nor a command longer than KEYLESS_MAX (the case
+// System 2 gets can cut it), one that writes outside the working directory (a path under ~ or $HOME, an
+// absolute path elsewhere, --global) or touches the system (launchctl, defaults, crontab, ...). What is
+// left changes the repository, where a checkpoint was just taken. Only Claude Code tells allow from
+// pass (allow skips its permission prompt); Codex, Hermes, opencode, pi and omp run both alike.
+// ponytail: egress, REMOTE and SHIPS are lists, not a parser; a remote tool they miss gets allow on
+// System 2's word. Add it to REMOTE.
+export const KEYLESS_ALLOW_AT = 0.9, KEYLESS_MAX = 400;
+const REMOTE = new RegExp(String.raw`\b(kubectl|kubectx|oc|eksctl|helm|helmfile|terraform|tofu|terragrunt|pulumi|cdk|serverless|sls|sam|ansible(-playbook)?|aws|gcloud|gsutil|bq|az|doctl|fly|flyctl|heroku|vercel|netlify|wrangler|firebase|supabase|railway|render|argocd|skaffold|tilt|nomad|consul|gh|glab|psql|mysql|mongosh|redis-cli|rclone|s3cmd|mc|twine|gem|docker|podman|prisma|alembic|flyway|liquibase|dbt|rails|brew|launchctl|defaults|osascript|crontab|systemctl|sudo)\b`, "i");
+// Verbs that ship, fetch or install whatever the tool: cargo publish, go install, compose up.
+const SHIPS = /\b(deploy|publish|upload|push|release|migrate|sync|login|install|up|run|apply)\b/i;
+const OUTSIDE = /(^|[\s=:'"])(~|\$\{?HOME\b)|--global\b|--system\b/;
+function keylessGuard(call, context, v) {
+  const command = String(call.command ?? ""), bare = maskQuotes(stripDataHeredocs(command)), flat = stripDataHeredocs(command).replace(/["'\\]/g, "");
+  const cwd = resolve("/", call.cwd || "/"), abs = [...command.matchAll(/(?:^|[\s=:'"<>])(\/[^\s'"<>;|&)]*)/g)].map(m => m[1]);
+  return !(v.confidence >= KEYLESS_ALLOW_AT) ? `keyless, System 2 at ${v.confidence} below ${KEYLESS_ALLOW_AT}`
+    : command.length > KEYLESS_MAX ? "keyless, too long for System 2 to see whole"
+    : taintedRule(command) ? "keyless, network egress"
+    : REMOTE.test(flat) || SHIPS.test(bare) ? "keyless, changes something outside this machine"
+    : OUTSIDE.test(command) || abs.some(p => p !== "/dev/null" && !inside(resolve(p), cwd)) ? "keyless, writes outside the working directory"
+    : localScripts(command, call.cwd).length ? "keyless, runs code System 2 saw only in part"
+    : !context.intent ? "no stated intent" : redact(command) !== command ? "redacted command" : broadCwd(call.cwd) ? "broad cwd" : null;
+}
+// The verdict cache key: everything a verdict depends on, except the ids a template turns into slots.
+// Taint and egress are in it, so a verdict is never reused across them; so are the script contents
+// (an edited script is a new case), the policy gate that asked, and the versions of the policy, the
+// escalation file (its prompt and always-human class) and the judge.
+function verdictKey(j, call, env, context, egress) {
+  const judge = CONFIG.judge;
+  return sha([template(call.command), resolve("/", call.cwd || "/"), env, context.envelope ?? null, localScripts(String(call.command ?? ""), call.cwd).map(x => sha(x.body)),
+    !!tainted(call.session_id), egress, j.gate ?? null, j.source, j.policy_version ?? null, load("escalation.json").version,
+    judge.backend, judge.cli ?? null, judge.model ?? null, judge.tiers ?? null, judge.min_confidence, String(call.session_id ?? "")]);
+}
+// The breaker: when System 2 was asked about more than breaker.rate of the commands the ladder judged
+// in the last breaker.window_minutes (at least min_decisions of them), it pauses and cases go to a
+// human, so a Jev outage or a noisy policy cannot turn into a bill. Read from the trace, once per process.
+// ponytail: the last 2 MB of the trace; a busier hour is judged on its most recent part.
+let breakerState;
+export function breaker() {
+  if (breakerState) return breakerState;
+  const {rate, window_minutes, min_decisions} = CONFIG.judge.breaker, since = Date.now() - window_minutes * 60e3;
+  const rows = jsonLines(readTail(join(CONFIG.data, "trace.jsonl"))).filter(r => r.ladder && !r.ladder.dry && Date.parse(r.ts) >= since);
+  const asked = rows.filter(r => r.ladder.judge && !r.ladder.judge.cached && r.ladder.judge.verdict !== "not called in the hook path").length;
+  const r = rows.length ? asked / rows.length : 0;
+  return breakerState = {open: rows.length >= min_decisions && r > rate, rate: r, n: rows.length};
+}
+export const resetBreaker = () => { breakerState = undefined; };
+
+// ---------------------------------------------------------------------------------------------
+// The runaway guard: watches each agent session as it runs and stops it when it is going wrong,
+// before a human would notice. Four signals over a short sliding window of the session's commands:
+//   loop        the same command (judge2 template: ids, hashes and timestamps as slots) ran
+//               loop.repeats times (loop.read_only_repeats for a read-only one: polling is work), or
+//               failed loop.failures times, in loop.window_minutes
+//   storm       storm.denies commands were denied (by Reflex, System 2 or the agent's own permission
+//               check; not a park) in storm.window_minutes: the agent is probing the gate
+//   burn        burn.per_minute commands in the last minute, or burn.jev_calls Jev answers or
+//               burn.system2_calls System 2 calls in the session
+//   escalation  the mean risk of the last escalation.steps commands that were not denied (Jev's blast
+//               score, 0 to 3; keyless: a rule ask 2, the fast lane 1) reached escalation.at and rose
+//               by escalation.rise over the steps before them
+// A trip is a deny with the reason, in enforce mode; shadow only logs it. A loop and the rate stop
+// any command; storm, spend and escalation stop what is not read-only (reading is how the agent
+// finds its way out). The guard's own denials do not count, so a window stop ends by itself once
+// the window has moved on; the spend caps hold for the session. A human can lift a stop sooner:
+// reflex queue approve (queue on; also restarts the spend counts) or reflex runaway reset.
+// It never allows anything and makes no API call. State: one small file per session in
+// <data>/runaway, at most RUNAWAY_KEEP events inside the longest window, so each command costs a
+// bounded read and write. ponytail: no lock; two parallel hooks of one session can drop an event.
+const RUNAWAY_KEEP = 256;
+const runDir = () => join(CONFIG.data, "runaway");
+const runFile = key => join(runDir(), `${sha(String(key))}.json`);
+// A Claude Code subagent runs beside its parent: its own window, or parallel agents would add up.
+const runKey = c => c.agent_id ? `${c.session_id}/${c.agent_id}` : c.session_id;
+const readJson = f => { try { return JSON.parse(readFileSync(f, "utf8")); } catch { return null; } };
+export const readRunaway = key => readJson(runFile(key));
+function writeRunaway(key, s) {
+  mkdirSync(runDir(), {recursive: true, mode: 0o700});
+  writeFileSync(`${runFile(key)}.${process.pid}`, JSON.stringify(s), {mode: 0o600});
+  renameSync(`${runFile(key)}.${process.pid}`, runFile(key));
+}
+const riskOf = j => j?.answers?.blast?.score ?? (j?.source === "rule" ? {deny: 3, ask: 2}[j.outcome] : j?.source === "taint" ? 2 : j?.source === "fast-lane" ? 1 : undefined);
+const horizon = cfg => 60e3 * Math.max(1, cfg.loop.window_minutes, cfg.storm.window_minutes, cfg.escalation.window_minutes);
+/** The event for a command about to run: its shape, id, whether it only reads, and its risk when the rules know it. */
+export function runawayEvent(call, quick, t = Date.now()) {
+  const r = riskOf(quick);
+  return {t, k: sha(template(call.command)), ...(call.call_id && {id: String(call.call_id)}), ...(quick?.source === "read-only" && {ro: 1}), ...(r != null && {r})};
+}
+/** Whether this command should be stopped, from the session's window: {signal, reason} or null. Pure. */
+export function runawayCheck(s, ev, cfg = CONFIG.runaway) {
+  const live = s.ev.filter(e => !e.g), within = m => live.filter(e => ev.t - e.t < m * 60e3);
+  const span = xs => { const m = Math.max(1, Math.ceil((ev.t - Math.min(...xs.map(e => e.t))) / 60e3)); return `${m} minute${m === 1 ? "" : "s"}`; };
+  const {loop, storm, burn, escalation: esc} = cfg;
+  const same = within(loop.window_minutes).filter(e => e.k === ev.k), failed = same.filter(e => e.f);
+  if (failed.length >= loop.failures)
+    return {signal: "loop", reason: `the same failing command ran ${failed.length} times in ${span(failed)}; change approach or ask the user, do not retry it as is`};
+  if (same.length >= (ev.ro ? loop.read_only_repeats : loop.repeats))
+    return {signal: "loop", reason: `the same command ran ${same.length} times in ${span(same)}; this looks like a loop. Change approach or ask the user`};
+  const minute = within(1);
+  if (minute.length >= burn.per_minute)
+    return {signal: "burn", reason: `${minute.length} commands in the last minute (cap ${burn.per_minute}); slow down, or ask the user if this much is needed`};
+  if (ev.ro) return null;
+  if ((s.jev ?? 0) >= burn.jev_calls) return {signal: "burn", reason: `this session used ${s.jev} Jev answers (cap ${burn.jev_calls}); ask the user before going on`};
+  if ((s.s2 ?? 0) >= burn.system2_calls) return {signal: "burn", reason: `this session used ${s.s2} System 2 calls (cap ${burn.system2_calls}); ask the user before going on`};
+  const denied = within(storm.window_minutes).filter(e => e.d);
+  if (denied.length >= storm.denies)
+    return {signal: "storm", reason: `${denied.length} commands were denied in ${span(denied)}. Do not look for another way around the gate; stop and ask the user how to proceed`};
+  const rs = [...within(esc.window_minutes), ev].filter(e => e.r != null && !e.ro && !e.d).map(e => e.r).slice(-2 * esc.steps);
+  if (rs.length === 2 * esc.steps) {
+    const mean = xs => xs.reduce((a, b) => a + b, 0) / xs.length, before = mean(rs.slice(0, esc.steps)), last = mean(rs.slice(esc.steps));
+    if (last >= esc.at && last - before >= esc.rise)
+      return {signal: "escalation", reason: `the risk of this session's commands is climbing (the last ${esc.steps} average ${last.toFixed(1)} of 3, up from ${before.toFixed(1)}); stop and ask the user before going further`};
+  }
+  return null;
+}
+/** The hook path, once per command: record it in the session's window and say whether to stop it. Never throws. */
+export function runaway(call, quick, {resumed = false} = {}) {
+  const cfg = CONFIG.runaway;
+  if (!cfg.enabled || CONFIG.mode === "off" || !call.session_id || !call.command) return null;
+  try {
+    const key = runKey(call), now = Date.now(), s = readRunaway(key) ?? {agent: call.agent ?? null, ev: [], jev: 0, s2: 0, trips: []};
+    const ev = runawayEvent(call, quick, now), dry = CONFIG.mode !== "enforce";
+    // a human lifted the stop (queue approval): this command is recorded, not checked, and the spend counts start over
+    if (resumed) Object.assign(s, {jev: 0, s2: 0});
+    const hit = resumed ? null : runawayCheck(s, ev, cfg);
+    let fresh = false;
+    if (hit) {
+      // one trip per episode: the same signal again within five minutes is the same stop
+      const episode = hit.signal === "loop" ? `loop:${ev.k}` : hit.signal, last = s.trips.findLast(t => (t.episode ?? t.signal) === episode);
+      fresh = !(last && now - last.last < 5 * 60e3);
+      if (fresh) s.trips = [...s.trips, {t: now, last: now, signal: hit.signal, episode, reason: hit.reason, dry, n: 1}].slice(-20);
+      else Object.assign(last, {last: now, n: last.n + 1, reason: hit.reason});
+      if (!dry && !(quick?.source === "rule" && quick.outcome === "deny")) ev.g = 1;   // a rule deny keeps its own reason
+    }
+    s.ev = [...s.ev.filter(e => now - e.t < horizon(cfg)), ev].slice(-RUNAWAY_KEEP);
+    s.session = String(key).slice(0, 160);
+    writeRunaway(key, s);
+    return hit && {...hit, dry, fresh};
+  } catch { return null; }   // the guard adds denies; a broken state file must not break the gate
+}
+/** After the gate decided: the command's risk, whether it was denied, and what it cost. */
+export function runawayNote(call, j, effective) {
+  if (!CONFIG.runaway.enabled || !call.session_id || !call.command || j.source === "runaway") return;
+  try {
+    const key = runKey(call), s = readRunaway(key);
+    if (!s) return;
+    // without a call id, only the command just recorded can be this one
+    const k = sha(template(call.command)), e = call.call_id ? s.ev.findLast(x => x.id === String(call.call_id)) : s.ev.at(-1)?.k === k && !s.ev.at(-1).id ? s.ev.at(-1) : null;
+    const out = CONFIG.mode === "enforce" ? effective : j.outcome;   // shadow: what enforce would do
+    if (e) {
+      // Codex cannot ask: an ask is a deny there (keyless "not covered" aside: that is every other
+      // command, not a refusal). A park waits for a human; it is not a refusal either.
+      if ((out === "deny" || (out === "ask" && call.agent === "codex" && j.source !== "local")) && !j.ladder?.parked) e.d = 1;
+      const r = riskOf(j);
+      if (r != null) e.r = r;
+    }
+    if (j.source === "jev") s.jev = (s.jev ?? 0) + 1;
+    const v = j.ladder?.judge;
+    if (v && !v.cached && v.verdict !== "not called in the hook path" && !["off", "budget", "session budget", "no key", "no cli"].includes(v.error)) s.s2 = (s.s2 ?? 0) + 1;
+    writeRunaway(key, s);
+  } catch { /* as above */ }
+}
+/** PostToolUse: the command failed, or the agent's own permission check denied it. */
+export function runawayMark(ev) {
+  if (!CONFIG.runaway.enabled || !ev.session_id || !ev.call_id) return;
+  try {
+    const key = runKey(ev), s = readRunaway(key), e = s?.ev.findLast(x => x.id === String(ev.call_id));
+    if (!e) return;
+    e[ev.event === "failed" ? "f" : "d"] = 1;
+    writeRunaway(key, s);
+  } catch { /* as above */ }
+}
+/** Every session's trips since `since` (ms), newest first, for status and report. */
+export function runawayTrips(since = 0) {
+  let names = [];
+  try { names = readdirSync(runDir()).filter(n => /^[0-9a-f]{12}\.json$/.test(n)); } catch { /* none yet */ }
+  // a session idle for a week has nothing left in any window
+  names = names.filter(n => { try { if (Date.now() - statSync(join(runDir(), n)).mtimeMs < 7 * 864e5) return true; rmSync(join(runDir(), n), {force: true}); } catch { /* gone */ } return false; });
+  return names.flatMap(n => { const s = readJson(join(runDir(), n)) ?? {}; return (s.trips ?? []).filter(t => t.last >= since).map(t => ({...t, session: s.session, agent: s.agent})); })
+    .sort((a, b) => b.last - a.last);
+}
+/** Replay: which sessions of past transcripts the guard would have stopped. items: [{session, ts, command, failed?, agent?, j}] */
+export function runawayReplay(items, cfg = CONFIG.runaway) {
+  const bySession = new Map();
+  for (const x of items) if (x.session) (bySession.get(x.session) ?? bySession.set(x.session, []).get(x.session)).push(x);
+  const out = {sessions: bySession.size, stopped: 0, trips: 0, by: {loop: 0, storm: 0, burn: 0, escalation: 0}};
+  for (const list of bySession.values()) {
+    const s = {ev: [], jev: 0, s2: 0};
+    let last = {}, hitSession = false;
+    for (const x of list.sort((a, b) => a.ts - b.ts)) {
+      const ev = runawayEvent(x, x.j, x.ts), hit = runawayCheck(s, ev, cfg);
+      if (hit) {
+        if (!hitSession) { out.stopped++; hitSession = true; }
+        if (!(x.ts - (last[hit.signal] ?? -Infinity) < 5 * 60e3)) { out.trips++; out.by[hit.signal]++; }
+        last[hit.signal] = x.ts;
+      }
+      // what happened: it ran (the transcript is history without the guard), failed or was denied
+      if (x.failed) ev.f = 1;
+      if (x.j?.outcome === "deny" || (x.j?.outcome === "ask" && x.agent === "codex" && x.j.source !== "local")) ev.d = 1;
+      s.ev = [...s.ev.filter(e => x.ts - e.t < horizon(cfg)), ev].slice(-RUNAWAY_KEEP);
+    }
+  }
+  return out;
+}
+/** Lift a stop now: forget a session's window (its subagents' too), or every session's. */
+export function runawayReset({session, all} = {}) {
+  let n = 0;
+  for (const name of (() => { try { return readdirSync(runDir()).filter(x => x.endsWith(".json")); } catch { return []; } })()) {
+    const s = all ? null : readJson(join(runDir(), name));
+    if (all || (s?.session && (s.session === String(session) || s.session.startsWith(`${session}/`)))) { rmSync(join(runDir(), name), {force: true}); n++; }
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The approval queue: one small JSON file per item in <data>/queue (0700 / 0600). An item holds the
+// redacted command and the reason, so a human can review it; the id is derived from a hash of the raw
+// command, its redacted form, the resolved cwd and the session, so only the identical retry matches.
+// ponytail: files, not a database; list reads them all, fine for hundreds of items.
+const QDIR = () => join(CONFIG.data, "queue");
+const itemFile = id => join(QDIR(), `${id}.json`);
+const queueKey = call => createHash("sha256").update(JSON.stringify([String(call.command ?? ""), redact(String(call.command ?? "")),
+  resolve("/", call.cwd || "/"), String(call.session_id ?? ""), !!tainted(call.session_id), ...(call.plan?.digest ? [call.plan.digest] : [])])).digest("hex");
+export function readItem(id) {
+  if (!/^q-[0-9a-f]{10}$/.test(String(id))) return null;
+  try { return JSON.parse(readFileSync(itemFile(id), "utf8")); } catch { return null; }
+}
+function writeItem(item) {
+  mkdirSync(QDIR(), {recursive: true, mode: 0o700});
+  const tmp = `${itemFile(item.id)}.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(item, null, 1), {mode: 0o600});
+  renameSync(tmp, itemFile(item.id));
+}
+export function listItems() {
+  let names = [];
+  try { names = readdirSync(QDIR()).filter(n => /^q-[0-9a-f]{10}\.json$/.test(n)); } catch { /* no queue yet */ }
+  return names.map(n => readItem(n.slice(0, -5))).filter(Boolean).sort((a, b) => b.created.localeCompare(a.created));
+}
+/** Park a decision for a human. A retry of a pending item finds it again instead of adding another. */
+export function park(call, j, cls) {
+  const key = queueKey(call), id = `q-${key.slice(0, 10)}`, prev = readItem(id);
+  if (prev?.key === key && prev.status === "pending") return {item: prev, fresh: false};
+  const item = {version: "queue-v1", id, key, status: "pending", created: iso(), agent: call.agent ?? null, session_id: call.session_id ?? null,
+    cwd: call.cwd ?? null, command: redact(String(call.command ?? "")).slice(0, 4000), reason: redact(j.rule ?? "").slice(0, 500), class: cls.id, source: j.source};
+  writeItem(item);
+  notify(item);
+  return {item, fresh: true};
+}
+// Optional: a command run for each new item (queue.notify), detached, with the id, the reason and the
+// agent in the environment. Never the command text: a webhook would carry it off the machine.
+function notify(item) {
+  if (!CONFIG.queue.notify) return;
+  try {
+    spawn("/bin/sh", ["-c", CONFIG.queue.notify], {detached: true, stdio: "ignore",
+      env: {...process.env, REFLEX_QUEUE_ID: item.id, REFLEX_QUEUE_REASON: item.reason.slice(0, 200), REFLEX_QUEUE_AGENT: item.agent ?? ""}}).unref();
+  } catch { /* a notification must not change a decision */ }
+}
+export const pendingFor = call => { const it = readItem(`q-${queueKey(call).slice(0, 10)}`); return it?.key === queueKey(call) && it.status === "pending" ? it : null; };
+// A runaway stop is parked under its own key: approving it lifts the guard once and is never an
+// approval of the command itself, and it never collides with the command's own queue item.
+export const runawayCall = call => ({...call, session_id: `${call.session_id ?? ""}#runaway`});
+/** A human's answer for this exact call, or null. An approval is used once. */
+export function queueAnswer(call) {
+  const key = queueKey(call), id = `q-${key.slice(0, 10)}`, it = readItem(id);
+  if (!it || it.key !== key) return null;
+  const live = it.expires && Date.now() <= Date.parse(it.expires);
+  if (it.status === "approved" && live) {
+    // rename is atomic: of two parallel retries, one claims the approval
+    const claim = `${itemFile(id)}.claim-${process.pid}`;
+    try { renameSync(itemFile(id), claim); } catch { return null; }
+    writeItem({...it, status: "used", used_at: iso()});
+    rmSync(claim, {force: true});
+    // a runaway stop the human lifted: the guard steps aside once, the gate still judges the command
+    if (it.class === "runaway") return {resume: true};
+    return {outcome: "allow", source: "queue", rule: `approved by a human in the approval queue (${id})`, ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "approved", decided_at: it.decided_at}};
+  }
+  if (it.status === "denied" && live)
+    return {outcome: "deny", source: "queue", rule: `a human denied this in the approval queue (${id})${it.note ? `: ${it.note}` : ""}. Do not retry it; find another way or ask the user`,
+            ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "denied", decided_at: it.decided_at}};
+  return null;
+}
+export function answer(id, verdict, {ttlHours = CONFIG.queue.ttl_hours, note} = {}) {
+  const it = readItem(id);
+  if (!it) throw new Error(`no queue item ${id}`);
+  if (!["pending", "approved", "denied"].includes(it.status)) throw new Error(`${id} is ${it.status}; the agent's next retry parks it again`);
+  // who answered, for the audit export (reflex audit): the account that ran reflex queue approve or deny
+  const by = (() => { try { return userInfo().username; } catch { return process.env.USER ?? null; } })();
+  const now = Date.now(), next = {...it, status: verdict, decided_at: iso(now), decided_by: by, expires: iso(now + ttlHours * 3600e3), ...(note && {note: redact(note).slice(0, 300)})};
+  writeItem(next);
+  return next;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Task envelopes: <data>/envelopes.json. The user's own, per session or per directory (the nearest
+// enclosing one wins; a session envelope wins over a directory's), with an expiry.
+const ENVELOPES = () => join(CONFIG.data, "envelopes.json");
+const readEnvelopes = () => { try { return JSON.parse(readFileSync(ENVELOPES(), "utf8")); } catch { return {version: "envelopes-v1", entries: []}; } };
+const writeEnvelopes = e => {
+  mkdirSync(CONFIG.data, {recursive: true, mode: 0o700});
+  writeFileSync(`${ENVELOPES()}.${process.pid}`, JSON.stringify(e, null, 1), {mode: 0o600});
+  renameSync(`${ENVELOPES()}.${process.pid}`, ENVELOPES());
+};
+export function setEnvelope({text, session, cwd = process.cwd(), ttlHours = 24}) {
+  if (!text?.trim()) throw new Error("an envelope needs text");
+  const e = readEnvelopes(), scope = session ? "session" : "cwd", key = session ? String(session) : resolve(cwd);
+  const now = Date.now(), entry = {scope, key, text: text.trim().slice(0, 2000), set_at: iso(now), expires: iso(now + ttlHours * 3600e3)};
+  e.entries = [...e.entries.filter(x => !(x.scope === scope && x.key === key) && Date.parse(x.expires) > now), entry];
+  writeEnvelopes(e);
+  return entry;
+}
+export function clearEnvelopes({session, cwd, all} = {}) {
+  const e = readEnvelopes(), before = e.entries.length;
+  e.entries = all ? [] : e.entries.filter(x => !(session ? x.scope === "session" && x.key === String(session) : x.scope === "cwd" && x.key === resolve(cwd ?? process.cwd())));
+  writeEnvelopes(e);
+  return before - e.entries.length;
+}
+// .reflex/envelope.md from cwd up to the repository root (outside a repository, cwd only), a regular
+// file up to 8 KB: the same places, and the same trust, as instruction fragments.
+export function repoEnvelope(dir) {
+  const dirs = [];
+  let root = false;
+  for (let d = dir; d && !root; d = dirname(d) === d ? null : dirname(d)) { dirs.push(d); root = existsSync(join(d, ".git")); }
+  for (const d of root ? dirs : dirs.slice(0, 1)) {
+    const f = join(d, ".reflex/envelope.md");
+    try {
+      const st = lstatSync(f);
+      if (st.isFile() && st.size <= 8192) return readFileSync(f, "utf8").trim() || null;
+    } catch { /* none here */ }
+  }
+  return null;
+}
+/** {user?, repo?} for a call, redacted, or null. */
+export function envelopeFor(call) {
+  const now = Date.now(), dir = resolve("/", call.cwd || "/");
+  let entries = [];
+  try { entries = readEnvelopes().entries.filter(e => Date.parse(e.expires) > now); } catch { /* none */ }
+  const user = (call.session_id && entries.findLast(e => e.scope === "session" && e.key === String(call.session_id)))
+    || entries.filter(e => e.scope === "cwd" && inside(dir, e.key)).sort((a, b) => b.key.length - a.key.length)[0];
+  // ponytail: its text sits beside every Jev question; a separate call for repo_forbids when that matters
+  const repo = call.cwd && (CONFIG.profile === "autonomous" || CONFIG.judge.enabled || CONFIG.queue.enabled) ? repoEnvelope(dir) : null;
+  if (!user && !repo) return null;
+  return {...(user && {user: redact(user.text).slice(0, 2000)}), ...(repo && {repo: redact(repo).slice(0, 2000)})};
+}
+
+// ---------------------------------------------------------------------------------------------
+// Checkpoints. `git stash create` records the tracked files (index and working tree) as a commit
+// without changing either; it refreshes the index's stat cache as it goes, so it runs against a
+// temporary copy of the index. A clean tree is checkpointed as HEAD. Kept: the last 50 per repo.
+// The copy keeps the index's mtime (rounded down to the second): git trusts an entry's stat data only
+// when the entry is older than the index file itself (racy git), so a copy stamped "now" made a
+// same-size edit within the second of the last index write look clean once the clock had passed that
+// second, and the checkpoint silently fell back to HEAD (#21). Older is only more careful.
+const REFS = "refs/reflex/checkpoints/", KEEP = 50;
+let lastRef = 0;   // ref names strictly increase within a process, so two in one millisecond never collide
+// A checkpoint commit is Reflex's, not the user's: its own identity, so it never depends on (or
+// guesses) a user.name / user.email the machine may not have (a bare CI runner, a fresh HOME).
+const IDENTITY = {GIT_AUTHOR_NAME: "reflex", GIT_AUTHOR_EMAIL: "reflex@localhost", GIT_COMMITTER_NAME: "reflex", GIT_COMMITTER_EMAIL: "reflex@localhost"};
+const git = (cwd, args, env = {}) => spawnSync("git", ["-C", cwd, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args], {encoding: "utf8", timeout: 5000,
+  env: {...process.env, GIT_OPTIONAL_LOCKS: "0", ...IDENTITY, ...env}});
+export function checkpoint(cwd) {
+  if (!cwd) return null;
+  const t0 = Date.now();
+  const top = git(cwd, ["rev-parse", "--show-toplevel", "--git-path", "index"]);
+  if (top.status !== 0) return null;
+  const [, indexPath] = top.stdout.trim().split("\n");
+  const tmpDir = mkdtempSync(join(tmpdir(), "reflex-index-")), tmp = join(tmpDir, "index");
+  let sha = "";
+  try {
+    const index = resolve(cwd, indexPath ?? "");
+    if (existsSync(index)) {
+      const st = statSync(index);   // before the copy: an index rewritten in between only makes the copy look older
+      copyFileSync(index, tmp);
+      utimesSync(tmp, st.atime, Math.floor(st.mtimeMs / 1000));
+    }
+    sha = git(cwd, ["stash", "create", "reflex checkpoint"], {GIT_INDEX_FILE: tmp}).stdout?.trim() ?? "";
+  } finally { rmSync(tmpDir, {recursive: true, force: true}); }
+  if (!sha) sha = git(cwd, ["rev-parse", "-q", "--verify", "HEAD"]).stdout?.trim() ?? "";
+  if (!/^[0-9a-f]{40,64}$/.test(sha)) return null;   // an empty repository: nothing to go back to
+  // The same files on the same HEAD are the same checkpoint (a stash commit's own id changes with the clock).
+  const refs = git(cwd, ["for-each-ref", "--sort=-refname", "--format=%(refname) %(tree) %(parent)", REFS]).stdout.trim().split("\n").filter(Boolean);
+  const sig = git(cwd, ["log", "-1", "--format=%T %P", sha]).stdout.trim().split(" ").slice(0, 2).join(" ");
+  if (refs[0] && refs[0].split(" ").slice(1, 3).join(" ") === sig) return {sha, ref: refs[0].split(" ")[0], same: true, ms: Date.now() - t0};
+  const ref = `${REFS}${lastRef = Math.max(Date.now(), lastRef + 1)}-${process.pid}`;
+  if (git(cwd, ["update-ref", ref, sha]).status !== 0) return null;
+  const old = refs.slice(KEEP - 1).map(l => l.split(" ")[0]);
+  if (old.length) spawnSync("git", ["-C", cwd, "update-ref", "--stdin"], {input: old.map(r => `delete ${r}\n`).join(""), timeout: 5000});
+  return {sha, ref, ms: Date.now() - t0};
+}
+export function checkpoints(cwd) {
+  const r = git(cwd, ["for-each-ref", "--sort=-refname", "--format=%(refname:lstrip=3) %(objectname:short) %(parent)", REFS]);
+  if (r.status !== 0) throw new Error(`${cwd} is not in a git repository`);
+  return r.stdout.trim().split("\n").filter(Boolean).map(l => {
+    const [name, sha, ...parents] = l.split(" ");
+    return {name, sha, at: iso(Number(name.split("-")[0])), stash: parents.length > 1};
+  });
+}
+/** Make the tracked files match a checkpoint, after checkpointing the current state. HEAD does not move. */
+export function restore(cwd, name) {
+  const target = [`${REFS}${name}`, name].map(n => git(cwd, ["rev-parse", "-q", "--verify", `${n}^{commit}`]).stdout?.trim()).find(Boolean);
+  if (!target) throw new Error(`no checkpoint ${name}`);
+  const safety = checkpoint(cwd);
+  const parents = git(cwd, ["rev-list", "--parents", "-n", "1", target]).stdout.trim().split(" ").slice(1);
+  const run = args => { const r = git(cwd, args); if (r.status !== 0) throw new Error(r.stderr.trim()); };
+  if (parents.length > 1) {   // a stash commit: the working tree is its tree, the index its second parent
+    run(["restore", `--source=${target}`, "--worktree", "--", ":/"]);
+    run(["restore", `--source=${parents[1]}`, "--staged", "--", ":/"]);
+  } else run(["restore", `--source=${target}`, "--worktree", "--staged", "--", ":/"]);
+  const head = git(cwd, ["rev-parse", "HEAD"]).stdout.trim(), base = parents[0] ?? target;
+  return {target, safety: safety?.ref ?? null, head_moved: parents.length > 1 && head !== base ? base : null};
+}
+
+// ---------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------
+const hours = s => { const m = /^(\d+(?:\.\d+)?)([mhd])$/.exec(s ?? ""); if (!m) throw new Error(`--ttl takes a duration like 30m, 8h or 2d (${s})`); return +m[1] * {m: 1 / 60, h: 1, d: 24}[m[2]]; };
+const ago = t => { const s = Math.round((Date.now() - Date.parse(t)) / 1000); return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`; };
+function cli(argv) {
+  const [area, sub, ...rest] = argv, all = [sub, ...rest].filter(Boolean);
+  const opt = n => { const i = all.indexOf(n); return i > -1 ? all[i + 1] : undefined; };
+  const json = all.includes("--json"), print = v => console.log(json ? JSON.stringify(v, null, 1) : v);
+  const VALUED = ["--ttl", "--reason", "--cwd", "--session"];
+  const pos = all.filter((a, i) => !a.startsWith("--") && !VALUED.includes(all[i - 1]));
+  if (area === "queue") {
+    const [what = "list", id] = pos;
+    if (what === "clear") {
+      let n = 0;
+      for (const i of listItems()) if (all.includes("--all") || i.status !== "pending") { rmSync(itemFile(i.id), {force: true}); n++; }
+      return console.log(`removed ${n} item${n === 1 ? "" : "s"}`);
+    }
+    if (what === "list") {
+      const items = listItems();
+      if (json) return print(items.map(({key, ...i}) => i));
+      if (!items.length) return console.log("queue empty");
+      for (const i of items) console.log(`${i.id}  ${i.status.padEnd(8)} ${ago(i.created).padStart(4)} ago  ${(i.agent ?? "").padEnd(11)} ${i.command.replace(/\s+/g, " ").slice(0, 70)}\n` +
+        `            ${i.cwd ?? ""} · ${i.reason.split(". Needs a human")[0].slice(0, 110)}`);
+      return;
+    }
+    const it = readItem(id);
+    if (!it) throw new Error(`no queue item ${id ?? ""} (reflex queue list)`);
+    if (what === "show") return print(json ? (({key, ...i}) => i)(it) : Object.entries((({key, ...i}) => i)(it)).map(([k, v]) => `${k.padEnd(11)} ${v}`).join("\n"));
+    if (what === "approve") { const n = answer(id, "approved", {ttlHours: opt("--ttl") ? hours(opt("--ttl")) : undefined}); return print(json ? n : `${id} approved until ${n.expires}: the agent's identical retry runs once`); }
+    if (what === "deny") { const n = answer(id, "denied", {note: opt("--reason")}); return print(json ? n : `${id} denied; the agent's retry is refused with your reason until ${n.expires}`); }
+  }
+  if (area === "envelope") {
+    const [what = "show", text] = pos, cwd = resolve(opt("--cwd") ?? process.cwd()), session = opt("--session");
+    if (what === "set") { const e = setEnvelope({text, session, cwd, ttlHours: opt("--ttl") ? hours(opt("--ttl")) : 24}); return print(json ? e : `envelope for ${e.scope} ${e.key} until ${e.expires}`); }
+    if (what === "clear") return print(`removed ${clearEnvelopes({session, cwd, all: all.includes("--all")})}`);
+    if (what === "list") return print(json ? readEnvelopes().entries : readEnvelopes().entries.map(e => `${e.scope.padEnd(7)} ${e.key}  until ${e.expires}\n        ${e.text}`).join("\n") || "no envelopes");
+    if (what === "show") { const e = envelopeFor({cwd, session_id: session}); return print(json ? e : e ? `user: ${e.user ?? "(none)"}\nrepository (can only narrow): ${e.repo ?? "(none)"}` : "no envelope applies here"); }
+  }
+  if (area === "checkpoints") {
+    const [what = "list", name] = pos, cwd = resolve(opt("--cwd") ?? process.cwd());
+    if (what === "list") { const l = checkpoints(cwd); return print(json ? l : l.map(c => `${c.name}  ${c.sha}  ${c.at}${c.stash ? "" : "  (clean tree: HEAD)"}`).join("\n") || "no checkpoints"); }
+    if (what === "restore") {
+      const r = restore(cwd, name);
+      return print(json ? r : `tracked files restored to ${r.target.slice(0, 12)}; the state before it is checkpoint ${r.safety?.split("/").pop()}` +
+        (r.head_moved ? `\nHEAD has moved since the checkpoint; git reset --soft ${r.head_moved.slice(0, 12)} moves it back` : ""));
+    }
+  }
+  if (area === "runaway") {
+    const [what = "list", session] = pos;
+    if (what === "list") {
+      const trips = runawayTrips(Date.now() - 864e5);
+      if (json) return print(trips);
+      return console.log(trips.map(t => `${iso(t.last).slice(0, 16)}  ${t.dry ? "shadow " : "stopped"} ${t.signal.padEnd(10)} x${t.n}  ${(t.agent ?? "").padEnd(11)} ${t.session}\n` +
+        `            ${t.reason}`).join("\n") || `no stops in the last 24 h (runaway guard ${CONFIG.runaway.enabled ? "on" : "off"})`);
+    }
+    if (what === "reset") {
+      if (!session && !all.includes("--all")) throw new Error("reflex runaway reset <session id> | --all");
+      return print(`forgot ${runawayReset({session, all: all.includes("--all")})} session window(s)`);
+    }
+  }
+  throw new Error("usage: reflex runaway [list|reset <session>|reset --all] · reflex queue [list|show <id>|approve <id> [--ttl 2h]|deny <id> [--reason text]|clear [--all]] · " +
+    "reflex envelope set \"<text>\" [--session id|--cwd dir] [--ttl 8h] | show | list | clear · reflex checkpoints [list|restore <name>] [--cwd dir]");
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  try { cli(process.argv.slice(2)); } catch (e) { console.error(`reflex: ${e.message}`); process.exitCode = 1; }
+}

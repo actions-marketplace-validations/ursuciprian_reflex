@@ -1,0 +1,67 @@
+{
+  "name": "reflex",
+  "displayName": "Reflex",
+  "version": "0.15.0",
+  "description": "Prod-safe AI coding agents for infra teams: a pre-execution hook that judges each shell command by where it points and what it will change, then runs it, asks a human, or blocks it.",
+  "author": {
+    "name": "Ciprian Ursu",
+    "url": "https://github.com/ursuciprian"
+  },
+  "homepage": "https://github.com/ursuciprian/reflex#readme",
+  "repository": "https://github.com/ursuciprian/reflex",
+  "license": "MIT",
+  "icon": "./assets/logo-512.png",
+  "keywords": [
+    "claude-code",
+    "claude-code-hooks",
+    "claude-code-plugin",
+    "claude-code-security",
+    "pre-tool-use",
+    "pre-execution-hook",
+    "command-approval",
+    "guardrails",
+    "agent-security",
+    "prompt-injection",
+    "prompt-injection-protection",
+    "human-in-the-loop",
+    "tool-call-gating",
+    "permission-prompts",
+    "devsecops",
+    "jev",
+    "typesafe"
+  ],
+  "userConfig": {
+    "engine": {
+      "type": "string",
+      "title": "Engine",
+      "default": "",
+      "description": "local (rules only: no key, nothing leaves the machine) or jev (hosted classification through the Jev provider; needs the Jev API key). Empty: the engine in ~/.config/reflex/config.json, else jev when the Jev API key is set, else local."
+    },
+    "provider": {
+      "type": "string",
+      "title": "Jev provider",
+      "default": "",
+      "description": "typesafe, openrouter, cloudflare, vercel or compatible. Empty: the provider in ~/.config/reflex/config.json, else typesafe. cloudflare also needs cloudflare_account_id, and compatible provider_url, in config.json."
+    },
+    "jev_api_key": {
+      "type": "string",
+      "title": "Jev API key",
+      "sensitive": true,
+      "default": "",
+      "description": "The key for the Jev provider (a TypeSafe key for typesafe). Kept in your system's secure storage. The plugin reads its key from here only: never from the Keychain, never from an environment variable."
+    },
+    "mode": {
+      "type": "string",
+      "title": "Mode",
+      "default": "",
+      "description": "off, shadow (logs; deterministic rules still ask and deny) or enforce. Empty: the mode in ~/.config/reflex/config.json, else shadow."
+    },
+    "judge_api_key": {
+      "type": "string",
+      "title": "System 2 API key",
+      "sensitive": true,
+      "default": "",
+      "description": "Optional: the key for a System 2 judge with backend anthropic or openai-compatible (judge in ~/.config/reflex/config.json). Kept in your system's secure storage."
+    }
+  }
+}

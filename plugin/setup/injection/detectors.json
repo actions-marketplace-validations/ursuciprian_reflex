@@ -1,0 +1,153 @@
+{
+  "version": "injection-detectors-v3",
+  "note": "Deterministic injection detectors, run by guard.mjs in both engines before Jev. Each pattern adds one hit to its signal; the policy reads the counts. Signals: override (text that cancels or replaces an AI's instructions), role (fake chat-role or system markers), to_ai (text addressed to an AI agent), shell / secrets / exfil (what the text asks for: run remote code, read credentials, send data out). Structural detectors live in guard.mjs with their limits here: invisible text (Unicode tags, zero-width and bidi controls), instructions hidden in HTML comments, hidden elements, alt / title attributes and markdown comments, markdown image or link exfiltration, base64 blobs that decode to instructions. The phrase patterns also run on text spaced out letter by letter (a run of 8 or more single letters, read with its narrowest gaps taken out and other gaps as word breaks), counting like plain phrases. A hidden or decoded segment counts as `hidden` only when the phrase patterns also match inside it. Patterns are case-insensitive JavaScript regular expressions; keep them linear (bounded repeats, no nested quantifiers, and never an unbounded \\\\s* right after a newline or other alternative that can start at every line: a page of blank lines makes that quadratic). ponytail: a phrase list, not a classifier; Jev judges what the phrases miss.",
+  "patterns": [
+    {
+      "signal": "override",
+      "id": "ignore-previous",
+      "pattern": "\\b(ignore|disregard|forget|override|bypass|discard)\\s+(?:(?:all|any|the|your|my|these|those|of)\\s+){0,3}(previous|prior|above|earlier|preceding|original|initial|existing|system|safety|developer)\\s+(instructions?|prompts?|directions?|guidelines?|rules|context|messages?|commands?|guardrails)"
+    },
+    {
+      "signal": "override",
+      "id": "forget-everything",
+      "pattern": "\\b(ignore|disregard|forget)\\s+(everything|all)\\s+(you('ve|\\s+have)?\\s+(been\\s+told|read|learned|seen)|above|before|previously|else)"
+    },
+    {
+      "signal": "override",
+      "id": "you-are-now",
+      "pattern": "\\byou\\s+are\\s+now\\s+(an?\\s+)?(unrestricted|jailbroken|DAN\\b|evil|in\\s+developer\\s+mode|in\\s+god\\s+mode|no\\s+longer\\s+(bound|restricted|an?\\s+AI))|\\bfrom\\s+now\\s+on,?\\s+you\\s+(are|will|must|shall|should)\\b"
+    },
+    {
+      "signal": "override",
+      "id": "new-instructions",
+      "pattern": "\\b(new|updated|real|actual|true|revised|additional|secret|hidden)\\s+(system\\s+)?(instructions?|directives?|orders)\\s*(:|follow|below)|\\b(system|developer|admin)\\s+(prompt|message|override|instructions?|directive)\\s*:"
+    },
+    {
+      "signal": "override",
+      "id": "real-task",
+      "pattern": "\\byour\\s+(new|real|actual|true|only|primary)\\s+(task|goal|instructions?|objective|purpose|job|mission)\\s+(is|are|now)\\b"
+    },
+    {
+      "signal": "override",
+      "id": "hide-from-user",
+      "pattern": "\\b(do\\s+not|don't|never)\\s+(tell|inform|alert|notify|show|mention\\s+(this|it|that)(\\s+\\w+)?\\s+to|reveal\\s+(this|it)(\\s+\\w+)?\\s+to)\\s+the\\s+user\\b|\\bwithout\\s+(telling|informing|notifying|asking|alerting|showing)\\s+the\\s+user\\b|\\b(keep|hide)\\s+(this|it)\\s+(secret\\s+)?from\\s+the\\s+user\\b|\\b(do\\s+not|don't|never)\\s+ask\\s+(the\\s+user\\s+)?(for\\s+)?(confirmation|permission|approval)\\b"
+    },
+    {
+      "signal": "override",
+      "id": "claims-approval",
+      "pattern": "\\bthe\\s+user\\s+(has\\s+)?(already\\s+)?(explicitly\\s+)?(authori[sz]ed|pre-?approved|consented\\s+to|given\\s+(you\\s+)?permission|granted\\s+(you\\s+)?permission)\\b"
+    },
+    {
+      "signal": "override",
+      "id": "priority",
+      "pattern": "\\b(this|these|the\\s+following)\\s+(instructions?|messages?|directives?)\\s+(take|takes|have|has)\\s+(priority|precedence)\\b|\\b(highest|top)[- ]priority\\s+(instruction|directive|task|override)\\b"
+    },
+    {
+      "signal": "role",
+      "id": "chat-tokens",
+      "pattern": "<\\|(im_start|im_end|system|assistant|user|endoftext|eot_id|start_header_id)\\|>|\\[/?INST\\]|<</?SYS>>"
+    },
+    {
+      "signal": "role",
+      "id": "role-tags",
+      "pattern": "</?(system[_-]prompt|system[_-]instructions?|system[_-]message|developer[_-]message|assistant[_-]message|admin[_-]instructions?|IMPORTANT|agent[_-]instructions?|ai[_-]instructions?)>"
+    },
+    {
+      "signal": "role",
+      "id": "transcript-turns",
+      "pattern": "(^|\\n)[ \\t]*(Human|Assistant)[ \\t]*:[ \\t]+\\S[^\\n]{0,200}\\n[ \\t\\n]{0,20}(Human|Assistant)[ \\t]*:"
+    },
+    {
+      "signal": "to_ai",
+      "id": "note-to-ai",
+      "pattern": "\\b(attention|note|message|instructions?|notice|reminder|important|directive|memo)\\s*(to|for)\\s+(the\\s+|any\\s+|all\\s+)?(AI|LLM|assistant|agent|language\\s+model|coding\\s+(agent|assistant)|autonomous\\s+agent|claude|chatgpt|gpt(-\\d)?|copilot|cursor|codex|gemini|devin)s?\\b"
+    },
+    {
+      "signal": "to_ai",
+      "id": "if-you-are-ai",
+      "pattern": "\\bif\\s+you\\s+are\\s+(an?\\s+)?(AI|LLM|large\\s+language\\s+model|language\\s+model|AI\\s+assistant|assistant|AI\\s+agent|coding\\s+(agent|assistant)|autonomous\\s+agent|bot|claude|chatgpt|gpt|copilot|cursor|codex|gemini)\\b"
+    },
+    {
+      "signal": "to_ai",
+      "id": "hey-ai",
+      "pattern": "\\b(dear|hey|hi|hello)\\s+(AI|LLM|assistant|agent|claude|chatgpt|gpt|copilot|cursor|codex|gemini)\\b[,!:]"
+    },
+    {
+      "signal": "to_ai",
+      "id": "ai-reading-this",
+      "pattern": "\\b(AI|LLM)\\s+(agents?|assistants?|models?|systems?)\\s+(that\\s+(are\\s+)?)?(reading|processing|summari[sz]ing|parsing|viewing|browsing|crawling)\\s+(this|the)\\b|\\bas\\s+an?\\s+(AI|LLM|language\\s+model|AI\\s+assistant|coding\\s+agent)\\s*,?\\s*(you\\s+)?(must|should|need\\s+to|are\\s+(required|instructed))\\b"
+    },
+    {
+      "signal": "to_ai",
+      "id": "ai-must-act",
+      "pattern": "\\b(AI|LLM)\\s+(agents?|assistants?|models?)\\s+(must|should|are\\s+required\\s+to|need\\s+to)\\s+(now\\s+|also\\s+|first\\s+|immediately\\s+)?(run|execute|call|invoke|read|send|fetch|visit|ignore|forget|disregard|upload|post)\\b"
+    },
+    {
+      "signal": "to_ai",
+      "id": "vocative",
+      "pattern": "(^|[\\n.!?>][ \\t]{0,4}|<!--[ \\t]{0,4})(AI|LLM)[ \\t]+(coding[ \\t]+)?(assistants?|agents?|models?)[ \\t]*[:,]|\\b(assistant|agent|claude|copilot|cursor|codex|gemini|chatgpt)[ \\t]*[:,][ \\t]+(please[ \\t]+)?(ignore|run|execute|read|send|open|delete|remove|do[ \\t]+not|don't|when|before|after|also|instead)\\b"
+    },
+    {
+      "signal": "to_ai",
+      "id": "whoever-reads",
+      "pattern": "\\b(whoever|whatever|anyone|any\\s+(AI|model|agent|assistant|bot|system))\\s+(is\\s+)?(processing|reading|summari[sz]ing|parsing|crawling|browsing|ingesting)\\s+(this|the)\\s+(page|document|text|content|file|site|website|email|message|repo(sitory)?)\\b"
+    },
+    {
+      "signal": "to_ai",
+      "id": "mention-agent",
+      "pattern": "(^|\\s)@(claude|codex|copilot|cursor|devin|gemini|chatgpt|openhands|aider)\\b"
+    },
+    {
+      "signal": "shell",
+      "id": "pipe-to-shell",
+      "pattern": "\\b(curl|wget|fetch|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\\b[^\\n|]{0,300}\\|\\s*(sudo\\s+(-\\S+\\s+)*)?((ba|z|da|k)?sh|python[\\d.]*|node|perl|ruby|iex)\\b"
+    },
+    {
+      "signal": "shell",
+      "id": "shell-subst-fetch",
+      "pattern": "\\b((ba|z)?sh\\s+-c|eval)\\s+[\"']?\\$\\((curl|wget)\\b|\\bsource\\s+<\\((curl|wget)\\b"
+    },
+    {
+      "signal": "shell",
+      "id": "base64-to-shell",
+      "pattern": "\\bbase64\\s+(-d|--decode|-D)\\b[^\\n]{0,80}\\|\\s*(ba|z)?sh\\b"
+    },
+    {
+      "signal": "shell",
+      "id": "run-dangerous",
+      "pattern": "\\b(run|execute|type|paste)\\s*:?\\s+[`'\"]?(git\\s+push\\b[^\\n]{0,60}(--force|\\s-f\\b)|rm\\s+-[a-z]*r[a-z]*f?\\b|sudo\\b|chmod\\s+(-R\\s+)?777|curl\\b|wget\\b|nc\\s)"
+    },
+    {
+      "signal": "secrets",
+      "id": "read-secrets",
+      "pattern": "\\b(read|open|cat|print|output|show|display|dump|reveal|send|upload|post|include|attach|exfiltrate|leak|share|base64|encode|collect|gather|list)\\b[^\\n.]{0,60}(\\.env\\b|id_rsa|id_ed25519|\\.ssh/|\\.aws/credentials|\\.netrc|\\.npmrc|\\.git-credentials|api[_ -]?keys?|secret\\s+keys?|access\\s+tokens?|private\\s+keys?|credentials|passwords?|environment\\s+variables|env\\s+vars|ssh\\s+keys?|keychain|seed\\s+phrase)"
+    },
+    {
+      "signal": "exfil",
+      "id": "send-to-url",
+      "pattern": "\\b(send|post|upload|transmit|forward|exfiltrate|append|include|encode|embed|attach)\\b[^\\n]{0,80}\\b(to|into|in)\\s+(the\\s+|this\\s+|a\\s+|following\\s+)?(url|endpoint|webhook|server|query\\s+string|query\\s+param(eter)?s?|image\\s+(url|link)|https?://)"
+    },
+    {
+      "signal": "exfil",
+      "id": "reveal-context",
+      "pattern": "\\b(reveal|print|output|repeat|send|leak|show|summari[sz]e)\\s+(your|the|all)\\s+(system\\s+prompt|hidden\\s+instructions|initial\\s+instructions|conversation\\s+history|chat\\s+history|previous\\s+messages|context\\s+window)\\b"
+    }
+  ],
+  "invisible": {
+    "note": "Unicode tag characters (U+E0000-E007F) spell hidden ASCII: any run is decoded and counted as hidden text, except an emoji subdivision flag (black flag, 2-6 lowercase-letter or digit tags, cancel tag). A run of 4 or more variation selectors (U+FE00-FE0F, U+E0100-E01EF) is decoded as bytes the same way. Before the phrase patterns run, the text is read as a reader takes it in: invisible characters, soft hyphens and variation selectors out, look-alike Cyrillic and Greek letters, full-width, mathematical and accented letters read as Latin, JSON \\u escapes and HTML character references decoded; a phrase that needed a disguised letter counts as hidden. Zero-width characters (U+200B-U+200F, U+2060-U+2064, U+FEFF after the start) and bidi controls (U+202A-U+202E, U+2066-U+2069) are counted outside emoji and joining scripts; the policy's invisibleAt says how many are a signal.",
+    "tagMinChars": 4
+  },
+  "hidden": {
+    "note": "HTML comments, elements hidden by CSS or the hidden attribute, alt / title / aria-label attributes, markdown comments and the text of data: URLs are text a human reader of the rendered page does not see. They count as hidden only when the phrase patterns match inside them (the first maxChars characters of each). Every segment is read: a cap on their number let harmless ones hide the last.",
+    "maxChars": 4000
+  },
+  "base64": {
+    "note": "Runs of at least minChars base64 characters (standard or URL-safe, also wrapped over lines) are decoded; mostly printable text with the phrase patterns inside counts as hidden. Every run is decoded.",
+    "minChars": 40
+  },
+  "exfil_link": {
+    "note": "A markdown image (any placeholder in its URL) or link (a placeholder or data word in a query value) that an agent's rendered answer or fetch would send out. Placeholders: {x}, <x>, $x, [X_Y], %s; data words: secret, token, password, key, data, history, conversation, env, credential.",
+    "placeholder": "\\{\\{?[^}\\s]{1,40}\\}?\\}|%7B[^%\\s]{1,40}%7D|<[A-Za-z_][^>\\s]{0,40}>|%3C[A-Za-z_]|\\$\\{?[A-Za-z_]\\w*|\\[[A-Z][A-Z_ ]{2,40}\\]|%s\\b",
+    "dataWords": "(secret|token|passw(or)?d|api[_-]?key|apikey|credential|history|conversation|chat|env|ssh|private)"
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "note": "Secret redaction shared by gate.mjs, guard.mjs and routing/reflex_router.py. names: what each shape is, in order (the injection guard names the key type when it blocks a prompt, never the key). shapes: credential shapes replaced by <redacted> (also the router's secret floor). context: keyword patterns; replace uses $1 group syntax. Patterns must mean the same in JavaScript and Python (re.ASCII): no $ (use (?![\\s\\S])), no named groups, no flags besides i. corpus: both selfchecks assert these exact outputs. Known difference: \\s also matches Unicode spaces (NBSP) in JavaScript only. ponytail: a pattern list, not a DLP engine; add a pattern when a new credential shape shows up.",
+  "shapes": [
+    "\\b(AKIA|ASIA)[A-Z0-9]{16}\\b",
+    "\\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\\b",
+    "\\b(sk-[A-Za-z0-9_-]{16,}|xox[abpr]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{16,})\\b",
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?(-----END [A-Z ]*PRIVATE KEY-----|(?![\\s\\S]))",
+    "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}",
+    "\\b[rs]k_(live|test)_[A-Za-z0-9]{10,}\\b",
+    "\\bAIza[0-9A-Za-z_-]{35}\\b",
+    "\\bnpm_[A-Za-z0-9]{36}\\b",
+    "hooks\\.slack\\.com/services/\\S+",
+    "(?<![A-Za-z0-9/+])(?=[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+]))(?=[A-Za-z0-9/+]*[A-Z])(?=[A-Za-z0-9/+]*[a-z])[A-Za-z0-9/+]{40}"
+  ],
+  "names": [
+    "AWS access key id",
+    "GitHub token",
+    "OpenAI, Slack or GitLab token",
+    "private key",
+    "JSON web token",
+    "Stripe key",
+    "Google API key",
+    "npm token",
+    "Slack webhook URL",
+    "40-character secret key (AWS secret access key shape)"
+  ],
+  "context": [
+    {
+      "pattern": "(authorization:\\s*(bearer|basic|token)\\s+)\\S+",
+      "flags": "i",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "((cookie|x-[\\w-]*(auth|token|key)[\\w-]*):\\s*)[^'\"\\n]+",
+      "flags": "i",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\b[\\w.-]*(secret|token|passw(or)?d|api[_-]?key|access[_-]?key|credential)[\\w.-]*\"?\\s*[=:]\\s*)(\"[^\"]*\"|'[^']*'|\\S+)",
+      "flags": "i",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "((?:^|\\s)--?(password|passwd|token|secret|api-key)[= ]\\s*)(\"[^\"]*\"|'[^']*'|\\S+)",
+      "flags": "i",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "((\\s-u|--user)\\s+[^\\s:]+:)\\S+",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\b(mysql|mariadb)\\b[^|;&]*\\s-p)(\\S+)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\bsshpass\\s+-p\\s*)\\S+",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(://[^\\s:@/]+:)\\S+@",
+      "flags": "",
+      "replace": "$1<redacted>@"
+    },
+    {
+      "pattern": "(\\b(?:docker|podman|nerdctl|buildah|skopeo|oras|az)\\s+(?:[\\w-]+\\s+)?login\\b[^|;&\\n]*?\\s-p(?:=|\\s+)?)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\b(?:echo|printf)(?:\\s+-[neE]+)*\\s+(?:(['\"])%s[^'\"]*\\2\\s+)?)(?!['\"]?\\$)((?:\"[^\"]*\"|'[^']*'|[^\\s|;&<>'\"])+(?:[ \\t]+(?:\"[^\"]*\"|'[^']*'|[^\\s|;&<>'\"])+)*)(?=(?:[ \\t]*(?:\\d*>&\\d+|\\d*>>?[ \\t]*[^\\s|;&<>]+|<[ \\t]*[^\\s|;&<>]+))*\\s*\\|\\s*[^|;&\\n]*?(?:\\bsudo\\b[^|;&\\n]*\\s(?:-[a-zA-Z]*S\\b|--stdin\\b)|--password-stdin\\b|\\bchpasswd\\b|\\bpasswd\\s+--stdin\\b))",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\bsudo\\b[^|;&\\n]*\\s(?:-[a-zA-Z]*S\\b|--stdin\\b)[^|;&\\n]*<<<\\s*)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "((?:^|\\s)--[\\w-]*-(?:password|passwd|token|secret)[= ]\\s*)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)",
+      "flags": "i",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\b(?:redis-cli\\b[^|;&\\n]*\\s(?:-a|--pass)|mongo\\w*\\b[^|;&\\n]*\\s-p)\\s+)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\s-pass(?:in|out)?\\s+pass:)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\s-(?:src|dest)?(?:store|key)pass\\s+)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\bhtpasswd(?=(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+-\\w*b)(?:(?=(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+-\\w*n)(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+[^\\s\\-<>;&|]\\S*\\s+|(?!(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+-\\w*n)(?:\\s+-(?:\\w*C\\s+\\d+|\\w+))*\\s+[^\\s\\-<>;&|]\\S*\\s+[^\\s<>;&|]\\S*\\s+))(\"[^\"]*\"|'[^']*'|[^\\s;&|<>]+)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\s(?:-U|--user(?:name)?)[=\\s]+[^\\s%'\"]+%)(\"[^\"]*\"|'[^']*'|[^\\s;&|]+)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    },
+    {
+      "pattern": "(\\s(?:-U|--user(?:name)?)[=\\s]+(['\"])[^'\"%]*%)([^'\"]*)(?=\\2)",
+      "flags": "",
+      "replace": "$1<redacted>"
+    }
+  ]
+}
