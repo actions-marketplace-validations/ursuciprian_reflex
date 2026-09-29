@@ -4,7 +4,7 @@
 
 In Claude Code install it as a plugin: `/plugin marketplace add ursuciprian/reflex`, then `/plugin install reflex@reflex`. Codex CLI: `codex plugin marketplace add ursuciprian/reflex`, then `codex plugin add reflex@reflex`. opencode: `{"plugin": ["@ursuciprian/reflex"]}` in `opencode.json`. Every agent: `npx @ursuciprian/reflex setup` or `curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash`. Requires Node.js 18+ on macOS or Linux, including WSL. New installs use the local engine in shadow mode: deterministic rules block, everything else is logged. Reflex gates shell commands and subagent spawns only; file edits and MCP tool calls go through each agent's own permissions. It supplements a sandbox and least-privilege credentials. Claude Desktop, Cursor, Cowork and other MCP hosts can run `reflex mcp`, an MCP server for AI agent safety with read-only, advisory tools (`reflex_check`, `reflex_scan`, `reflex_status`, `reflex_audit`, `reflex_explain`); hooks enforce, the MCP server only advises.
 
-npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/reflex
+npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/reflex. Documentation website: https://ursuciprian.github.io/reflex/
 
 ## Docs
 
@@ -30,6 +30,8 @@ npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/r
 - [Safety properties and limits](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#safety-properties-and-limits): fallbacks, failure modes and what is out of scope
 - [Injection guard](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#injection-guard): which tool results are scanned, detectors, what each agent can do with a finding
 - [Plan-aware terraform gate](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure): prevent AI agent terraform destroy: judging terraform apply by its saved plan (terraform show -json), denying destroys and replaces, the plugin cache requirement, an optional kubectl AI agent guardrail with kubectl diff
+- [OpenTofu and Terragrunt](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#opentofu-and-terragrunt): OpenTofu AI agent plan gate (tofu show -json), Terragrunt guardrails for run-all apply and destroy
+- [helm guardrails for AI agents](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#helm-guardrails-for-ai-agents): helm uninstall AI agent guardrail, rollback and production upgrades, optional helm diff
 - [Team policy](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#team-policy-share-reflex-rules-across-a-repo): one committed `.reflex/policy.json` for Claude Code, Codex CLI, opencode, pi and Hermes; it only tightens, and its fast lane and webhook need `reflex trust .`
 - [Change freeze](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#change-freeze-for-ai-coding-agents): deploy freezes and change windows for AI coding agents
 - [Audit log](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#audit-log-for-ai-agent-commands-soc-2): SOC 2 AI agent audit: `reflex audit` csv, json or jsonl export and the decision webhook

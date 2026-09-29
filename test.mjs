@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run every existing selfcheck and the onboarding journey without the user's configuration or keys.
 import assert from "node:assert/strict";
-import {cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync} from "node:fs";
+import {cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync} from "node:fs";
 import {spawn, spawnSync} from "node:child_process";
 import {createServer} from "node:http";
 import {tmpdir} from "node:os";
@@ -899,7 +899,75 @@ try {
     const starter = parseTeam(readFileSync(join(fresh, ".reflex/policy.json"), "utf8"));
     assert.ok(!starter.errors.length && starter.rules.length && !starter.fastlane.length, JSON.stringify(starter.errors));
     assert.notEqual(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", fresh], {encoding: "utf8", env: tenv}).status, 0, "init never overwrites");
+    // Policy packs (examples/policies/): each a valid, stricter-only team policy with a note on every
+    // entry, that denies what it says it denies; `reflex policy init --pack` copies one, never overwriting.
+    const packDir = join(root, "examples/policies"), packs = readdirSync(packDir).filter(f => f.endsWith(".json")).map(f => f.slice(0, -5)).sort();
+    assert.deepEqual(packs, ["aws", "eks", "startup-default", "terraform"]);
+    const denies = {aws: "aws s3 rb s3://logs --force", eks: "kubectl delete pods --all -n web", terraform: "terraform state push terraform.tfstate", "startup-default": "gh repo delete acme/api --yes"};
+    for (const name of packs) {
+      const text = readFileSync(join(packDir, `${name}.json`), "utf8"), doc = JSON.parse(text), t = parseTeam(text);
+      assert.deepEqual(t.errors, [], `${name} pack validates`);
+      assert.ok(t.rules.length && !t.fastlane.length && !t.notify && doc.fastlane === undefined && doc.notify === undefined, `${name}: stricter parts only`);
+      assert.ok(doc.note?.includes(`--pack ${name}`), `${name}: a note that says how to install it`);
+      for (const r of [...doc.rules, ...(doc.always_human ?? []), ...(doc.freeze ?? [])]) assert.ok(r.note?.trim(), `${name}: ${r.id ?? JSON.stringify(r)} has a note`);
+      const dir = join(home, `pack-${name}`);
+      mkdirSync(join(dir, ".git"), {recursive: true});
+      success(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", dir, "--pack", name], {encoding: "utf8", env: tenv}));
+      assert.equal(readFileSync(join(dir, ".reflex/policy.json"), "utf8"), text, `${name}: copied as is`);
+      const hit = pc(denies[name], dir);
+      assert.ok(hit?.outcome === "deny" && hit.id.startsWith("team:"), `${name} pack denies ${denies[name]}: ${JSON.stringify(hit)}`);
+      writeFileSync(join(dir, ".reflex/policy.json"), "{}\n");
+      assert.notEqual(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", dir, "--pack", name], {encoding: "utf8", env: tenv}).status, 0, "a pack never overwrites");
+      assert.equal(readFileSync(join(dir, ".reflex/policy.json"), "utf8"), "{}\n");
+    }
+    mkdirSync(join(home, "pack-x/.git"), {recursive: true});
+    const unknown = spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", join(home, "pack-x"), "--pack", "../package"], {encoding: "utf8", env: tenv});
+    assert.ok(unknown.status !== 0 && /unknown pack/.test(unknown.stderr) && !existsSync(join(home, "pack-x/.reflex")), unknown.stderr);
     console.log("team policy checks OK");
+  }
+  {
+    // The GitHub Action (action.yml) runs the published package at this version, and takes no
+    // ${{ }} expression inside a script: inputs reach the shell through env.
+    const pkg = read(join(root, "package.json")), action = readFileSync(join(root, "action.yml"), "utf8");
+    const pins = [...action.matchAll(/@ursuciprian\/reflex@([^\s"']+)/g)].map(m => m[1]);
+    assert.ok(pins.length >= 3 && pins.every(v => v === pkg.version), `action.yml pins @ursuciprian/reflex@${pkg.version}, found ${pins}`);
+    for (const step of action.split(/\n {4}- name: /).slice(1))
+      assert.ok(!/\$\{\{/.test(step.split(/\n {6}run: \|/)[1] ?? ""), `action.yml: no expression in the script of step "${step.split("\n")[0]}"`);
+    // The docs site (site/build.mjs): one page per intent with its own title, description, canonical
+    // URL and h1; every link into the site lands on a page and an anchor there; valid JSON-LD.
+    const {build, PAGES, SITE} = await import("./site/build.mjs");
+    assert.equal(SITE, pkg.homepage, "the site URL is the package homepage");
+    assert.throws(() => build(join(root, "docs")), /refusing to replace/, "the build never deletes a directory that holds no earlier build");
+    const out = build(join(scratch, "site")), base = new URL(SITE).pathname, seen = new Set();
+    const pages = new Map(PAGES.map(p => [p.path, readFileSync(join(out, p.path, "index.html"), "utf8")]));
+    const ld = html => [...html.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)].map(m => JSON.parse(m[1]));
+    for (const [path, html] of pages) {
+      const title = html.match(/<title>([^<]*)<\/title>/)[1], desc = html.match(/<meta name="description" content="([^"]*)">/)[1];
+      assert.ok(title.length <= 70 && desc.length <= 160 && !seen.has(title) && !seen.has(desc), `${path}: a short, unique title and description`);
+      seen.add(title).add(desc);
+      assert.equal((html.match(/<h1[\s>]/g) ?? []).length, 1, `${path}: one h1`);
+      assert.ok(html.includes(`<link rel="canonical" href="${SITE}${path}">`) && html.includes(`<meta property="og:image" content="${SITE}assets/social-preview.png">`), `${path}: canonical and og:image`);
+      assert.ok(!/[–—]/.test(title + desc + html.match(/<p class="lead">([^<]*)/)[1]), `${path}: no en or em dash in the page's own text`);
+      assert.ok(html.includes(`href="${base}setup/"`) && html.includes('<html lang="en">'), `${path}: links to install`);
+      assert.ok(ld(html).some(d => d["@type"] === "SoftwareApplication" && d.softwareVersion === pkg.version), `${path}: SoftwareApplication JSON-LD`);
+      for (const [, href] of html.matchAll(/href="([^"]*)"/g)) {
+        if (!href.startsWith(base) && !href.startsWith("#")) continue;
+        const [p, frag] = href.startsWith("#") ? [path, href.slice(1)] : href.slice(base.length).split("#");
+        if (/\.\w+$/.test(p)) { assert.ok(existsSync(join(out, p)), `${path}: ${href}`); continue; }
+        assert.ok(pages.has(p), `${path}: ${href} is a page`);
+        if (frag) assert.ok(pages.get(p).includes(`id="${frag}"`), `${path}: ${href} lands on an anchor`);
+      }
+    }
+    const faq = ld(pages.get("faq/")).find(d => d["@type"] === "FAQPage");
+    assert.equal(faq?.mainEntity.length, readFileSync(join(root, "docs/FAQ.md"), "utf8").match(/^## /gm).length, "FAQPage JSON-LD: one question per FAQ section");
+    assert.ok(faq.mainEntity.every(q => q.name && q.acceptedAnswer.text.length > 40));
+    const sitemap = readFileSync(join(out, "sitemap.xml"), "utf8");
+    assert.ok(PAGES.every(p => sitemap.includes(`<loc>${SITE}${p.path}</loc>`)) && readFileSync(join(out, "robots.txt"), "utf8").includes(`Sitemap: ${SITE}sitemap.xml`));
+    assert.equal(readFileSync(join(out, "llms.txt"), "utf8"), readFileSync(join(root, "llms.txt"), "utf8"), "llms.txt at the site root");
+    const {inline, blocks} = await import("./site/build.mjs"), ctx = {shift: 0, ids: new Map(), headings: [], link: u => u};
+    assert.equal(inline("a `<b>` **c** [d](e) <script>", ctx), 'a <code>&lt;b&gt;</code> <strong>c</strong> <a href="e">d</a> &lt;script&gt;', "markdown inline, with HTML escaped");
+    assert.equal(blocks(["- a", "  - b", "- c"], ctx), "<ul>\n<li>a\n<ul>\n<li>b</li>\n</ul></li>\n<li>c</li>\n</ul>", "nested tight lists");
+    console.log("action and site checks OK");
   }
   {
     // The Claude Code plugin: manifests in step with package.json, hooks.json in step with install.mjs.

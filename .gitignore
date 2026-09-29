@@ -5,3 +5,4 @@ node_modules/
 __pycache__/
 .serena/
 docs/demo/raw.gif
+site/dist/

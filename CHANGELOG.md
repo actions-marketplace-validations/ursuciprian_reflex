@@ -6,7 +6,65 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- OpenTofu AI agent guardrails: `tofu apply <planfile>` goes through the plan gate like terraform,
+  read with `tofu show -json` (with `infra.terraform_show` on), in the same sanitized environment
+  and timeout, under the same provider plugin cache check. That check now also reads OpenTofu's CLI
+  config files (`~/.tofurc`, `$XDG_CONFIG_HOME/opentofu/tofurc` and `*.tfrc` there) for
+  `dev_overrides` and `plugin_cache_dir`, and a `.tofu` or `.tofu.json` file newer than the plan makes
+  it stale. `tofu apply` without a plan file asks with the fix (`tofu plan -out=tfplan`).
+- Terragrunt guardrails: `terragrunt apply`, `run-all apply`, `run --all apply`, `run -- apply` and
+  `apply-all` ask, with the fix when there is no saved plan (a deny in production with
+  `infra.require_plan_in_prod`). A terragrunt plan is never read: terragrunt runs the hooks and
+  `run_cmd` of `terragrunt.hcl`, and picks the binary and directory itself.
+- helm guardrails: a production `helm upgrade --install`, `helm upgrade` or `helm install` asks,
+  with the release, namespace and kube context in the reason. Optional `infra.helm_diff` (off by
+  default) runs `helm diff upgrade --output structured` (helm-diff 3.15 or later) with the command's
+  own chart, release and values: a removed PVC, PV, statefulset, namespace or CRD follows
+  `infra.destroy`, another removal asks, and a helm diff that fails, times out or prints something
+  else asks. It is never run with a kubeconfig, API server, token, post-renderer or unknown flag of
+  the command's own, a `KUBECONFIG` in the working directory, or `HELM_DIFF_*` in its environment;
+  and only when every helm plugin directory is under the home directory, outside the working tree,
+  and unchanged (mtime and ctime) since the user's Reflex `config.json` was saved, and every
+  plugin runs only a program in its own directory. Its environment is an allowlist.
+- `tofu show` is not run when a `.tf` or `.tofu` file in the directory configures encryption or a
+  key provider (one can run a program), and gets `XDG_CONFIG_HOME` so it reads the `tofurc` that was
+  checked.
+- `reflex status` shows where `tofu` and `helm` were found and whether `helm_diff` is on.
+- Golden cases (golden-v10) and ladder cases (ladder-v3) for tofu, terragrunt and helm.
+
 ### Changed
+
+- Rules (rules-v21): `tofu destroy`, `tofu state rm` and `tofu apply -destroy`, `terragrunt destroy`,
+  `run-all destroy`, `run --all destroy` and `destroy-all`, and `helm rollback` hit the destroy rules
+  (ask, deny in production). `helm uninstall|delete|rollback` are also found after global flags
+  (`helm --kube-context prod uninstall api`), `terraform` and `tofu` destroy after any global flags
+  (`tofu -no-color -chdir=envs/prod destroy`), and `apply --destroy` with two dashes. `-nprod` and
+  `-nlive` count as production. Production
+  markers also read `--working-dir live`, `-n=live` and `HELM_NAMESPACE=live`, and `TF_WORKSPACE` in
+  the hook's environment is the Terraform workspace for terraform, tofu and terragrunt.
+- The MCP server's `reflex_check` runs no helm diff either.
+- Documentation website at https://ursuciprian.github.io/reflex/, built by `site/build.mjs` (no
+  dependencies) from README.md, docs/GUIDE.md, docs/SETUP.md and docs/FAQ.md: a landing page from
+  README.md, the guide, setup and FAQ pages, and one page per topic (Claude Code hooks, Terraform guardrails, kubectl delete, prompt
+  injection, Codex CLI, SOC 2 audit log, change freeze, Jev, Reflex vs Claude Code permissions),
+  each assembled from doc sections with its own title, description, canonical URL and links to
+  install and related pages. Also sitemap.xml, robots.txt (read by crawlers at a host root only, so it takes effect with a custom
+  domain), OpenGraph and Twitter tags, JSON-LD
+  (SoftwareApplication, and FAQPage on the FAQ) and llms.txt at the root. No JavaScript, system
+  fonts, dark mode through `prefers-color-scheme`. `.github/workflows/pages.yml` deploys it on push
+  to main with SHA-pinned actions; the build job has read permissions only, and only the deploy job gets `pages: write` and
+  `id-token: write`. `package.json` `homepage` is the site.
+- GitHub Action (`action.yml`, composite): validates `.reflex/policy.json`, judges a list of commands
+  with `reflex check` (keyless, so the result depends only on the rules and the team policy) and fails
+  on deny (or on ask with `fail-on: ask`) with a clean user config, with a decision table in the job summary; optionally runs
+  the golden set with a TypeSafe key. It runs `npx @ursuciprian/reflex@<version>` pinned to the
+  package version, which `npm test` keeps in sync. Usage in docs/SETUP.md; a CI job runs it against
+  the published package once that version is on npm.
+- Policy packs in `examples/policies/`: `aws`, `eks`, `terraform` and `startup-default`, valid team
+  policies that only add checks, with a note on every rule. `reflex policy init --pack <name>` (or `--pack=<name>`) copies
+  one to `.reflex/policy.json` and never overwrites an existing file.
 
 - The read-only pass is now a small allowlist (`readOnlySimple` in `gate.mjs`), not a shell
   parser. A command is read-only only when it is one simple command or a pipeline of them, with
@@ -31,7 +89,7 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Fixed
 
-- Fast lane (rules-v21): `bash -n` takes only plain file arguments (`bash -n +n -c …` turned
+- Fast lane (rules-v22): `bash -n` takes only plain file arguments (`bash -n +n -c …` turned
   noexec off again and ran the command); `git stash`, `switch`, `checkout -b` and `restore --staged`
   no longer take any trailing words (`git stash clear`, `git switch -f`, `git restore --staged
   --worktree` passed); a pattern ends at a space, not a word boundary (`git commit-graph`,
@@ -42,6 +100,7 @@ All notable changes to Reflex are documented here. The format follows
 - `"readonly": "legacy"` in `config.json` (or `REFLEX_READONLY=legacy`) keeps the old parser
   (`readOnlyLegacy`) and its place before the rules for one release. It will be removed in the
   next one. Any other value is a configuration error, which asks.
+
 
 ## [0.15.0] - 2026-09-29
 

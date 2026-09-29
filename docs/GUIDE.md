@@ -14,6 +14,8 @@
    - [Read-only allowlist](#read-only-allowlist)
    - [Team policy: share Reflex rules across a repo](#team-policy-share-reflex-rules-across-a-repo)
    - [Plan-aware terraform gate: stop AI agents from destroying infrastructure](#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure)
+   - [OpenTofu and Terragrunt](#opentofu-and-terragrunt)
+   - [helm guardrails for AI agents](#helm-guardrails-for-ai-agents)
    - [Change freeze for AI coding agents](#change-freeze-for-ai-coding-agents)
    - [Audit log for AI agent commands (SOC 2)](#audit-log-for-ai-agent-commands-soc-2)
 5. [Metrics](#metrics)
@@ -720,6 +722,19 @@ stricter, unless each teammate trusts it.
 }
 ```
 
+**Policy packs.** `reflex policy init --pack <name>` writes a ready policy instead of the starter,
+and never overwrites an existing file. The packs are in
+[examples/policies/](../examples/policies/), stricter only, with a `note` on every rule:
+
+| Pack | What it adds |
+|---|---|
+| `aws` | Denies RDS deletes without a final snapshot, `s3 rb --force`, turning off CloudTrail, GuardDuty, Config or Security Hub, and KMS key deletion; asks for any IAM or Organizations command that is not read-only, EC2 terminate, Route 53 and DynamoDB deletes; AWS profiles such as `prod` or `acme-prod` (not `nonprod`) are production. |
+| `eks` | Denies EKS cluster and node group deletes and `kubectl delete --all` / `-A`; asks for namespace, volume, stateful set and CRD deletes, drains, scale to zero, RBAC and `aws-auth` changes, and Helm uninstall or rollback; kube contexts such as `prod-eu` are production. |
+| `terraform` | `infra` with `destroy: deny` and `require_plan_in_prod`; denies `state push`, state changes with `-lock=false` and workspace deletes; asks for state edits, imports, taints, `-target` and Terragrunt `run-all`; workspaces such as `prod` are production. |
+| `startup-default` | Denies `DROP` of a database, schema or table and `gh repo delete`; asks for truncates, migrations, force pushes, package and image publishes, GitHub secret and release changes and hosted app deploys (Vercel and Netlify `--prod`, fly, Heroku); a Friday 16:00 UTC freeze for production. |
+
+Rename the prod markers to your own profiles, contexts and workspaces, then commit the file.
+
 What each part does. All of them apply as soon as the file is in the repository:
 
 | Key | Effect |
@@ -882,7 +897,7 @@ well, and the command asks.
 
 ```json
 {"effective": "deny", "decision": "deny", "reason": "reflex (rule): plan destroys 1: aws_instance.old", "source": "rule",
- "policy": "rules-v21", "plan": {"kind": "terraform", "create": 1, "update": 0, "delete": 1, "replace": 0, "stateful": [], "digest": "..."}}
+ "policy": "rules-v22", "plan": {"kind": "terraform", "create": 1, "update": 0, "delete": 1, "replace": 0, "stateful": [], "digest": "..."}}
 ```
 
 The `digest` (of the plan JSON) is also part of the approval queue key and the Jev cache key, so an
@@ -914,7 +929,7 @@ destructive ones.
 **Configuration.** In `~/.config/reflex/config.json`:
 
 ```json
-{"infra": {"enabled": true, "destroy": "deny", "require_plan_in_prod": false, "terraform_show": false, "kubectl_diff": false, "timeout_ms": 3000}}
+{"infra": {"enabled": true, "destroy": "deny", "require_plan_in_prod": false, "terraform_show": false, "kubectl_diff": false, "helm_diff": false, "timeout_ms": 3000}}
 ```
 
 A team policy can only make it stricter (`.reflex/policy.json`):
@@ -925,7 +940,7 @@ A team policy can only make it stricter (`.reflex/policy.json`):
 
 `destroy` there accepts only `"deny"` and `require_plan_in_prod` only `true`; a team `infra` section
 also turns the gate on for a user who turned it off. `reflex doctor` shows the settings and where
-`terraform` and `kubectl` were found.
+`terraform`, `tofu`, `kubectl` and `helm` were found.
 
 **Measured on real sessions.** A replay of 2,232 local Claude Code and Codex transcripts found 63
 unique commands that mention `terraform ... apply` or a mutating kubectl verb. Most only mention it
@@ -936,9 +951,100 @@ is the reason, not the outcome.
 
 **Limits.** The plan is read when the hook runs and applied a moment later: a process the agent left
 running could swap the file in between (Terraform still refuses a plan whose state moved). A command
-whose text hides what runs (`$VAR`, a heredoc) is not read, and is judged as before. OpenTofu
-(`tofu`), Terragrunt and Terraform Cloud saved plans are not read yet. `kubectl diff` does not show
+whose text hides what runs (`$VAR`, a heredoc) is not read, and is judged as before. Terragrunt and
+Terraform Cloud saved plans are not read ([OpenTofu and Terragrunt](#opentofu-and-terragrunt)). `kubectl diff` does not show
 objects that a `--prune` would delete unless the command has `--prune`.
+
+## OpenTofu and Terragrunt
+
+OpenTofu AI agent guardrails and Terragrunt guardrails work like the terraform gate above, with the
+differences below.
+
+**OpenTofu (`tofu`).** `tofu apply <planfile>` goes through the same plan gate: with
+`infra.terraform_show` on, the hook reads the saved plan with `tofu show -json <planfile>` (never
+`tofu plan` or `tofu apply`), in the same sanitized environment, with the same timeout, the same
+counts and the same outcomes. The provider check is the same too: every entry under
+`.terraform/providers` must be a symlink into a plugin cache (`TF_PLUGIN_CACHE_DIR` or
+`plugin_cache_dir`) under your home directory and outside the working tree, not newer than the
+plan. The CLI config files it reads for `dev_overrides` and `plugin_cache_dir` include OpenTofu's:
+`TF_CLI_CONFIG_FILE`, else `~/.tofurc`, `$XDG_CONFIG_HOME/opentofu/tofurc` (and `*.tfrc` there),
+`~/.terraformrc` and `~/.terraform.d/*.tfrc`. A `.tofu` or `.tofu.json` file newer than the plan
+makes it stale. `tofu apply` without a plan file asks with the fix: "tofu apply without a saved
+plan: run `tofu plan -out=tfplan` and apply the plan file". OpenTofu reads state and plan
+encryption from the root module in the working directory, and a key provider can run a program, so
+`tofu show` is not run (the apply asks) when any `.tf`, `.tofu` or `.tf.json` file there mentions
+`encryption` or `key_provider`; an encrypted plan is not a zip file either. `tofu show` gets
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME`, so it reads the same `tofurc` the check read (a relative one
+asks). `tofu destroy`, `tofu state rm`,
+`tofu apply -destroy` and `-replace=` hit the destroy rules: ask, and deny in production. The
+`tofu` binary comes from an absolute `PATH` entry, and `./tofu` never passes.
+
+**Terragrunt.** The hook never reads a Terragrunt plan: `terragrunt apply` runs the
+`before_hook`, `after_hook` and `run_cmd` of `terragrunt.hcl`, which an agent can write, and
+terragrunt itself picks `tofu` or `terraform` and, with `terraform.source`, a copy in
+`.terragrunt-cache`. So:
+
+| The command | Outcome |
+|---|---|
+| `terragrunt apply`, `terragrunt run-all apply`, `terragrunt run --all apply`, `terragrunt run -- apply`, `apply-all` | ask: "terragrunt apply without a saved plan: run `terragrunt plan -out=tfplan` (a stack: `terragrunt run --all --out-dir DIR plan`) and apply that plan". Deny in production with `infra.require_plan_in_prod` |
+| `terragrunt apply tfplan`, `terragrunt run --all apply --out-dir DIR` | ask: the saved plan is not read; review it with `terragrunt show` first |
+| `terragrunt destroy`, `run-all destroy`, `run --all destroy`, `destroy-all`, `apply -destroy` | the destroy rules: ask, and deny in production |
+
+Production for all three comes from the usual markers: the working directory (`envs/prod`,
+`infrastructure-live`), `-chdir=`, `--working-dir live`, `tofu workspace select live`,
+`TF_WORKSPACE`, a `.terraform/environment` workspace in the working directory, the AWS profile and
+the git branch.
+
+## helm guardrails for AI agents
+
+`helm install`, `helm upgrade`, `helm uninstall` and `helm rollback` change a cluster, and a helm
+uninstall from an AI agent takes every object of the release with it (PVCs too, unless the chart
+keeps them).
+
+| The command | Outcome |
+|---|---|
+| `helm uninstall`, `helm delete`, `helm rollback` | the destroy rules: ask, and deny in a production kube context or namespace (`--kube-context prod-eu`, `-n live`, `HELM_NAMESPACE=live`, the current context of your kubeconfig). Global flags before the verb count (`helm --kube-context prod uninstall api`) |
+| `helm upgrade --install`, `helm upgrade`, `helm install` in production | ask, with the release and namespace: "production helm upgrade --install of release api in namespace web, kube context prod-eu" |
+| the same outside production | judged as before (the rules, then Jev or, keyless, a human) |
+
+**helm diff (optional).** With `"infra": {"helm_diff": true}` (off by default: it runs a helm
+plugin and calls the API server), the hook checks `helm upgrade` and `helm install` with
+`helm diff upgrade <release> <chart>` and the command's own values (`-f`, `--set*`, `--version`,
+`--repo`, `-n`, `--kube-context`), plus `--allow-unreleased` for an install, `--output structured`,
+`--no-color` and `--suppress-secrets`. It needs helm-diff 3.15 or later (the structured output).
+What it decides:
+
+- a removed PVC, PV, statefulset, namespace or CRD: `infra.destroy` (deny by default), for example
+  "helm upgrade --install of release api in namespace web removes 1: StatefulSet/web/db (namespace,
+  volume, statefulset or CRD)";
+- any other removed object: ask, with the objects;
+- only changes: the counts in the reason and the trace (in production the ask above carries them);
+- helm diff failed, timed out (`infra.timeout_ms`), printed something that is not the structured
+  diff, or the plugin check below failed: ask. It fails closed.
+
+It is not run at all, and the command is judged as before, when the command names its own
+`--kubeconfig`, `--kube-apiserver`, `--kube-token` or other connection flag, a `--post-renderer`,
+`--dry-run`, `--force`, `-o`, repository or registry config, or any flag this does not know; when
+`KUBECONFIG` is relative or inside the working directory; and when helm-diff is not installed.
+Its environment is an allowlist: `PATH`, `HOME`, the locale, `KUBECONFIG`, `XDG_*`, helm's own
+directories, `HELM_NAMESPACE` and `HELM_KUBECONTEXT`, the proxy variables, and the cloud variables an
+exec credential plugin needs (`AWS_*`, `GOOGLE_*`, `CLOUDSDK_*`, `AZURE_*`). `HELM_DIFF_*` (an
+external diff tool, a template file, another output), `HELM_KUBEAPISERVER`, `HELM_KUBETOKEN` and the
+rest are left out. A chart from a repository or `oci://` registry is fetched with your helm
+credentials, as `helm diff` would; the timeout kills `helm`, but a helm-diff process under it can
+finish its API calls after the hook has asked.
+
+**The plugin check.** helm plugins are code on disk an agent's file tools could write, like the
+provider binaries. `helm diff` runs only when every helm plugin directory (`HELM_PLUGINS`, else
+`$HELM_DATA_HOME/plugins`, `$XDG_DATA_HOME/helm/plugins`, or `~/Library/helm/plugins` on macOS and
+`~/.local/share/helm/plugins` on Linux) is under your home directory and outside the working tree,
+nothing in it (through the links a local `helm plugin install` makes) points into the tree, every
+plugin's `plugin.yaml` (64 KB at most) runs only a program in its own directory (`command`,
+`platformCommand` and `downloaders`; a downloader can run for a chart URL), and no file or link there changed after
+the trusted mark: your Reflex `config.json`. The change time counts as well as the modification time,
+so `touch -t` cannot hide a new file. After `helm plugin update diff`, save `config.json` again (you,
+not the agent: that is a tamper rule) to trust the new files. If unsure, keep `helm_diff` off:
+production upgrades still ask.
 
 ## Change freeze for AI coding agents
 
