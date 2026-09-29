@@ -108,6 +108,7 @@
       "outcome": "ask",
       "prod": "deny",
       "rule": "runs destructive SQL through MCP",
+      "tool": "^(?!(.*_)?(docs?|documentation|search|help|guide|ask|library)(_|$))",
       "args": "\"(sql|query|statement|stmt)\"\\s*:\\s*\"([^\"]*;)?\\s*(drop|truncate|delete|alter)\\b"
     },
     {

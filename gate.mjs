@@ -2419,24 +2419,41 @@ export async function decide(call, {background = false, asker, judger} = {}) {
 // hash of the whole input so a queue approval covers that exact call. An unknown MCP tool goes to the
 // engine. Never allow: a pass leaves the agent's own permissions in charge. A read-like MCP tool and a
 // write outside the protected paths pass at once, unlogged, as a read-only command does.
-async function toolDecide(call, {background = false, asker, judger} = {}) {
-  const t = toolOf(call.tool, call.input, call.mcp === true);
-  const quiet = rule => ({effective: "pass", decision: "pass", reason: `reflex: ${rule}`, source: "tool"});
-  if (!t) return quiet("not a gated tool");
-  const env = envContext(call.cwd), digest = sha(call.input ?? {}).slice(0, 8);
-  let quick;
+// The rules' view of a tool call: {t, quick, call} with the call's command text, tier and MCP summary
+// filled in; `quiet` when the gate has nothing to say (not a gated tool, a write outside the protected
+// paths, a read-like MCP tool). quick null: an unknown MCP tool.
+function toolRules(call, env) {
+  const t = toolOf(call.tool, call.input, call.mcp === true), digest = sha(call.input ?? {}).slice(0, 8);
+  if (!t) return {quiet: {outcome: "pass", source: "tool", rule: "not a gated tool"}};
   if (t.kind === "write") {
     const hit = protectedWrite(t.paths, call.cwd);
-    if (!hit) return quiet("not a protected path");
-    call = {...call, command: `${t.name} ${hit.path} (input ${digest})`, tier: hit.prod ? {prod: true, by: "path", why: redact(hit.path).slice(0, 160)} : {prod: false}};
-    quick = {outcome: hit.outcome, rule: `writes a protected path (${hit.path}): ${hit.why}`, id: "protected-path", source: "rule", policy_version: hit.version};
-  } else {
-    const tier = mcpTier(t, call.cwd, env);
-    quick = mcpJudge(t, {spec: load("mcp.json"), team: teamPolicy(call.cwd)?.mcp ?? [], tier, precheck: c => precheck(c, call.cwd, env)});
-    if (quick?.source === "read-only") return view(quick, "pass");
-    call = {...call, command: `${mcpCommand(t, redact)} (input ${digest})`, tier,
-            mcp: {server: t.server, tool: t.tool, arguments: redact(JSON.stringify(t.args ?? {})).slice(0, 2000), prod: tier.prod}};
+    if (!hit) return {quiet: {outcome: "pass", source: "tool", rule: "not a protected path"}};
+    return {t, call: {...call, command: `${t.name} ${hit.path} (input ${digest})`, tier: hit.prod ? {prod: true, by: "path", why: redact(hit.path).slice(0, 160)} : {prod: false}},
+            quick: {outcome: hit.outcome, rule: `writes a protected path (${hit.path}): ${hit.why}`, id: "protected-path", source: "rule", policy_version: hit.version}};
   }
+  const tier = mcpTier(t, call.cwd, env);
+  const quick = mcpJudge(t, {spec: load("mcp.json"), team: teamPolicy(call.cwd)?.mcp ?? [], tier, precheck: c => precheck(c, call.cwd, env)});
+  if (quick?.source === "read-only") return {quiet: quick};
+  return {t, quick, call: {...call, command: `${mcpCommand(t, redact)} (input ${digest})`, tier,
+    mcp: {server: t.server, tool: t.tool, arguments: redact(JSON.stringify(t.args ?? {})).slice(0, 2000), prod: tier.prod}}};
+}
+const unknownTool = t => ({outcome: "pass", source: "local", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules: logged (keyless)`, policy_version: load("mcp.json").version});
+/** A tool call through the rules and the engine, as eval.mjs sees it: no freeze, queue, runaway guard or trace. */
+export async function judgeTool({tool, input = {}, mcp = false, cwd, env = {}, session = {}, useCache = true, asker}) {
+  if (configurationError()) return {outcome: "ask", rule: configurationError(), source: "error"};
+  const r = toolRules({tool, input, mcp, cwd}, env);
+  if (r.quiet || r.quick) return r.quiet ?? r.quick;
+  if (CONFIG.mcp.unknown === "ask") return {outcome: "ask", source: "rule", id: "mcp-unknown", rule: "not covered by the MCP rules (mcp.unknown: ask)"};
+  if (CONFIG.engine === "local") return unknownTool(r.t);
+  const j = await jevJudge({command: r.call.command, cwd, env, session: {...session, mcp: r.call.mcp}, useCache, asker, tool: true});
+  return j.outcome === "allow" ? {...j, outcome: "pass"} : j;
+}
+async function toolDecide(call, {background = false, asker, judger} = {}) {
+  const env = envContext(call.cwd), r = toolRules(call, env);
+  if (r.quiet) return view(r.quiet, "pass");
+  const t = r.t;
+  let quick = r.quick;
+  call = r.call;
   const pass = d => d.effective === "allow" ? {...d, effective: "pass"} : d;
   if (!background) quick = frozen(quick, call.cwd, call.tier);
   let resumed = false;
@@ -2461,9 +2478,7 @@ async function toolDecide(call, {background = false, asker, judger} = {}) {
   const version = load("mcp.json").version;
   if (CONFIG.mcp.unknown === "ask")
     return finish({outcome: "ask", source: "rule", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules (mcp.unknown: ask)`, policy_version: version}, call, "ask", {env, judger});
-  if (CONFIG.engine === "local")
-    return pass(await finish({outcome: "pass", source: "local", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules: logged (keyless)`, policy_version: version},
-                             call, "pass", {env, judger, background}));
+  if (CONFIG.engine === "local") return pass(await finish(unknownTool(t), call, "pass", {env, judger, background}));
   if (CONFIG.mode !== "enforce" && !background) return inBackground(call);
   const t0 = tainted(call.session_id);
   const j = await jevJudge({command: call.command, cwd: call.cwd, env, session: {...callSession(call), mcp: call.mcp}, asker, tainted: !!t0, tool: true});

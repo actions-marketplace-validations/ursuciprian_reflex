@@ -20,6 +20,7 @@
     {"id": "mcp-iam", "outcome": "ask", "prod": "deny", "rule": "changes IAM permissions through MCP",
      "server": "(^|[^a-z])iam([^a-z]|$)", "tool": "^(put|attach|create|update|add|set)_"},
     {"id": "mcp-sql-destructive", "outcome": "ask", "prod": "deny", "rule": "runs destructive SQL through MCP",
+     "tool": "^(?!(.*_)?(docs?|documentation|search|help|guide|ask|library)(_|$))",
      "args": "\"(sql|query|statement|stmt)\"\\s*:\\s*\"([^\"]*;)?\\s*(drop|truncate|delete|alter)\\b"},
     {"id": "mcp-http-delete", "outcome": "ask", "prod": "deny", "rule": "sends an HTTP DELETE through MCP",
      "args": "\"method\"\\s*:\\s*\"delete\""}
