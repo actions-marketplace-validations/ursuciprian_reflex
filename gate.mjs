@@ -35,6 +35,7 @@ import {globsReflex, teamMode, teamPolicy, teamRules} from "./team.mjs";
 import {infraError, infraSettings, planGate} from "./infra.mjs";
 import {activeFreeze, inWindow, parseFreeze} from "./freeze.mjs";
 import {notifyLater, notifyTarget} from "./notify.mjs";
+import {PROVIDERS, call as callProvider, keyRouteError, providerUrl, resolveProvider} from "./providers.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env;
@@ -121,8 +122,12 @@ if (PLUGIN && (CODEX_PLUGIN ? settingsHooksInstalled(CODEX_HOOKS, "codex") : set
 // With no saved engine the gate starts where a fresh `reflex setup` does: local, no key needed, or
 // Jev when a TypeSafe key is in the environment, or a Keychain item or an earlier install is
 // recorded. The plugin relies on this default.
+// Which provider carries Jev (providers.mjs): TypeSafe direct, OpenRouter, Cloudflare, Vercel or a
+// compatible endpoint, from REFLEX_PROVIDER, config.json "provider" or the keys in the environment.
+export const PROVIDER = resolveProvider(ENV, USER_CONFIG);
 const ENGINE = ENV.REFLEX_ENGINE ?? flagValue("--engine", USER_CONFIG.engine ??
-  (ENV.TYPESAFE_API_KEY?.trim() || USER_CONFIG.keychain || Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
+  (PROVIDER.detected || USER_CONFIG.provider || USER_CONFIG.keychain ||
+   Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
 // engine laya: the same questions and policy as Jev, answered by a Laya checkpoint served on this
 // machine (setup/laya/server.py, `reflex laya start`); nothing leaves it and no key is needed.
 export const LAYA_DEFAULTS = {port: 8421, model: "typed-decisions"};
@@ -133,7 +138,8 @@ export const layaUrl = port => `http://127.0.0.1:${port}/v1/systemone`;
 export const LAYA_TOKEN = () => join(dirname(USER_CONFIG_FILE), "laya.token");
 const LAYA = {...LAYA_DEFAULTS, ...USER_CONFIG.laya};
 export const CONFIG = {
-  api: ENV.REFLEX_API_URL ?? (ENGINE === "laya" ? layaUrl(LAYA.port) : "https://api.typesafe.ai/v1/systemone"),
+  api: ENV.REFLEX_API_URL ?? (ENGINE === "laya" ? layaUrl(LAYA.port) : providerUrl(PROVIDER.name, PROVIDER.settings)),
+  provider: PROVIDER.name,
   model: ENV.REFLEX_MODEL ?? (ENGINE === "laya" ? LAYA.model : "jev-1.13.0"),   // pinned so a decision can be reproduced
   // off | shadow | enforce. The environment wins, so one session can be switched for a test;
   // otherwise the --mode flag that install.mjs writes into each agent's hook command.
@@ -158,6 +164,8 @@ export const CONFIG = {
   freeze: parseFreeze(USER_CONFIG.freeze, "config.json freeze"),
   notify: notifyTarget(USER_CONFIG.notify, "config.json notify"),
 };
+// The one host the provider's key may go to (authorization()): where its endpoint was configured.
+CONFIG.keyHost = (() => { try { return new URL(CONFIG.api).host; } catch { return null; } })();
 /** Saved judge settings with the backend's (and, keyless, the engine's) defaults filled in; `enabled` unless the backend is none or REFLEX_JUDGE=off. */
 export function judgeSettings(saved = {}, env, engine = "jev") {
   const backend = saved?.backend ?? JUDGE_DEFAULTS.backend, s = saved ?? {}, k = engine === "local" ? KEYLESS_JUDGE_DEFAULTS : {};
@@ -179,6 +187,7 @@ export const setupFile = f => !ENV.REFLEX_SETUP_DIR && CONFIG.setup === join(HER
 export const load = f => JSON.parse(readFileSync(setupFile(f), "utf8"));
 export function configurationError() {
   return USER_CONFIG_ERROR ?? (!ENGINES.includes(CONFIG.engine) ? "engine must be local, jev or laya"
+    : CONFIG.engine === "jev" && PROVIDER.error ? PROVIDER.error
     : !["off", "shadow", "enforce"].includes(CONFIG.mode) ? "mode must be off, shadow or enforce"
     : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra));
 }
@@ -1604,49 +1613,50 @@ function precheckAs(command, cwd, env, run, alt = false) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Jev.
+// Jev. The active provider's key: its environment variables, else its macOS Keychain item (TypeSafe's
+// is REFLEX_KEYCHAIN_SERVICE or "keychain" in config.json, as before). Read once per process, never logged.
+let KEY;
 function apiKey() {
-  if (ENV.TYPESAFE_API_KEY) return ENV.TYPESAFE_API_KEY.trim();
+  if (KEY) return KEY;
+  const p = PROVIDERS[CONFIG.provider], env = p.env.map(n => ENV[n]?.trim()).find(Boolean);
+  if (env) return (KEY = env);
+  const item = CONFIG.provider === "typesafe" ? CONFIG.keychain : p.keychain;
   if (platform() === "darwin") {
     try {
-      return execFileSync("security", ["find-generic-password", "-s", CONFIG.keychain, "-w"],
-                          {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1500}).trim();
+      const k = execFileSync("security", ["find-generic-password", "-s", item, "-w"],
+                             {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1500}).trim();
+      if (k) return (KEY = k);
     } catch { /* fall through */ }
   }
-  throw new Error(`no API key: set TYPESAFE_API_KEY or keychain item "${CONFIG.keychain}"`);
+  throw new Error(`no API key for ${CONFIG.provider}: set ${p.env.join(" or ")} or keychain item "${item}"`);
 }
 
-// The TypeSafe key goes to TypeSafe only: never to the Laya URL, whatever the engine is switched to at run time.
-function authorization() {
-  if (CONFIG.engine !== "laya" && ENGINE !== "laya") return {Authorization: `Bearer ${apiKey()}`};
+// Each provider's key goes to that provider's host only (CONFIG.keyHost, the host its endpoint was
+// configured with, checked on every call), never to another provider's host, never over http off
+// this machine, and never to the Laya URL whatever the engine is switched to at run time.
+function authorization(url = CONFIG.api) {
+  if (CONFIG.engine !== "laya" && ENGINE !== "laya") {
+    const refused = keyRouteError(CONFIG.provider, url, CONFIG.keyHost);
+    if (refused) throw new Error(refused);
+    return {key: apiKey()};
+  }
   const token = readText(LAYA_TOKEN())?.trim();
-  return token ? {Authorization: `Bearer ${token}`} : {};
+  return token ? {key: token} : {};
 }
 
+// One call through the active provider (providers.mjs), its answers normalised to one typed shape.
+// The whole call, retries included, fits in `timeoutMs` (the hook's budget). Any failure, a malformed
+// answer included, comes back as `error`: callers treat it as Jev unavailable (the policy fallback).
 export async function ask(state, questions, {timeoutMs = CONFIG.timeoutMs} = {}) {
   const disabled = configurationError() ?? (CONFIG.engine === "local" ? "local engine: hosted classification is disabled" : null);
   if (disabled) return {answers: {}, usage: {}, error: disabled, latency_s: 0};
-  const t0 = Date.now();
+  const t0 = Date.now(), laya = CONFIG.engine === "laya" || ENGINE === "laya";
   let answers = {}, usage = {}, error = null;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const r = await fetch(CONFIG.api, {method: "POST", signal: AbortSignal.timeout(timeoutMs - (Date.now() - t0)),
-        headers: {...authorization(), "Content-Type": "application/json"},
-        body: JSON.stringify({state, model: CONFIG.model, questions})});
-      // 429 rate limited, 529 overloaded: one quick retry if the time budget allows
-      if ((r.status === 429 || r.status === 529) && attempt === 0 && Date.now() - t0 < timeoutMs / 2) {
-        await new Promise(res => setTimeout(res, 250));
-        continue;
-      }
-      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`);
-      const payload = await r.json();
-      answers = payload.answers ?? {};
-      usage = payload.usage ?? {};
-      error = null;
-    } catch (e) {
-      error = `${e.name}: ${e.message}`;
-    }
-    break;
+  try {
+    ({answers, usage} = await callProvider({provider: laya ? "typesafe" : CONFIG.provider, url: CONFIG.api, ...authorization(CONFIG.api),
+      state, questions, model: CONFIG.model, deadline: t0 + timeoutMs}));
+  } catch (e) {
+    error = `${e.name}: ${e.message}`;
   }
   return {answers, usage, error, latency_s: +((Date.now() - t0) / 1000).toFixed(2)};
 }

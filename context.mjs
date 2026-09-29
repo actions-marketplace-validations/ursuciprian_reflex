@@ -522,6 +522,7 @@ async function selfcheck() {
   });
   await new Promise(r => server.listen(0, "127.0.0.1", r));
   CONFIG.api = `http://127.0.0.1:${server.address().port}/v1/systemone`;
+  CONFIG.keyHost = new URL(CONFIG.api).host;   // the key goes only to the host it was configured for
   try {
     // chunking and rendering
     const grep = [];

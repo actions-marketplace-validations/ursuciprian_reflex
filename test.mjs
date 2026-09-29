@@ -9,8 +9,8 @@ import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url)), scratch = mkdtempSync(join(tmpdir(), "reflex-test-"));
-const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("REFLEX_") &&
-  !["TYPESAFE_API_KEY", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"].includes(k)));
+const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("REFLEX_") && !k.startsWith("JEV_") &&
+  !["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "AI_GATEWAY_API_KEY", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"].includes(k)));
 const env = {...clean, HOME: scratch, XDG_CONFIG_HOME: join(scratch, "config"), XDG_STATE_HOME: join(scratch, "state"),
   REFLEX_PREFIX: join(scratch, "installed"), REFLEX_ENGINE: "jev", REFLEX_KEYCHAIN_SERVICE: `reflex-test-${process.pid}`,
   REFLEX_API_URL: "http://127.0.0.1:9/v1/systemone"};
@@ -20,7 +20,7 @@ const success = r => { assert.equal(r.status, 0, `${r.error ?? ""}\n${r.stdout}\
 const read = p => JSON.parse(readFileSync(p, "utf8"));
 try {
   for (const [program, args] of [
-    [process.execPath, ["policy.mjs"]], [process.execPath, ["gate.mjs", "--selfcheck"]],
+    [process.execPath, ["policy.mjs"]], [process.execPath, ["providers.mjs", "--selfcheck"]], [process.execPath, ["gate.mjs", "--selfcheck"]],
     [process.execPath, ["instructions.mjs", "--selfcheck"]], [process.execPath, ["install.mjs", "--selfcheck"]],
     [process.execPath, ["guard.mjs", "--selfcheck"]], [process.execPath, ["judge2.mjs", "--selfcheck"]], [process.execPath, ["autonomy.mjs", "--selfcheck"]], [process.execPath, ["freeze.mjs", "--selfcheck"]],
     [process.execPath, ["context.mjs", "--selfcheck"]], [process.execPath, ["router/server.mjs", "--selfcheck"]], [process.execPath, ["infra.mjs", "--selfcheck"]],
