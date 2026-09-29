@@ -627,6 +627,14 @@ never writes. `--team` prints a `fastlane` list per repository for `.reflex/poli
 apply it with `reflex trust`, as for any team fast lane. `reflex learn` is part of the CLI only; the
 Claude Code plugin does not ship it.
 
+**What it trusts.** The answers come from Reflex's own logs (`trace.jsonl`, `feedback.jsonl` and the
+queue items in the data directory). There is no second record kept somewhere a shell write cannot
+reach, so the logs are trusted only as far as the tamper check protects them: a shell write into the
+data or config directory (a path, a relative path after `cd` into one or its parent, a working
+directory there, a script, or a variable the command does not set naming a Reflex file) asks a human,
+and so does a file tool write there. A write you approve yourself, or one made outside the agent, can
+still change what `reflex learn` counts, and `--write` shows every entry before it adds it.
+
 ### Calibrated allow
 
 Autonomous agents stop at every prompt their own permissions require, even for `npx prettier

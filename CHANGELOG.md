@@ -36,6 +36,15 @@ All notable changes to Reflex are documented here. The format follows
   `reflex queue approve|deny`, `reflex suggest --write` or `reflex learn --write` is a tamper ask,
   also in the bundled fast lane (`npm run lint`). `reflex suggest` or `reflex learn` with its flags in
   a variable, `"$@"`, `xargs`, `eval` or a function is a tamper ask too.
+- Tamper: a shell write into the Reflex data directory (`REFLEX_DATA_DIR`, else
+  `$XDG_STATE_HOME/reflex` or `~/.local/state/reflex`) or the config directory is a tamper ask when
+  the agent's working directory is the directory, a parent or a folder inside it, not only after a
+  `cd` in the command (`echo x >> reflex/trace.jsonl` from `~/.local/state`, `echo x >> ../feedback.jsonl`
+  from `queue/`). A Reflex file (`trace.jsonl`, `feedback.jsonl`, `queue/`, `reflex/...`) written
+  under a variable the command does not set asks too, and a local script that writes the config
+  directory, or the data directory through a `cd`, is a tamper ask. A path next to the data or config
+  directory that only starts with its name (`reflex-old`) no longer counts. `reflex learn` trusts these
+  logs as far as this check protects them; the GUIDE says so.
 
 ### Fixed
 

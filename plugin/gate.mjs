@@ -1420,13 +1420,15 @@ const cdWatched = d => CD_WATCH.test(d) || [HERE, CONFIG.data, dirname(USER_CONF
 // resolved paths, each set on a line of its own so a rule cannot match across it and the command
 // text. One it cannot read is kept whole, and then every cd in the command is (the tracking is not
 // trusted). A relative directory that is not watched as written is also tried against `cwd`
-// (`cd setup/tool-gate` in the checkout). `resolvedOnly`: only those lines.
+// (`cd setup/tool-gate` in the checkout), and before any cd the directory is `cwd` itself (an agent
+// started in ~/.local/state writing reflex/trace.jsonl). `resolvedOnly`: only those lines.
 const writesView = (ps, resolvedOnly = false, cwd = null) => {
   const dirs = cdDirs(ps);
   return ps.map((p, i) => {
     const whole = !p.inert || /^[\s({!]*(cd|pushd|popd|for|select|case|while|until|if|export|local|declare|typeset|readonly|read|touch|mkdir)\b|^[\s({!]*\w+=/.test(p.core);
     const view = resolvedOnly ? "" : (dirs[i] === CD_STEP && !dirs.unread) || !whole ? p.targets.map(t => `> ${t}`).join(" ") : p.text;
-    const d = typeof dirs[i] === "string" ? dirs[i] : null, abs = d && cwd && !/^[/~$]/.test(d) ? posix.join(cwd, d) : null;
+    const d = typeof dirs[i] === "string" ? dirs[i] : null;
+    const abs = !cwd ? null : d === null ? (dirs[i] === null ? cwd : null) : !/^[/~$]/.test(d) ? posix.join(cwd, d) : null;
     // Inside the checkout its relative paths are judged as written (setup/…, gate.mjs), as without a cd.
     const inside = cwd && (cwd + "/").startsWith(HERE + "/");
     const at = d && cdWatched(d) ? d : abs && cdWatched(abs) ? (inside ? d : abs) : null;
@@ -1479,6 +1481,21 @@ function cdDirs(ps) {
   out.unread = unread;
   return out;
 }
+// What a command changes, as the tamper check reads it (writesView), quotes and backslashes dropped.
+const writesOf = (command, cwd, ps = pipelines(command)) =>
+  (ps ? writesView(ps, false, cwd) : `${command} ; ${writesView(roughPipelines(command), true, cwd)}`).replace(/["'\\]/g, "");
+// The checkout, the Reflex data directory or its config directory, named in the text. ~ and $HOME
+// are the home directory: ~/src/x/gate.mjs names the checkout wherever it was cloned.
+const namesOwn = text => {
+  const home = text.replace(/(^|[\s=:>])(~|\$HOME|\$\{HOME\})(?=\/|\s|$)/g, (m, p) => p + homedir());
+  // the directory itself or a path in it, not a sibling that starts with its name (reflex-old)
+  const at = (s, p) => { for (let i = s.indexOf(p); i > -1; i = s.indexOf(p, i + 1)) if (!/[\w.-]/.test(s[i + p.length] ?? "")) return true; return false; };
+  return [HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => at(text, p) || at(home, p));
+};
+// A Reflex file written under a variable the command does not set ($D/trace.jsonl, cd "$X" && tee
+// queue/a.json): where it points is unknown, so it counts as the data or config directory.
+const OWN_UNDER_VAR = /\$[^\s;&|<>]*\/(reflex\/|(trace|feedback|judge|guard|context|instructions|subgoals)(\.\d+)?\.jsonl\b|(queue|taint|runaway)\/|(envelopes|judge-cache|judge-budget|fastlane)\.json\b|laya\.token\b)/;
+const touchesOwn = writes => namesOwn(writes) || OWN_UNDER_VAR.test(writes.replace(/\$HOME\b|\$\{HOME\}/g, homedir()));
 // Only inert pipelines writing notes (Markdown, text, logs, CSV) or nothing: there is no shell
 // command in it for a "shell" rule to find, whatever its quoted text says (echo '… rm -rf / …' >> MEMORY.md).
 const NOTES = /^(\/dev\/(null|stdout|stderr)|[^\s;&|<>]*\.(md|markdown|txt|rst|adoc|log|csv|tsv))$/i;
@@ -2118,13 +2135,11 @@ function precheckAs(command, cwd, env, run, alt = false) {
   // Quotes and backslashes are dropped, as the shell drops them: ~/.claude/'settings.json' is the file.
   // When the text hides what runs (a $, a heredoc), the whole command counts, plus the paths a cd
   // in it points relative ones at (cd "$HOME/.claude" && tee settings.json).
-  const ps = pipelines(command), writes = (ps ? writesView(ps, false, cwd) : `${bare} ; ${writesView(roughPipelines(bare), true, cwd)}`).replace(/["'\\]/g, "");
+  const ps = pipelines(command), writes = writesOf(bare, cwd, ps);
   // The checkout itself is protected wherever it was cloned, not only under a directory named reflex.
   // A git worktree or clone nested inside it is another checkout, unless the command climbs out (..).
   const nested = cwd && nestedCheckout(cwd), inRepo = cwd && (cwd + "/").startsWith(HERE + "/") && !(nested && staysNested(command, cwd, nested, run));
-  // ~ and $HOME are the home directory: ~/src/x/gate.mjs names the checkout wherever it was cloned
-  const home = writes.replace(/(^|[\s=:>])(~|\$HOME|\$\{HOME\})(?=\/|\s|$)/g, (m, p) => p + homedir());
-  if ([HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => writes.includes(p) || home.includes(p)) ||
+  if (touchesOwn(writes) ||
       // an agent must not answer its own queue item, widen its own envelope or rewind the tree
       reflexChanges(command) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
@@ -2154,7 +2169,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
   const late = () => Date.now() > run.scan;
   for (const s of localScripts(command, cwd).filter(s => s.body && !run.scripts.has(s.path))) {
     run.scripts.add(s.path);
-    if (s.body.includes(HERE) || s.body.includes(CONFIG.data) || TEAM_TAMPER.test(s.body.replace(/["'\\]/g, "")) || reflexChanges(s.body) || fastLaneEdit(s.body))
+    if (namesOwn(s.body) || touchesOwn(writesOf(s.body, cwd, pipelines(s.body, Infinity, run.scan))) || TEAM_TAMPER.test(s.body.replace(/["'\\]/g, "")) || reflexChanges(s.body) || fastLaneEdit(s.body))
       { hold(ruled({outcome: "ask", rule: `touches the Reflex gate, its setup or its logs (in ${s.path})`, id: "tamper"})); continue; }
     const {lines} = scriptLines(s.body), all = lines.join("\n");
     let sh = checkRules(all + ctx, whole, all);
