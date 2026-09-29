@@ -55,7 +55,8 @@ export function notifyLater(targets, ev) {
   try {
     const jobs = targets.filter(t => t && wants(t, ev)).map(t => ({url: t.url, body: body(ev, t.format)}));
     if (!jobs.length) return false;
-    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--send"], {detached: true, stdio: ["pipe", "ignore", "ignore"]});
+    // through hook.mjs, like every hook: an error in the child is logged (health/errors.jsonl), not lost
+    const child = spawn(process.execPath, [fileURLToPath(new URL("hook.mjs", import.meta.url)), fileURLToPath(import.meta.url), "--send"], {detached: true, stdio: ["pipe", "ignore", "ignore"]});
     child.on("error", () => {});
     child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify(jobs));

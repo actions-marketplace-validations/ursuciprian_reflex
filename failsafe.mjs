@@ -25,12 +25,13 @@ import {fileURLToPath, pathToFileURL} from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env;
-const SCRIPTS = ["gate.mjs", "guard.mjs", "instructions.mjs"];
+const SCRIPTS = ["gate.mjs", "guard.mjs", "instructions.mjs", "notify.mjs"];
 // The flag each script dispatches on, in the order it checks them (an earlier one wins).
 const FLAGS = {
   "gate.mjs": ["--selfcheck", "--claude", "--claude-post", "--claude-prompted", "--codex", "--codex-post", "--hermes", "--hermes-post", "--decide", "--record", "--bg", "--sh", "--check"],
   "guard.mjs": ["--selfcheck", "--eval", "--claude", "--codex", "--claude-prompt", "--codex-prompt", "--hermes", "--hermes-llm", "--scan", "--prompt", "--bg", "--check"],
   "instructions.mjs": ["--selfcheck", "--claude", "--codex", "--hermes", "--select", "--check"],
+  "notify.mjs": ["--send"],   // the detached webhook child: its errors are only logged
 };
 const GATE_PRE = ["--claude", "--codex", "--hermes", "--decide", "--sh"];
 const SUBGOAL_TOOLS = ["Task", "Agent", "spawn_agent", "delegate_task"];

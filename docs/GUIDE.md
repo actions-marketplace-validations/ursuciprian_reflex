@@ -903,6 +903,11 @@ contract. The reason is `reflex error: <short message>; a human must review`.
 | opencode, pi, oh-my-pi (`--decide`) | `{"effective": "ask"}`; the adapters also treat no answer, or one that is not JSON, as ask |
 | `reflex-sh` (`--sh`) | a y/N on the terminal; no terminal or no refuses with exit 126 |
 | `PostToolUse`, `UserPromptSubmit`, record hooks, the injection guard, instructions | never blocked: exit 0 with a `systemMessage` warning; after a tool result the guard also tells the model it did not check the result |
+| The decision webhook's detached child (`notify.mjs --send`) | logged only; it never touches a decision |
+
+A change freeze (`freeze.mjs`) is read while the gate loads and when it decides: an error in it
+asks like any other. `reflex audit` is a terminal command, not a hook, so an error there is a plain
+non-zero exit.
 
 - **Shadow mode** stays non-blocking: the error is logged and the command runs, with a warning in
   Claude Code and Codex. While the gate is broken it checks nothing, deterministic rules included,

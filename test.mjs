@@ -1215,6 +1215,11 @@ try {
     }
     const scan = parse(hookRun("guard.mjs", ["--scan"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}, {texts: ["x"]}));
     assert.ok(scan.effective === "warn" && /did not check this result/.test(scan.note), "guard --scan warns");
+    // The detached webhook child (notify.mjs --send) goes through the entry too: a crash is logged, nothing else.
+    const nr = hookRun("notify.mjs", ["--send"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}, "[]");
+    assert.ok(nr.status === 0 && nr.stdout === "" && readFileSync(join(fdir, "data/health/errors.jsonl"), "utf8").includes('"script":"notify.mjs","flag":"--send"'), `notify child: ${nr.status} ${nr.stdout}`);
+    assert.equal(hookRun("notify.mjs", ["--send"], {}, "[]").status, 0, "notify child runs through the entry");
+    assert.match(readFileSync(join(root, "notify.mjs"), "utf8"), /new URL\("hook\.mjs", import\.meta\.url\)\), fileURLToPath\(import\.meta\.url\), "--send"/, "notifyLater spawns through hook.mjs");
     // A malformed hook input, read after the gate loaded, asks too.
     assert.equal(parse(hookRun("gate.mjs", ["--claude", "--mode", "enforce"], {}, "not json")).hookSpecificOutput?.permissionDecision, "ask");
     // reflex-sh: an ask with no terminal refuses (126); shadow runs the command.
