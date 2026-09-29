@@ -48,6 +48,9 @@ curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh 
 Infra guardrails (what it adds to the agents' built-in permission rules):
 
 - Plan-aware terraform gate: `terraform apply` without a saved plan asks, in shadow and enforce mode, with the fix (`terraform plan -out=tfplan`, then apply the file). With `infra.terraform_show` on, the hook reads the saved plan with `terraform show -json` (never `plan` or `apply`), counts creates, updates, deletes and replaces, and denies a plan with any delete or replace, naming stateful resources such as `aws_db_instance` first; a clean plan still asks in production. Off by default, and it needs a provider plugin cache: `terraform show` starts the provider binaries in `.terraform`, so it runs only when every provider there is a symlink into the cache. `terraform destroy`, `apply -destroy` and `apply -replace=` ask, and are denied in production.
+- OpenTofu AI agent guardrails: `tofu apply <planfile>` goes through the same plan gate with `tofu show -json` and the same plugin cache check (OpenTofu's CLI config files too); `tofu apply` without a plan asks for `tofu plan -out=tfplan`; `tofu destroy` asks, and is denied in production.
+- Terragrunt guardrails: `terragrunt apply`, `run-all apply` and `run --all apply` ask, with the fix when there is no saved plan (terragrunt runs the hooks and `run_cmd` of `terragrunt.hcl`, so its plans are never read); `run-all destroy` asks, and is denied in production.
+- helm guardrails: a helm uninstall from an AI agent, `helm delete` and `helm rollback` ask, and are denied in a production kube context or namespace; `helm upgrade --install` in production asks with the release and namespace. Optional `infra.helm_diff` runs `helm diff upgrade` (helm-diff 3.15 or later), flags removed PVCs, statefulsets and CRDs, and asks on a failure or timeout; it runs only when the helm plugins are outside the working tree and unchanged since `config.json` was saved.
 - Optional `infra.kubectl_diff`: `kubectl diff` and server dry runs flag deletes of namespaces, PVCs, PVs, statefulsets and CRDs.
 - Environment awareness: the working directory (`envs/prod`), AWS profile and region, kube context, Terraform workspace and git branch are part of every decision; `kubectl delete namespace` asks in a dev context and is denied in a prod one.
 - One policy across agents: a committed `.reflex/policy.json` (extra rules, always-human patterns, prod markers, freezes, a mode floor, stricter `infra` settings) applies in every teammate's Claude Code, Codex CLI, opencode, pi and Hermes. It only tightens; its fast lane and webhook need `reflex trust .`.
@@ -224,6 +227,15 @@ plan still asks in production. It needs a provider plugin cache, because `terraf
 provider binaries in `.terraform`: the hook runs it only when every provider there is a symlink into
 the cache. The hook never runs `plan` or `apply` itself. To prevent an AI agent's terraform destroy,
 `terraform destroy`, `apply -destroy` and `apply -replace=` ask, and are denied in production.
+
+### Does Reflex support OpenTofu, Terragrunt and helm?
+
+Yes. `tofu apply <planfile>` is read with `tofu show -json` under the same rules as terraform, and
+`tofu apply` without a plan asks with the fix. Every `terragrunt apply`, `run-all apply` or
+`run --all apply` asks, and `terragrunt run-all destroy` is denied in production. `helm uninstall`,
+`helm delete` and `helm rollback` ask and are denied in a production kube context; a production
+`helm upgrade --install` asks with the release and namespace; `infra.helm_diff` adds a `helm diff`
+count of changed and removed objects, and a helm diff that fails or times out asks.
 
 ### How do I set a change freeze or audit AI agent commands for SOC 2?
 

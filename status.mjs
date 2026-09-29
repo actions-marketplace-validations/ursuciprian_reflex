@@ -44,8 +44,9 @@ if (tp?.mode === "enforce" && CONFIG.mode === "shadow") warnings.push(`Team poli
 // The plan-aware infra gate (infra.mjs): which binaries it would read plans and diffs with.
 const infraSet = infraSettings(USER_CONFIG.infra, tp?.infra);
 const infra = {enabled: infraSet.enabled, destroy: infraSet.destroy, require_plan_in_prod: infraSet.require_plan_in_prod, kubectl_diff: infraSet.kubectl_diff,
-  timeout_ms: infraSet.timeout_ms, terraform: which("terraform"), kubectl: which("kubectl")};
+  helm_diff: infraSet.helm_diff, timeout_ms: infraSet.timeout_ms, terraform: which("terraform"), tofu: which("tofu"), kubectl: which("kubectl"), helm: which("helm")};
 if (infra.enabled && infra.kubectl_diff && !infra.kubectl) warnings.push("infra.kubectl_diff is on but kubectl is not on PATH: kubectl changes are judged by the command text only.");
+if (infra.enabled && infra.helm_diff && !infra.helm) warnings.push("infra.helm_diff is on but helm is not on PATH: helm upgrades are judged by the command text only.");
 if (CONFIG.mode === "shadow") warnings.push("Shadow mode enforces deterministic rules. Other decisions are logged without blocking.");
 // Change freezes (freeze.mjs): config.json and this directory's team policy, checked against the clock now.
 const windows = [...CONFIG.freeze.windows, ...(tp?.freeze ?? [])], onNow = windows.filter(w => inWindow(w, new Date()));
@@ -316,7 +317,8 @@ else {
     `rules ${team_policy.rules}, always-human ${team_policy.always_human}, prod markers ${team_policy.prod_markers}, mode floor ${team_policy.mode_floor ?? "none"}, ` +
     `freezes ${team_policy.freezes}, fast lane ${team_policy.fastlane_entries} (${team_policy.fastlane_active ? "active" : "inactive"}), notify ${team_policy.notify}` : "none in this directory"}`);
   console.log(`Infra gate: ${infra.enabled ? `on; destroy ${infra.destroy}; saved plan required in prod ${infra.require_plan_in_prod ? "yes" : "no"}; ` +
-    `terraform ${infra.terraform ?? "not found"}; kubectl ${infra.kubectl ?? "not found"} (diff ${infra.kubectl_diff ? "on" : "off"})` : "off"}`);
+    `terraform ${infra.terraform ?? "not found"}; tofu ${infra.tofu ?? "not found"}; kubectl ${infra.kubectl ?? "not found"} (diff ${infra.kubectl_diff ? "on" : "off"}); ` +
+    `helm ${infra.helm ?? "not found"} (diff ${infra.helm_diff ? "on" : "off"})` : "off"}`);
   console.log(`Change freeze: ${freeze.active.length ? `ACTIVE now: ${freeze.active.map(w => `${w.reason} (${w.outcome}, ${w.applies_to})`).join("; ")}` : "none active"} (${freeze.windows} window${freeze.windows === 1 ? "" : "s"})`);
   console.log(`Notify: ${notify.targets.length ? notify.targets.join("; ") : "off"}${notify.test ? `; test ${notify.test.map(t => t.error ?? `HTTP ${t.status}`).join(", ") || "not sent"}` : ""}`);
   console.log(`Runaway guard: ${runaway.enabled ? `on (${CONFIG.mode === "enforce" ? "stops" : CONFIG.mode === "shadow" ? "logs only, shadow" : "off with the mode"}); ${runaway.stops_last_hour} stop${runaway.stops_last_hour === 1 ? "" : "s"} in the last hour` : "off"}`);

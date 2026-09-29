@@ -8,6 +8,43 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Added
 
+- OpenTofu AI agent guardrails: `tofu apply <planfile>` goes through the plan gate like terraform,
+  read with `tofu show -json` (with `infra.terraform_show` on), in the same sanitized environment
+  and timeout, under the same provider plugin cache check. That check now also reads OpenTofu's CLI
+  config files (`~/.tofurc`, `$XDG_CONFIG_HOME/opentofu/tofurc` and `*.tfrc` there) for
+  `dev_overrides` and `plugin_cache_dir`, and a `.tofu` or `.tofu.json` file newer than the plan makes
+  it stale. `tofu apply` without a plan file asks with the fix (`tofu plan -out=tfplan`).
+- Terragrunt guardrails: `terragrunt apply`, `run-all apply`, `run --all apply`, `run -- apply` and
+  `apply-all` ask, with the fix when there is no saved plan (a deny in production with
+  `infra.require_plan_in_prod`). A terragrunt plan is never read: terragrunt runs the hooks and
+  `run_cmd` of `terragrunt.hcl`, and picks the binary and directory itself.
+- helm guardrails: a production `helm upgrade --install`, `helm upgrade` or `helm install` asks,
+  with the release, namespace and kube context in the reason. Optional `infra.helm_diff` (off by
+  default) runs `helm diff upgrade --output structured` (helm-diff 3.15 or later) with the command's
+  own chart, release and values: a removed PVC, PV, statefulset, namespace or CRD follows
+  `infra.destroy`, another removal asks, and a helm diff that fails, times out or prints something
+  else asks. It is never run with a kubeconfig, API server, token, post-renderer or unknown flag of
+  the command's own, a `KUBECONFIG` in the working directory, or `HELM_DIFF_*` in its environment;
+  and only when every helm plugin directory is under the home directory, outside the working tree,
+  and unchanged (mtime and ctime) since the user's Reflex `config.json` was saved, and every
+  plugin runs only a program in its own directory. Its environment is an allowlist.
+- `tofu show` is not run when a `.tf` or `.tofu` file in the directory configures encryption or a
+  key provider (one can run a program), and gets `XDG_CONFIG_HOME` so it reads the `tofurc` that was
+  checked.
+- `reflex status` shows where `tofu` and `helm` were found and whether `helm_diff` is on.
+- Golden cases (golden-v10) and ladder cases (ladder-v3) for tofu, terragrunt and helm.
+
+### Changed
+
+- Rules (rules-v21): `tofu destroy`, `tofu state rm` and `tofu apply -destroy`, `terragrunt destroy`,
+  `run-all destroy`, `run --all destroy` and `destroy-all`, and `helm rollback` hit the destroy rules
+  (ask, deny in production). `helm uninstall|delete|rollback` are also found after global flags
+  (`helm --kube-context prod uninstall api`), `terraform` and `tofu` destroy after any global flags
+  (`tofu -no-color -chdir=envs/prod destroy`), and `apply --destroy` with two dashes. `-nprod` and
+  `-nlive` count as production. Production
+  markers also read `--working-dir live`, `-n=live` and `HELM_NAMESPACE=live`, and `TF_WORKSPACE` in
+  the hook's environment is the Terraform workspace for terraform, tofu and terragrunt.
+- The MCP server's `reflex_check` runs no helm diff either.
 - Documentation website at https://ursuciprian.github.io/reflex/, built by `site/build.mjs` (no
   dependencies) from README.md, docs/GUIDE.md, docs/SETUP.md and docs/FAQ.md: a landing page from
   README.md, the guide, setup and FAQ pages, and one page per topic (Claude Code hooks, Terraform guardrails, kubectl delete, prompt
