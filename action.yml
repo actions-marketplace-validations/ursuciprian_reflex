@@ -1,0 +1,116 @@
+name: Reflex policy check
+description: Validate a Reflex team policy (.reflex/policy.json), judge a list of commands with reflex check and fail on deny, and optionally run the golden set.
+author: Ciprian Ursu
+branding:
+  icon: shield
+  color: blue
+
+# Runs the published npm package with npx, pinned to this repository's version; test.mjs keeps
+# the version in the REFLEX variables below equal to package.json. Needs Node.js 18+ on PATH (GitHub-hosted
+# runners have it). reflex check only judges: the commands are data and never run.
+
+inputs:
+  directory:
+    description: Repository directory whose .reflex/policy.json applies. It must be a git checkout.
+    default: "."
+  require-policy:
+    description: '"true" fails when there is no .reflex/policy.json; "false" skips validation then.'
+    default: "true"
+  commands:
+    description: Commands to judge, one per line. Empty lines and lines starting with # are skipped.
+    default: ""
+  commands-file:
+    description: A file with commands to judge, one per line, same format as commands.
+    default: ""
+  fail-on:
+    description: '"deny" fails the step when any command is denied; "ask" also fails when one needs a human.'
+    default: "deny"
+  golden-eval:
+    description: '"true" also runs reflex eval, the golden set through the whole gate. It calls Jev for each case the rules do not settle, so it needs typesafe-api-key.'
+    default: "false"
+  golden-file:
+    description: A golden set file for reflex eval (default the bundled setup/tool-gate/golden.json).
+    default: ""
+  typesafe-api-key:
+    description: TypeSafe API key, for golden-eval only. Pass it from a secret.
+    default: ""
+
+outputs:
+  denied:
+    description: Number of commands denied.
+    value: ${{ steps.check.outputs.denied }}
+  asked:
+    description: Number of commands that need a human.
+    value: ${{ steps.check.outputs.asked }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate the team policy
+      shell: bash
+      env:
+        REFLEX: npx --yes @ursuciprian/reflex@0.15.0
+        REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
+        DIR: ${{ inputs.directory }}
+        REQUIRE: ${{ inputs.require-policy }}
+      run: |
+        set -euo pipefail
+        file="$DIR/.reflex/policy.json"
+        if [ ! -f "$file" ]; then
+          if [ "$REQUIRE" = "true" ]; then echo "::error file=$file::no team policy (reflex policy init writes one)"; exit 1; fi
+          echo "no $file, skipping validation"; exit 0
+        fi
+        $REFLEX policy "$DIR" --json > "$RUNNER_TEMP/reflex-policy.json"
+        node -e '
+          const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+          for (const e of t.errors) console.log(`::error file=${t.file}::${e}`);
+          console.log(`${t.file}: ${t.rules.length} rules, ${t.always_human.length} always-human, mode floor ${t.mode ?? "none"}, ${t.freeze.length} freezes, ${t.errors.length} errors`);
+          process.exit(t.errors.length ? 1 : 0);' "$RUNNER_TEMP/reflex-policy.json"
+
+    - name: Judge the commands
+      id: check
+      shell: bash
+      env:
+        REFLEX: npx --yes @ursuciprian/reflex@0.15.0
+        REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
+        REFLEX_ENGINE: local
+        DIR: ${{ inputs.directory }}
+        COMMANDS: ${{ inputs.commands }}
+        COMMANDS_FILE: ${{ inputs.commands-file }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -euo pipefail
+        case "$FAIL_ON" in deny|ask) ;; *) echo "::error::fail-on must be deny or ask"; exit 1 ;; esac
+        list="$RUNNER_TEMP/reflex-commands.txt"
+        printf '%s\n' "$COMMANDS" > "$list"
+        if [ -n "$COMMANDS_FILE" ]; then cat "$COMMANDS_FILE" >> "$list"; fi
+        denied=0 asked=0 total=0
+        { echo "| decision | command | rule |"; echo "|---|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+        while IFS= read -r cmd || [ -n "$cmd" ]; do
+          case "$cmd" in ''|'#'*) continue ;; esac
+          total=$((total + 1))
+          out=$($REFLEX check "$cmd" --cwd "$DIR")
+          decision=$(printf '%s' "$out" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).decision')
+          rule=$(printf '%s' "$out" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).rule ?? ""')
+          echo "$decision  $cmd  ($rule)"
+          printf '| %s | `%s` | %s |\n' "$decision" "${cmd//|/\\|}" "${rule//|/\\|}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$decision" = deny ]; then denied=$((denied + 1)); echo "::error::reflex denies: $cmd ($rule)"; fi
+          if [ "$decision" = ask ]; then asked=$((asked + 1)); if [ "$FAIL_ON" = ask ]; then echo "::error::reflex asks: $cmd ($rule)"; fi; fi
+        done < "$list"
+        echo "denied=$denied" >> "$GITHUB_OUTPUT"
+        echo "asked=$asked" >> "$GITHUB_OUTPUT"
+        echo "$total commands: $denied denied, $asked need a human"
+        if [ "$denied" -gt 0 ] || { [ "$FAIL_ON" = ask ] && [ "$asked" -gt 0 ]; }; then exit 1; fi
+
+    - name: Run the golden set
+      if: inputs.golden-eval == 'true'
+      shell: bash
+      env:
+        REFLEX: npx --yes @ursuciprian/reflex@0.15.0
+        REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
+        TYPESAFE_API_KEY: ${{ inputs.typesafe-api-key }}
+        GOLDEN: ${{ inputs.golden-file }}
+      run: |
+        set -euo pipefail
+        if [ -z "$TYPESAFE_API_KEY" ]; then echo "::error::golden-eval needs typesafe-api-key (the golden set is scored against Jev)"; exit 1; fi
+        if [ -n "$GOLDEN" ]; then $REFLEX eval --golden "$GOLDEN"; else $REFLEX eval; fi

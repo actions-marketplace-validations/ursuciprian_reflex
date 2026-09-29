@@ -45,3 +45,33 @@ jobs:
         run: npm test
         env:
           REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
+
+  action:
+    # The composite action (action.yml) end to end, against the published package it pins.
+    name: action (uses ./)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: A policy pack as this checkout's team policy
+        run: mkdir -p .reflex && cp examples/policies/startup-default.json .reflex/policy.json
+      - name: Allowed and asked commands pass with fail-on deny
+        uses: ./
+        with:
+          commands: |
+            # a comment line is skipped
+            git status
+            terraform plan
+      - name: A denied command fails the step
+        id: denied
+        uses: ./
+        continue-on-error: true
+        with:
+          commands: psql -c "drop table users"
+      - name: Check the deny failed it
+        env:
+          OUTCOME: ${{ steps.denied.outcome }}
+          DENIED: ${{ steps.denied.outputs.denied }}
+        run: test "$OUTCOME" = failure && test "$DENIED" = 1
