@@ -224,6 +224,18 @@ in Codex CLI, opencode, pi and Hermes:
   first. Off by default, because `terraform show` starts provider binaries an agent could have
   written; with the cache, it runs only when every provider in `.terraform` is a symlink into it.
   `terraform destroy` asks, and is denied in production.
+- [OpenTofu AI agent guardrails and Terragrunt guardrails](docs/GUIDE.md#opentofu-and-terragrunt):
+  `tofu apply <planfile>` goes through the same plan gate with `tofu show -json` and the same plugin
+  cache check, and `tofu apply` without a plan asks for `tofu plan -out=tfplan`. `terragrunt apply`,
+  `run-all apply` and `run --all apply` ask (terragrunt runs the hooks in `terragrunt.hcl`, so its
+  plans are never read). `tofu destroy` and `terragrunt run-all destroy` ask, and are denied in
+  production.
+- [helm guardrails for AI agents](docs/GUIDE.md#helm-guardrails-for-ai-agents): a helm uninstall
+  from an AI agent, `helm delete` or `helm rollback` asks, and is denied in a production kube
+  context. `helm upgrade --install` in production asks with the release and namespace in the
+  reason. Optional `infra.helm_diff` runs `helm diff upgrade` and flags removed PVCs, statefulsets
+  and CRDs, only with a helm-diff plugin outside the working tree that has not changed since you
+  saved `config.json`.
 - kubectl AI agent guardrail (optional, `infra.kubectl_diff`): `kubectl diff` and server dry runs flag
   deletes of namespaces, PVCs, PVs, statefulsets and CRDs before they run.
 - Production context: the working directory (`envs/prod`), AWS profile and region, kube context,
@@ -421,7 +433,7 @@ file and `infra.terraform_show` on, the plan gate reads it and decides by what i
  "decision": "ask",
  "rule": "terraform apply without a saved plan: run `terraform plan -out=tfplan` and apply the plan file (terraform apply tfplan)",
  "source": "rule",
- "policy": "rules-v20",
+ "policy": "rules-v21",
  "latency_s": 0,
  "answers": {}
 }
@@ -945,6 +957,18 @@ in production. It needs a provider plugin cache: `terraform show` starts the pro
 `.terraform`, so the hook runs it only when every provider there is a symlink into your cache. The
 hook never runs `plan` or `apply` itself. See
 [GUIDE: plan-aware terraform gate](docs/GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure).
+
+### Does Reflex support OpenTofu, Terragrunt and helm?
+
+Yes. For an OpenTofu AI agent, `tofu apply <planfile>` is read with `tofu show -json` under the
+same rules as terraform (`infra.terraform_show`, the plugin cache check, a 3 s timeout that asks),
+and `tofu apply` without a plan asks with the fix. Terragrunt guardrails: every `terragrunt apply`,
+`run-all apply` or `run --all apply` asks, and `run-all destroy` is denied in production. For helm,
+`helm uninstall`, `helm delete` and `helm rollback` ask and are denied in a production kube context
+or namespace, a production `helm upgrade --install` asks with the release and namespace, and
+`infra.helm_diff` adds a `helm diff` count of changed and removed objects. See
+[GUIDE: OpenTofu and Terragrunt](docs/GUIDE.md#opentofu-and-terragrunt) and
+[GUIDE: helm guardrails](docs/GUIDE.md#helm-guardrails-for-ai-agents).
 
 ### Can Reflex prevent an AI agent's terraform destroy in Claude Code or Codex?
 
