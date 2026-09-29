@@ -1884,6 +1884,15 @@ const SEVERITY = {deny: 2, ask: 1};
 // `run`: one budget for the whole call, shared by every spelling precheck recurses into, and the
 // local scripts already scanned, so each is scanned once.
 const COMMAND_BYTES = 32 * 1024, PRECHECK_MS = 3000;
+// The reflex CLI forms that change Reflex itself: setup, answering a queue item, an envelope, a
+// checkpoint restore, a runaway reset. Read on the command and on every local script it runs.
+const unquoted = t => t.replace(/["'\\]/g, "");
+const reflexChanges = t => /\breflex\s+(setup|install|uninstall)\b/.test(unquoted(t)) ||
+  /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(unquoted(t));
+// suggest or learn writing fastlane.json, spelled out or with its flags hidden in a variable, "$@",
+// xargs, eval or a function, where the text cannot show which flags it gets.
+const fastLaneEdit = t => /\b(suggest|learn)\b[^\n;&|]*\s--(write|forget|prune)\b/.test(unquoted(t)) ||
+  (/\b(reflex|replay\.mjs)\b/.test(t) && /\b(suggest|learn)\b/.test(t) && /\$|\bxargs\b|\beval\b|\(\)\s*\{|\bfunction\b/.test(t));
 // Granting trust in a team policy (team.mjs), by the CLI or by its file or function.
 const TEAM_TAMPER = /\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b|\bteam\.mjs\b|\btrusted\.json\b|\btrustRepo\b/;
 // The Claude Code plugin's commands (commands/*.md) run this copy's own scripts with node, as
@@ -2117,8 +2126,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
   const home = writes.replace(/(^|[\s=:>])(~|\$HOME|\$\{HOME\})(?=\/|\s|$)/g, (m, p) => p + homedir());
   if ([HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => writes.includes(p) || home.includes(p)) ||
       // an agent must not answer its own queue item, widen its own envelope or rewind the tree
-      /\breflex\s+(setup|install|uninstall)\b/.test(command.replace(/["'\\]/g, "")) ||
-      /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(command.replace(/["'\\]/g, "")) ||
+      reflexChanges(command) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
       (inRepo && /\bCDPATH=/.test(command)) ||
       (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra|plugin|failsafe|hook|guard|providers)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bscripts\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
@@ -2128,9 +2136,9 @@ function precheckAs(command, cwd, env, run, alt = false) {
   if (TEAM_TAMPER.test(command.replace(/["'\\]/g, "")) || /(^|[^\w.-])\.reflex(?=[^\w.-]|$)/.test(writes) || globsReflex(writes) ||
       (/\bpolicy\.json\b/.test(writes) && teamPolicy(cwd)))
     hold(ruled({outcome: "ask", rule: "changes a team policy (.reflex/) or trusts one (reflex trust)", id: "tamper"}));
-  // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
-  if (/\bsuggest\b[^\n;&|]*\s--write\b/.test(command.replace(/["'\\]/g, "")))
-    hold(ruled({outcome: "ask", rule: "widens the fast lane (reflex suggest --write)", id: "tamper"}));
+  // `reflex suggest --write` and `reflex learn --write|--forget|--prune` edit the user fast lane: a human's call, never the agent's.
+  if (fastLaneEdit(command))
+    hold(ruled({outcome: "ask", rule: "edits the fast lane (reflex suggest --write, reflex learn --write)", id: "tamper"}));
   const on = (r, what) => (r.applies_to ?? ["command"]).includes(what);
   // "shell" rules read commands: not the program of an interpreter heredoc that cannot run or write
   // anything, and nothing at all when every pipeline is inert and writes only notes.
@@ -2146,7 +2154,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
   const late = () => Date.now() > run.scan;
   for (const s of localScripts(command, cwd).filter(s => s.body && !run.scripts.has(s.path))) {
     run.scripts.add(s.path);
-    if (s.body.includes(HERE) || s.body.includes(CONFIG.data) || TEAM_TAMPER.test(s.body.replace(/["'\\]/g, "")))
+    if (s.body.includes(HERE) || s.body.includes(CONFIG.data) || TEAM_TAMPER.test(s.body.replace(/["'\\]/g, "")) || reflexChanges(s.body) || fastLaneEdit(s.body))
       { hold(ruled({outcome: "ask", rule: `touches the Reflex gate, its setup or its logs (in ${s.path})`, id: "tamper"})); continue; }
     const {lines} = scriptLines(s.body), all = lines.join("\n");
     let sh = checkRules(all + ctx, whole, all);

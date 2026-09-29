@@ -327,6 +327,21 @@ See: [GUIDE: suggest fewer permission prompts](GUIDE.md#suggest-fewer-permission
 [GUIDE: calibrated allow](GUIDE.md#calibrated-allow),
 [docs/SETUP.md: let clearly safe commands through](SETUP.md#6-optional-let-clearly-safe-commands-through).
 
+## Can Reflex learn from the commands I approve and ask less over time?
+
+Yes, when you ask it to. `reflex learn` reads your own answers only (approval queue items you
+approved or denied, and asks shown at the agent's prompt that then ran or were refused; never a
+System 1 allow or a System 2 verdict) and proposes a project-scoped fast-lane entry for a shape you
+approved at least 3 times in at least 2 sessions and never refused. It uses the same templates and
+safety proof as `reflex suggest`, so destructive, production, secret, tamper, always-human and MCP
+commands are never learned, however often you approved them. It shows the humans per 100 commands
+before and after on your own history, and writes nothing until you run `reflex learn --write` and
+confirm on the terminal; an agent running that gets a tamper ask. Each entry records where it came
+from; `reflex learn --list`, `--forget <id>` and `--prune` (entries unused for 60 days, which
+`reflex doctor` flags) review and remove them, and `--team` prints a team policy snippet instead.
+
+See: [GUIDE: reflex learn, fewer prompts from your own approvals](GUIDE.md#reflex-learn-fewer-prompts-from-your-own-approvals).
+
 ## Can Reflex run autonomous coding agents with no human watching?
 
 Yes, with the autonomous profile (`reflex setup --profile autonomous`): System 1 (rules and Jev)

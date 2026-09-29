@@ -132,7 +132,9 @@ export function suggest(calls, {judge, min = 3, mask = s => s}) {
       : leak ? `would also pass the probe ${JSON.stringify(leak)}` : null;
     if (why) { rejected.push({pattern: g.pattern, cwd: g.cwd, count: g.count, why}); continue; }
     const placeholders = [g.pattern.includes(PATH_ARG) && "a repository-relative path", g.pattern.includes(String.raw`\d+`) && "a number"].filter(Boolean);
+    const ts = g.calls.map(c => c.ts).filter(Number.isFinite);
     suggestions.push({pattern: g.pattern, cwd: g.cwd, count: g.count, passes: passes.length, agents: [...g.agents].sort(),
+      sessions: new Set(g.calls.map(c => c.session).filter(Boolean)).size, first: ts.length ? Math.min(...ts) : null, last: ts.length ? Math.max(...ts) : null,
       samples: [...new Set(passes.map(c => mask(c.command).replace(/\s+/g, " ").slice(0, 160)))].slice(0, 3),
       why: `${g.pattern.match(/^\^([\w-]+)/)?.[1] ?? "the tool"} with ${placeholders.length ? `fixed arguments apart from ${placeholders.join(" and ")}` : "exactly these arguments"}; ` +
         "no denied word; after every rule, the tamper check and the script rules; every local script it runs read in full with no denied word; " +
@@ -146,7 +148,8 @@ export function suggest(calls, {judge, min = 3, mask = s => s}) {
 }
 
 /** The fastlane.json text with the suggestions appended (duplicates dropped), and the lines added. */
-export function mergeSuggestions(suggestions, file = FASTLANE_FILE) {
+export function mergeSuggestions(suggestions, file = FASTLANE_FILE,
+  toEntry = (s, today) => ({pattern: s.pattern, cwd: s.cwd, note: `reflex suggest ${today}: ${s.count} runs`})) {
   let doc = {version: 1, entries: []};
   if (existsSync(file)) {
     const text = readFileSync(file, "utf8"), r = loadFastLane(file);
@@ -155,7 +158,7 @@ export function mergeSuggestions(suggestions, file = FASTLANE_FILE) {
   }
   const have = new Set(doc.entries.map(e => `${e.cwd}\0${e.pattern}`)), today = new Date().toISOString().slice(0, 10);
   const add = suggestions.filter(s => !have.has(`${s.cwd}\0${s.pattern}`))
-    .map(s => ({pattern: s.pattern, cwd: s.cwd, note: `reflex suggest ${today}: ${s.count} runs`}));
+    .map(s => toEntry(s, today));
   doc.entries.push(...add);
   return {text: JSON.stringify(doc, null, 2) + "\n", add};
 }
