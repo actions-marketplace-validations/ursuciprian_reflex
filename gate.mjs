@@ -1803,7 +1803,7 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   // reading, Jev (3 s) is not also waited for; what is left asks.
   const late = !background && Date.now() - started > INFRA_LATE_MS && !quick;
   if (floor && (CONFIG.engine === "local" || CONFIG.mode !== "enforce" || late)) [quick, floor] = [floor, null];
-  else if (late && call.plan) quick = {outcome: "ask", rule: "reading the plan took too long to also ask the judge", id: "infra-budget", source: "rule", policy_version: load("rules.json").version, plan: call.plan};
+  else if (late && CONFIG.engine !== "local" && CONFIG.mode === "enforce") quick = {outcome: "ask", rule: "the rules and the plan or diff read took too long to also ask the judge", id: "infra-budget", source: "rule", policy_version: load("rules.json").version, plan: call.plan};
   // A human's answer in the approval queue (autonomous profile): the identical command, cwd and
   // session, within its TTL. A deterministic deny is never lifted, not even by an approval.
   let resumed = false;

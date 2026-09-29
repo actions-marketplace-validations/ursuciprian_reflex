@@ -65,7 +65,7 @@ try {
     assert.ok(d.source === "rule" && d.effective === "ask" && /without a saved plan/.test(d.reason), `jev enforce: the plan's ask is a floor under Jev: ${JSON.stringify(d)}`);
     assert.match(lastTrace().error ?? "", /fetch failed/, "Jev was asked under the floor");
     d = decideIn("terraform apply clean.plan", repo, {...ienv, REFLEX_ENGINE: "jev", TYPESAFE_API_KEY: "test-key", REFLEX_INFRA_LATE_MS: "0"});
-    assert.ok(d.effective === "ask" && /too long/.test(d.reason), `a slow plan read does not also wait for Jev: ${JSON.stringify(d)}`);
+    assert.ok(d.effective === "ask" && /took too long/.test(d.reason), `a slow plan read does not also wait for Jev: ${JSON.stringify(d)}`);
     assert.ok(readFileSync(join(box, "calls.log"), "utf8").trim().split("\n").every(l => /^show -json -no-color \//.test(l)), "the hook only ever ran terraform show");
     // the Claude Code hook shape
     const hook = JSON.parse(success(invoke("gate.mjs", ["--claude"], {env: ienv, input: JSON.stringify({tool_name: "Bash", tool_input: {command: "terraform apply destroy.plan"}, cwd: repo, session_id: "S"})})));
