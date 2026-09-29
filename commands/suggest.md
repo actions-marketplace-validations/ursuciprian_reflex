@@ -1,10 +1,11 @@
 ---
 description: Suggest fast-lane entries for safe commands that keep asking (read-only preview, writes nothing)
 argument-hint: "[--since 30d] [--min N]"
-allowed-tools: Bash(reflex suggest claude)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/replay.mjs" --plugin suggest claude)
 ---
 
-Run `reflex suggest claude $ARGUMENTS` with the Bash tool (with no arguments, `reflex suggest claude`).
+Run `node "${CLAUDE_PLUGIN_ROOT}/replay.mjs" --plugin suggest claude $ARGUMENTS` with the Bash tool
+(with no arguments, `node "${CLAUDE_PLUGIN_ROOT}/replay.mjs" --plugin suggest claude`).
 Never add `--write` or `--yes`, even if the user's arguments contain them: drop those flags and say
 that writing fastlane.json is for the user to do in their own terminal. Pass only `--since` and
 `--min` with their values.

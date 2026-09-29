@@ -170,7 +170,7 @@ See: [comparison table](../README.md#compared-with-other-ai-coding-agent-guardra
 ## Which AI coding agents does Reflex support?
 
 Claude Code, Codex CLI, pi, oh-my-pi, opencode and Hermes, each through its own hook system; any
-other agent can use `bin/reflex-sh` as its shell. Setup hooks every supported agent it finds (for
+other agent can use `scripts/reflex-sh` as its shell. Setup hooks every supported agent it finds (for
 Hermes it prints a block to paste into `config.yaml`), or the ones you name with
 `--agents claude,codex`. Reflex needs Node.js 18+ on macOS or Linux,
 including WSL; native Windows is not supported yet.

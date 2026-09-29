@@ -1194,7 +1194,7 @@ configured webhook and reports the HTTP status. Doctor sends nothing without tha
 - **Context layer (opt-in, pi / omp).** When installed with `--context`, redacted samples of tool
   output (per chunk at most ~1,000 characters of start and end plus up to six matching lines of 200
   characters), the user's request and the agent's last message go to TypeSafe for relevance judging;
-  `bin/reflex-review` and `context.mjs --bundle` send a redacted diff excerpt, the goal and matching
+  `scripts/reflex-review` and `context.mjs --bundle` send a redacted diff excerpt, the goal and matching
   lines. The chunk store (`chunks/`) keeps full outputs **unredacted**, exactly as the tool printed
   them, because `expand_chunk` must give the agent back what it would otherwise have seen; that is
   the same data the agent's own session file holds. The store is local, its directories are 0700 and
@@ -2486,11 +2486,11 @@ one Jev `choice` each (*irrelevant / related / essential*) and writes a bundle J
 files, symbols, related files with their matching lines, essential files in full, skipped files,
 tokens. Without Jev every candidate is kept as *related*, marked `judged: false`. Any read-only
 background task (cross-model review, eval generation, a progress page) can consume the bundle instead
-of searching again; `bin/reflex-review` is the example:
+of searching again; `scripts/reflex-review` is the example:
 
 ```sh
-bin/reflex-review --reviewer "codex exec -s read-only -" --goal "normalise case in parseThing" &
-REFLEX_REVIEWER="claude -p --permission-mode plan" bin/reflex-review --base origin/main &
+scripts/reflex-review --reviewer "codex exec -s read-only -" --goal "normalise case in parseThing" &
+REFLEX_REVIEWER="claude -p --permission-mode plan" scripts/reflex-review --base origin/main &
 ```
 
 It sends a review prompt built from the bundle to the reviewer command on stdin and saves the output

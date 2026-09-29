@@ -4,21 +4,24 @@ description: How to work with the Reflex pre-execution gate in Claude Code or Co
 ---
 
 Reflex judges every shell command and subagent spawn before it runs (PreToolUse hook) and screens
-web, MCP and Read results and user prompts for prompt injection. `reflex` is on the Bash PATH while
-the Claude Code plugin is enabled, and after `npm install -g @ursuciprian/reflex`. If it is not
-found, tell the user; do not search the disk for it.
+web, MCP and Read results and user prompts for prompt injection. In the Claude Code plugin, run its
+scripts with `node` from the plugin directory, as below. If a script path below is not an absolute
+path (Codex CLI does not fill in the plugin root), the same commands are `reflex check`,
+`reflex replay`, `reflex status` and `reflex report`, available after `npm install -g @ursuciprian/reflex`;
+if `reflex` is not found, tell the user and do not search the disk for it.
 
 When to use which command:
 
-- `reflex check '<command>'`: before running a shell command whose risk is unclear (a delete, a push,
-  a deploy, anything touching production or credentials), ask the gate how it would judge it. It only
-  judges; it never runs the command. Quote the command in single quotes.
-- `reflex replay claude --since 7d` (or `reflex replay codex`): when the user asks what Reflex would
-  have blocked or asked in past sessions, or before switching from shadow to enforce mode. It reads
-  transcripts; nothing runs.
-- `reflex status`: when the user asks whether Reflex is on, which mode it is in, or whether a plugin
-  or `reflex setup` runs the hooks.
-- `reflex report`: what the gate decided recently.
+- `node "${CLAUDE_PLUGIN_ROOT}/gate.mjs" --plugin --check '<command>'`: before running a shell command
+  whose risk is unclear (a delete, a push, a deploy, anything touching production or credentials), ask
+  the gate how it would judge it. It only judges; it never runs the command. Quote the command in
+  single quotes.
+- `node "${CLAUDE_PLUGIN_ROOT}/replay.mjs" --plugin replay claude --since 7d`: when the user asks what
+  Reflex would have blocked or asked in past sessions, or before switching from shadow to enforce mode.
+  It reads transcripts; nothing runs.
+- `node "${CLAUDE_PLUGIN_ROOT}/status.mjs" --plugin --status`: when the user asks whether Reflex is on,
+  which mode it is in, or whether a plugin or `reflex setup` runs the hooks.
+- `node "${CLAUDE_PLUGIN_ROOT}/report.mjs" --plugin`: what the gate decided recently.
 
 When Reflex denies or asks for a command:
 
@@ -30,4 +33,5 @@ Never change Reflex's own configuration: do not edit `~/.config/reflex/`, the Cl
 files, `~/.codex/hooks.json` or `~/.codex/config.toml`, or the plugin's files, and do not run
 `reflex setup`, `reflex install`, `reflex uninstall`, `reflex queue approve|deny|clear`,
 `reflex suggest --write`, or the `claude plugin` and `codex plugin` commands that disable or remove
-it. Those are the user's decisions; show the user the command to run in their own terminal instead.
+it. Those are the user's decisions. The plugin's mode, engine and key are its options (`/plugin`,
+reflex, Configure); show the user where to change them instead.

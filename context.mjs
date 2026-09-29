@@ -8,7 +8,7 @@
 //                 the cached prompt prefix unless rebuilding it pays for itself (rebuildCost)
 //   recall()      /fresh: a clean start that reloads only what Jev scores relevant to the new goal
 //   bundle()      one retrieval pass over a git change (files, symbols, diff) that read-only
-//                 background tasks share; bin/reflex-review is the example consumer
+//                 background tasks share; scripts/reflex-review is the example consumer
 //
 // This layer optimises, it is not a gate: every entry point fails open (on any error the caller
 // leaves the context as it was). Decisions are logged to $REFLEX_DATA_DIR/context.jsonl.
@@ -658,10 +658,10 @@ async function selfcheck() {
 
     // reflex-review consumes a bundle with a fake reviewer (never a paid model in tests)
     const bf = writeBundle(B, join(tmp, "bundle.json")), out = join(tmp, "review.md");
-    const r = spawnSync(process.execPath, [join(HERE, "bin/reflex-review"), "--bundle", bf, "--reviewer", "grep -c parseThing", "--out", out],
+    const r = spawnSync(process.execPath, [join(HERE, "scripts/reflex-review"), "--bundle", bf, "--reviewer", "grep -c parseThing", "--out", out],
                         {encoding: "utf8", timeout: 30_000, env: {...ENV, REFLEX_DATA_DIR: CONFIG.data}});
     ok(r.status === 0 && Number(readText(out)) >= 3, `reflex-review: prompt reaches the reviewer (${r.stderr.trim()})`);
-    const r2 = spawnSync(process.execPath, [join(HERE, "bin/reflex-review"), "--bundle", bf, "--reviewer", "exit 3", "--out", out], {encoding: "utf8", timeout: 30_000});
+    const r2 = spawnSync(process.execPath, [join(HERE, "scripts/reflex-review"), "--bundle", bf, "--reviewer", "exit 3", "--out", out], {encoding: "utf8", timeout: 30_000});
     ok(r2.status === 3, "reflex-review: reviewer failure is reported");
 
     await adapterCheck(ok, fake, tmp, text);

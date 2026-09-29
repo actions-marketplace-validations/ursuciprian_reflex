@@ -2,7 +2,14 @@
   "mcpServers": {
     "reflex": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp.mjs"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp.mjs"],
+      "env": {
+        "REFLEX_PLUGIN": "1",
+        "CLAUDE_PLUGIN_OPTION_ENGINE": "${user_config.engine}",
+        "CLAUDE_PLUGIN_OPTION_PROVIDER": "${user_config.provider}",
+        "CLAUDE_PLUGIN_OPTION_MODE": "${user_config.mode}",
+        "CLAUDE_PLUGIN_OPTION_JEV_API_KEY": "${user_config.jev_api_key}"
+      }
     }
   }
 }

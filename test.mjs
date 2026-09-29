@@ -123,7 +123,7 @@ try {
     const asked = new Set(["f", ...["setup/tool-gate/questions.json", "setup/injection/questions.json", "routing/questions.json"].flatMap(f => Object.keys(read(join(root, f)).questions))]);
     for (const [ck, qs] of Object.entries(read(join(root, "setup/laya/calibration.json")).checkpoints))
       assert.ok(Object.keys(qs).every(q => asked.has(q)), `calibration.json ${ck}: ${Object.keys(qs).filter(q => !asked.has(q))}`);
-    assert.match((await run(["bin/reflex", "setup", "--engine", "laya", "--agents", "claude", "--dry-run"], {...laya, REFLEX_PREFIX: join(scratch, "laya-prefix")})).out,
+    assert.match((await run(["scripts/reflex", "setup", "--engine", "laya", "--agents", "claude", "--dry-run"], {...laya, REFLEX_PREFIX: join(scratch, "laya-prefix")})).out,
       /laya engine[\s\S]*laya\[serve\]==[\d.]+ in .*laya-venv[\s\S]*disk about [\d.]+ GB/, "setup --engine laya previews the Laya install");
     assert.ok(!existsSync(join(scratch, "laya-prefix")), "the preview installs nothing");
     await new Promise(r => stub.close(r));
@@ -169,7 +169,7 @@ try {
     assert.ok(doctor.provider?.name === "compatible" && doctor.provider.host === port && doctor.api_key === "environment" &&
       doctor.system1 === `Jev via compatible (${port}) + policy` && !JSON.stringify(doctor).includes(key), `doctor: provider and host, no key: ${JSON.stringify(doctor.provider)}`);
     const {REFLEX_API_URL, REFLEX_PROVIDER, ...noUrl} = penv;
-    const preview = spawnSync(process.execPath, ["bin/reflex", "setup", "--provider", "cloudflare", "--cloudflare-account", "0123456789abcdef0123456789abcdef",
+    const preview = spawnSync(process.execPath, ["scripts/reflex", "setup", "--provider", "cloudflare", "--cloudflare-account", "0123456789abcdef0123456789abcdef",
       "--agents", "claude", "--dry-run"], {cwd: root, env: {...noUrl, REFLEX_PREFIX: join(scratch, "provider-prefix")}, encoding: "utf8", timeout: 30000});
     assert.match(preview.stdout, /Jev provider cloudflare \(api\.cloudflare\.com\)/, `setup --provider: ${preview.stdout}${preview.stderr}`);
     assert.ok(!preview.stdout.includes(key) && !existsSync(join(scratch, "provider-prefix")), "setup preview: no key printed, nothing installed");
@@ -178,7 +178,7 @@ try {
       ["--provider-url", "https://jev.example.test/v1/systemone", "JEV_API_KEY", "compatible", "provider_url"]]) {
       const home = join(scratch, `flag-${name}`), {REFLEX_API_URL: _u, ...base} = env;
       const fenv = {...base, HOME: home, XDG_CONFIG_HOME: join(home, "config"), XDG_STATE_HOME: join(home, "state"), REFLEX_PREFIX: join(home, "prefix"), PATH: "/usr/bin:/bin", [keyVar]: key};
-      const r = spawnSync(process.execPath, ["bin/reflex", "setup", "--engine", "jev", flag, value, "--agents", "opencode"], {cwd: root, env: fenv, encoding: "utf8", timeout: 30000});
+      const r = spawnSync(process.execPath, ["scripts/reflex", "setup", "--engine", "jev", flag, value, "--agents", "opencode"], {cwd: root, env: fenv, encoding: "utf8", timeout: 30000});
       assert.equal(r.status, 0, `setup ${flag}: ${r.stdout}${r.stderr}`);
       const saved = read(join(home, "config/reflex/config.json"));
       assert.ok(saved.provider === name && saved[field] === value && !JSON.stringify(saved).includes(key), `setup ${flag} saves the provider and ${field}: ${JSON.stringify(saved)}`);
@@ -191,11 +191,11 @@ try {
   const settings = join(env.XDG_CONFIG_HOME, "reflex/config.json");
   const policy = join(env.XDG_CONFIG_HOME, "reflex/tool-gate/policy.json");
   const packageRoot = join(env.REFLEX_PREFIX, "lib/node_modules/@ursuciprian/reflex");
-  const cli = (args, extra) => invoke("bin/reflex", args, extra);
+  const cli = (args, extra) => invoke("scripts/reflex", args, extra);
   const picks = "claude,codex,pi,omp,opencode,hermes";
   // The curl installer puts the package in place first, then runs its setup: still a fresh install.
   cpSync(root, packageRoot, {recursive: true, filter: s => ![".git", "node_modules", ".serena"].some(d => s === join(root, d))});
-  const installed = args => spawnSync(process.execPath, [join(packageRoot, "bin/reflex"), ...args], {cwd: scratch, encoding: "utf8", timeout: 30000, env});
+  const installed = args => spawnSync(process.execPath, [join(packageRoot, "scripts/reflex"), ...args], {cwd: scratch, encoding: "utf8", timeout: 30000, env});
   assert.match(success(installed(["setup", "--agents", "claude", "--dry-run"])), /local engine/, "curl path: fresh install is local");
   // Settings written by 0.2.0 (a Keychain item, no engine) mean Jev was already in use.
   mkdirSync(dirname(settings), {recursive: true});
@@ -412,7 +412,7 @@ try {
       PATH: `${fakes}:/usr/bin:/bin`, TYPESAFE_API_KEY: ["test", "key", process.pid].join("-")};   // built at run time; it only ever reaches the closed port
     delete env2.ANTHROPIC_API_KEY;
     const fakeKey = env2.TYPESAFE_API_KEY;   // a placeholder built at run time, never a real key
-    const cli2 = (args, extra = {}) => invoke("bin/reflex", args, {...extra, env: {...env2, ...extra.env}});
+    const cli2 = (args, extra = {}) => invoke("scripts/reflex", args, {...extra, env: {...env2, ...extra.env}});
     const settings2 = join(cfg, "reflex/config.json"), data2 = join(home, "state/reflex");
     const agents2 = ["--agents", "claude,codex"];
     // the backend is picked at setup: an agent CLI, else the Messages API with ANTHROPIC_API_KEY, else none
@@ -516,7 +516,7 @@ try {
     const env3 = {...env, HOME: home3, XDG_CONFIG_HOME: join(home3, "config"), XDG_STATE_HOME: join(home3, "state"), REFLEX_PREFIX: join(home3, "installed"),
       PATH: `${fakes3}:/usr/bin:/bin`};
     for (const k of ["TYPESAFE_API_KEY", "ANTHROPIC_API_KEY"]) delete env3[k];
-    const cli3 = (args, extra = {}) => invoke("bin/reflex", args, {...extra, env: {...env3, ...extra.env}});
+    const cli3 = (args, extra = {}) => invoke("scripts/reflex", args, {...extra, env: {...env3, ...extra.env}});
     const settings3 = join(home3, "config/reflex/config.json"), data3 = join(home3, "state/reflex");
     const dry3 = success(cli3(["setup", "--profile", "autonomous", ...agents2, "--dry-run"]));
     assert.match(dry3, /profile autonomous · engine local · mode enforce · allow on/, "no key: the autonomous profile picks the local engine");
@@ -605,7 +605,7 @@ try {
       line("response_item", {type: "function_call", name: "exec_command", call_id: "c4", arguments: JSON.stringify({cmd: "cat CHANGELOG.md"})}),
       line("event_msg", {type: "item_completed", item: {type: "CommandExecution", id: "i1", command: ["/bin/zsh", "-lc", "git status"], cwd: proj}})].join("\n"));
     const replay = (args, e = renv) => new Promise(res => {
-      const p = spawn(process.execPath, [join(root, "bin/reflex"), ...args], {cwd: root, env: e}); let out = "", err = "";
+      const p = spawn(process.execPath, [join(root, "scripts/reflex"), ...args], {cwd: root, env: e}); let out = "", err = "";
       p.stdout.on("data", d => out += d); p.stderr.on("data", d => err += d);
       p.on("close", status => res({status, out, err}));
     });
@@ -676,7 +676,7 @@ try {
       ...Array(3).fill("npm run build; rm -rf ~"), ...Array(3).fill("make deploy"), "npm run typecheck", "ls -la"];
     mkdirSync(join(home, ".claude/projects/-app"), {recursive: true});
     writeFileSync(join(home, ".claude/projects/-app/a.jsonl"), [...seen.map(c => tool(c)), tool("npm run typecheck", other), ...Array.from({length: 3}, () => tool("make fmt", other))].join("\n"));
-    const cli = (args, extra = {}) => spawnSync(process.execPath, [join(root, "bin/reflex"), ...args], {cwd: root, encoding: "utf8", timeout: 60000, env: senv, ...extra});
+    const cli = (args, extra = {}) => spawnSync(process.execPath, [join(root, "scripts/reflex"), ...args], {cwd: root, encoding: "utf8", timeout: 60000, env: senv, ...extra});
     const run = cli(["suggest", "claude", "--json"]), r = JSON.parse(run.stdout);
     const got = r.suggestions.map(s => s.pattern).sort();
     assert.deepEqual(got, [String.raw`^docker\s+compose\s+images$`, String.raw`^make\s+lint$`, String.raw`^npm\s+run\s+typecheck$`,
@@ -873,7 +873,7 @@ try {
     // trust needs a human at a terminal: no terminal, or an agent session, is refused
     const before = readFileSync(TRUST_FILE, "utf8"), tenv = {...env, HOME: home, XDG_CONFIG_HOME: dirname(dirname(TRUST_FILE))};
     delete tenv.CLAUDECODE;
-    const noTty = spawnSync(process.execPath, [join(root, "bin/reflex"), "trust", repo], {encoding: "utf8", env: tenv, detached: true});
+    const noTty = spawnSync(process.execPath, [join(root, "scripts/reflex"), "trust", repo], {encoding: "utf8", env: tenv, detached: true});
     assert.ok(noTty.status === 2 && /terminal/.test(noTty.stderr), noTty.stderr);
     const agent = spawnSync(process.execPath, [join(root, "team.mjs"), "trust", repo], {encoding: "utf8", env: {...tenv, CLAUDECODE: "1"}});
     assert.ok(agent.status === 2 && /agent session/.test(agent.stderr), agent.stderr);
@@ -885,7 +885,7 @@ try {
     mkdirSync(join(home, ".claude/projects/-api"), {recursive: true});
     writeFileSync(join(home, ".claude/projects/-api/a.jsonl"), JSON.stringify({type: "assistant", cwd: repo, timestamp: now,
       message: {role: "assistant", content: [{type: "tool_use", id: "t1", name: "Bash", input: {command: "terraform destroy"}}]}}));
-    const replay = JSON.parse(spawnSync(process.execPath, [join(root, "bin/reflex"), "replay", "claude", "--since", "7d", "--json"],
+    const replay = JSON.parse(spawnSync(process.execPath, [join(root, "scripts/reflex"), "replay", "claude", "--since", "7d", "--json"],
       {encoding: "utf8", env: {...tenv, REFLEX_ENGINE: "local", XDG_STATE_HOME: join(home, "state")}}).stdout);
     assert.ok(replay.totals.rule_deny === 1 && replay.top_rules[0].id === "team:no-tf-destroy", JSON.stringify(replay.top_rules));
     const doctor = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--doctor", "--json"], {cwd: repo, encoding: "utf8", env: tenv}).stdout);
@@ -894,10 +894,10 @@ try {
     // reflex policy init: a starter with stricter parts only, that validates
     const fresh = join(home, "fresh");
     mkdirSync(join(fresh, ".git"), {recursive: true});
-    success(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", fresh], {encoding: "utf8", env: tenv}));
+    success(spawnSync(process.execPath, [join(root, "scripts/reflex"), "policy", "init", fresh], {encoding: "utf8", env: tenv}));
     const starter = parseTeam(readFileSync(join(fresh, ".reflex/policy.json"), "utf8"));
     assert.ok(!starter.errors.length && starter.rules.length && !starter.fastlane.length, JSON.stringify(starter.errors));
-    assert.notEqual(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", fresh], {encoding: "utf8", env: tenv}).status, 0, "init never overwrites");
+    assert.notEqual(spawnSync(process.execPath, [join(root, "scripts/reflex"), "policy", "init", fresh], {encoding: "utf8", env: tenv}).status, 0, "init never overwrites");
     // Policy packs (examples/policies/): each a valid, stricter-only team policy with a note on every
     // entry, that denies what it says it denies; `reflex policy init --pack` copies one, never overwriting.
     const packDir = join(root, "examples/policies"), packs = readdirSync(packDir).filter(f => f.endsWith(".json")).map(f => f.slice(0, -5)).sort();
@@ -911,16 +911,16 @@ try {
       for (const r of [...doc.rules, ...(doc.always_human ?? []), ...(doc.freeze ?? [])]) assert.ok(r.note?.trim(), `${name}: ${r.id ?? JSON.stringify(r)} has a note`);
       const dir = join(home, `pack-${name}`);
       mkdirSync(join(dir, ".git"), {recursive: true});
-      success(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", dir, "--pack", name], {encoding: "utf8", env: tenv}));
+      success(spawnSync(process.execPath, [join(root, "scripts/reflex"), "policy", "init", dir, "--pack", name], {encoding: "utf8", env: tenv}));
       assert.equal(readFileSync(join(dir, ".reflex/policy.json"), "utf8"), text, `${name}: copied as is`);
       const hit = pc(denies[name], dir);
       assert.ok(hit?.outcome === "deny" && hit.id.startsWith("team:"), `${name} pack denies ${denies[name]}: ${JSON.stringify(hit)}`);
       writeFileSync(join(dir, ".reflex/policy.json"), "{}\n");
-      assert.notEqual(spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", dir, "--pack", name], {encoding: "utf8", env: tenv}).status, 0, "a pack never overwrites");
+      assert.notEqual(spawnSync(process.execPath, [join(root, "scripts/reflex"), "policy", "init", dir, "--pack", name], {encoding: "utf8", env: tenv}).status, 0, "a pack never overwrites");
       assert.equal(readFileSync(join(dir, ".reflex/policy.json"), "utf8"), "{}\n");
     }
     mkdirSync(join(home, "pack-x/.git"), {recursive: true});
-    const unknown = spawnSync(process.execPath, [join(root, "bin/reflex"), "policy", "init", join(home, "pack-x"), "--pack", "../package"], {encoding: "utf8", env: tenv});
+    const unknown = spawnSync(process.execPath, [join(root, "scripts/reflex"), "policy", "init", join(home, "pack-x"), "--pack", "../package"], {encoding: "utf8", env: tenv});
     assert.ok(unknown.status !== 0 && /unknown pack/.test(unknown.stderr) && !existsSync(join(home, "pack-x/.reflex")), unknown.stderr);
     console.log("team policy checks OK");
   }
@@ -1406,7 +1406,7 @@ try {
     // A malformed hook input, read after the gate loaded, asks too.
     assert.equal(parse(hookRun("gate.mjs", ["--claude", "--mode", "enforce"], {}, "not json")).hookSpecificOutput?.permissionDecision, "ask");
     // reflex-sh: an ask with no terminal refuses (126); shadow runs the command.
-    const sh = (mode, crash = "load") => spawnSync(join(root, "bin/reflex-sh"), ["-c", "echo ran"], {encoding: "utf8", env: fenv({REFLEX_MODE: mode, REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}), detached: true, timeout: 30000});
+    const sh = (mode, crash = "load") => spawnSync(join(root, "scripts/reflex-sh"), ["-c", "echo ran"], {encoding: "utf8", env: fenv({REFLEX_MODE: mode, REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}), detached: true, timeout: 30000});
     let r = sh("enforce");
     assert.ok(r.status === 126 && !r.stdout.includes("ran") && /reflex error/.test(r.stderr), `reflex-sh refuses: ${r.status} ${r.stderr}`);
     r = sh("off");

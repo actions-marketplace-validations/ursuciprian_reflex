@@ -293,7 +293,7 @@ function setup() {
   // 2. The `reflex` command.
   mkdirSync(dirname(BIN_LINK), {recursive: true});
   rmSync(BIN_LINK, {force: true});
-  symlinkSync(join(TARGET, "bin/reflex"), BIN_LINK);
+  symlinkSync(join(TARGET, "scripts/reflex"), BIN_LINK);
 
   // 3. The provider's key: environment, else the macOS Keychain (offered once, never written to a file).
   const item = provider && keychainItem(provider.name, keychain), envNames = provider && PROVIDERS[provider.name].env.join(" or ");

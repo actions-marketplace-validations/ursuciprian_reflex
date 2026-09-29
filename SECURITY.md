@@ -34,7 +34,7 @@ Two properties bound the attack surface:
 - The cache: a decision reused for a command that is materially different from what was judged.
 - Script inspection: a launcher `gate.mjs` recognises that runs code Jev never saw, beyond the
   documented two-level and 256 KB limits.
-- A way to make an adapter (`adapters/pi.ts`, `adapters/opencode.js`, `bin/reflex-sh`) run a command
+- A way to make an adapter (`adapters/pi.ts`, `adapters/opencode.js`, `scripts/reflex-sh`) run a command
   without calling the gate.
 
 ## Out of scope

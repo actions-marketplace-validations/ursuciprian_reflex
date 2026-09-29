@@ -47,6 +47,7 @@ import {CONFIG, REDACT, USER_CONFIG, USER_CONFIG_FILE, append, ask, cacheGet, ca
         sha, taint, tainted, transcriptTail} from "./gate.mjs";
 import {compile} from "./policy.mjs";
 import {chunk} from "./context.mjs";
+import {PLUGIN_MODE} from "./plugin.mjs";
 
 const ENV = process.env;
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -530,7 +531,7 @@ export async function guard(call, {background = false, askFn} = {}) {
       policy_version: r.policy_version, qset: r.qset, detectors: r.detectors, tainted: effective !== "pass"});
   } catch { /* a log that cannot be written must not cost the result */ }
   const d = {effective, outcome: r.outcome, rule: r.rule, source: r.source, texts: effective === "block" ? r.texts : undefined};
-  return {...d, note: effective === "pass" ? "" : note(d, {...call, kind}, !!d.texts)};
+  return {...d, note: effective === "pass" ? "" : note(d, {...call, kind}, !!d.texts && !PLUGIN_MODE)};
 }
 function inBackground(call) {
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--bg", "--mode", CONFIG.mode, "--engine", CONFIG.engine],
@@ -603,7 +604,9 @@ export function lastPrompt(path) {
   return last;
 }
 // Claude Code PostToolUse: warn adds context next to the result; block also replaces the result
-// (updatedToolOutput, same shape, offending text removed).
+// (updatedToolOutput, same shape, offending text removed). The Claude Code plugin never rewrites a
+// tool's result: a block there is the warning only (additionalContext), and the session is tainted as
+// with any block, so the gate is stricter for the commands that follow.
 async function claudePost(input) {
   // The project root, not the shell's cwd: after `cd /tmp/clone` a Read there is someone else's file.
   const call = {agent: "claude-code", tool: input.tool_name, input: input.tool_input, cwd: input.cwd, root: ENV.CLAUDE_PROJECT_DIR || undefined,
@@ -616,7 +619,7 @@ async function claudePost(input) {
   if (out) process.stdout.write(JSON.stringify(out));
 }
 export const claudeOut = (d, response) => d.effective === "pass" ? null : {hookSpecificOutput: {hookEventName: "PostToolUse",
-  additionalContext: d.note, ...(d.texts && {updatedToolOutput: replaceStrings(response, d.texts)})}};
+  additionalContext: d.note, ...(d.texts && !PLUGIN_MODE && {updatedToolOutput: replaceStrings(response, d.texts)})}};
 // Codex PostToolUse cannot rewrite a result (updatedMCPToolOutput fails the hook). decision "block"
 // replaces what the model sees with the reason, so a block puts the neutralised text there.
 async function codexPost(input) {

@@ -6,7 +6,7 @@
 // it, redacted, and gets one structured verdict: approve | deny | human, a confidence and a one-line
 // reason. autonomy.mjs applies it; this file only asks.
 //
-// Backends (judge.backend; setup picks one, see bin/reflex):
+// Backends (judge.backend; setup picks one, see scripts/reflex):
 //   cli                an agent CLI that is already installed and signed in, so no extra key:
 //                      `claude -p` or `codex exec`, with every tool, MCP server and hook off, in an
 //                      empty directory, with Reflex switched off in its environment (no recursion)
@@ -30,6 +30,7 @@ import {platform, tmpdir} from "node:os";
 import {delimiter, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {BACKEND_DEFAULTS, CONFIG, append, load, redact, sha} from "./gate.mjs";
+import {PLUGIN_MODE, pluginJudgeKey} from "./plugin.mjs";
 
 const ENV = process.env;
 const VERDICTS = ["approve", "deny", "human"];
@@ -51,7 +52,9 @@ export function onPath(bin, path = ENV.PATH ?? "") {
 
 // The key: the environment variable named in judge.key_env, else the macOS Keychain item named in
 // judge.keychain (the same pattern as the TypeSafe key), else none. Never logged or printed.
+// In the Claude Code plugin: the System 2 API key plugin option only.
 export function judgeKey(j = CONFIG.judge) {
+  if (PLUGIN_MODE) return pluginJudgeKey();
   if (j.key_env && ENV[j.key_env]?.trim()) return ENV[j.key_env].trim();
   if (j.keychain && platform() === "darwin") {
     try {

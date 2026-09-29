@@ -1,12 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 128" role="img" aria-label="Reflex">
-  <style>
-    .word { fill: #0F172A; font: 700 76px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; letter-spacing: -2px; }
-    @media (prefers-color-scheme: dark) { .word { fill: #F8FAFC; } .tile { stroke: #334155; stroke-width: 2; } }
-  </style>
-  <rect class="tile" x="4" y="4" width="120" height="120" rx="28" fill="#0F172A"/>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#0F172A" stroke="#334155" stroke-width="2"/>
   <path d="M30 40 L58 64 L30 88" fill="none" stroke="#F8FAFC" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
   <rect x="74" y="31" width="22" height="18" rx="6" fill="#22C55E"/>
   <rect x="74" y="55" width="22" height="18" rx="6" fill="#F59E0B"/>
   <rect x="74" y="79" width="22" height="18" rx="6" fill="#EF4444"/>
-  <text class="word" x="150" y="91">reflex</text>
+  <text x="150" y="91" fill="#64748B" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="76" font-weight="700" letter-spacing="-2">reflex</text>
 </svg>

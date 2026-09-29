@@ -317,7 +317,7 @@ sends redacted excerpts of tool output to TypeSafe, so turn it on deliberately. 
 without installing: `pi -e /path/to/reflex/adapters/pi-context.ts` with
 `REFLEX_CONTEXT=/path/to/reflex/context.mjs` in the environment (same for `omp -e`).
 
-For an agent with no hook system, point its shell setting at `bin/reflex-sh`: it behaves like
+For an agent with no hook system, point its shell setting at `scripts/reflex-sh`: it behaves like
 `bash`, but judges every `-c` command first. Set `REFLEX_AGENT=<name>` so the logs say which agent
 it was.
 
@@ -696,7 +696,7 @@ variables:
 | `REFLEX_CHUNK_DAYS` / `REFLEX_CHUNK_MB` | `7` / `200` | Context-layer chunk store: delete chunks unused for this many days, then the least recently used beyond this size |
 | `REFLEX_CACHE_READ` / `REFLEX_CACHE_WRITE` | `0.1` / `1.25` | Prompt-cache read and write price as a fraction of uncached input, for the rebuild-or-keep decision |
 | `REFLEX_CONTEXT` | set by `install.mjs` | Path to `context.mjs` for the pi / omp context extension |
-| `REFLEX_REVIEWER` | none | Reviewer command for `bin/reflex-review`, e.g. `codex exec -s read-only -` |
+| `REFLEX_REVIEWER` | none | Reviewer command for `scripts/reflex-review`, e.g. `codex exec -s read-only -` |
 
 ## Optional: Grafana
 

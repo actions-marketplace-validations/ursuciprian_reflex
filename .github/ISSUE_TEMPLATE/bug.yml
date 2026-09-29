@@ -22,7 +22,7 @@ body:
     attributes:
       label: Which agent and hook
       description: >
-        Claude Code, Codex, pi, oh-my-pi, opencode, Hermes or `bin/reflex-sh`, and what
+        Claude Code, Codex, pi, oh-my-pi, opencode, Hermes or `scripts/reflex-sh`, and what
         `install.mjs` wrote for it.
     validations:
       required: true
