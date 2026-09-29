@@ -2411,6 +2411,9 @@ export async function decide(call, {background = false, asker, judger} = {}) {
 function toolRules(call, env) {
   const t = toolOf(call.tool, call.input, call.mcp === true), digest = sha(call.input ?? {}).slice(0, 8);
   if (!t) return {quiet: {outcome: "pass", source: "tool", rule: "not a gated tool"}};
+  if (t.kind === "write" && t.unreadable)
+    return {t, call: {...call, command: `${t.name} (unreadable patch, input ${digest})`, tier: {prod: false}},
+            quick: {outcome: "ask", rule: `${t.name}: the files this patch writes could not be read`, id: "protected-path", source: "rule", policy_version: load("protected.json").version}};
   if (t.kind === "write") {
     const hit = protectedWrite(t.paths, call.cwd);
     if (!hit) return {quiet: {outcome: "pass", source: "tool", rule: "not a protected path"}};
@@ -2701,7 +2704,7 @@ function trace(j, call, effective) {
 // https://docs.claude.com/en/docs/claude-code/hooks
 // An MCP tool (mcp__<server>__<tool>) or a file tool (Edit, Write, MultiEdit, NotebookEdit, Codex
 // apply_patch) as a tool call for decide(): the tool gate (tools.mjs) judges it. null for any other tool.
-const gatedTool = (name, input) => { const t = toolOf(name, input); return t && (t.kind === "mcp" || t.paths.length) ? t : null; };
+const gatedTool = (name, input) => { const t = toolOf(name, input); return t && (t.kind === "mcp" || t.paths.length || t.unreadable) ? t : null; };
 function claudeCall(input) {
   const t = input.tool_input ?? {};
   if (gatedTool(input.tool_name, t))

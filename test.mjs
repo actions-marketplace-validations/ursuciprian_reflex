@@ -1334,6 +1334,8 @@ try {
       assert.ok(v === "ask" && /writes a protected path \(.+\): /.test(why), `${agent} ${tool}: a protected write asks: ${v} ${why}`);
     }
     assert.equal(claude("Write", {file_path: join(repo, "src/app.js"), content: "x"})[0], "pass", "an ordinary write passes");
+    assert.equal(codex("apply_patch", {command: "*** Begin Patch\n*** Update File: src/app.js\n@@\n-a\n+b\n*** End Patch\n"})[0], "pass", "an ordinary patch passes");
+    assert.equal(codex("apply_patch", {command: "garbled patch text"})[0], "ask", "a patch whose files cannot be read asks");
     assert.equal(claude("Write", {file_path: join(repo, "envs/prod/main.tfvars"), content: "x"})[0], "ask", "a production tfvars asks");
     assert.equal(claude("Write", {file_path: join(repo, "envs/dev/main.tfvars"), content: "x"})[0], "pass", "a dev tfvars passes");
     assert.equal(claude("Write", {file_path: join(repo, "Dockerfile"), content: "x"})[0], "pass", "a Dockerfile outside production passes");

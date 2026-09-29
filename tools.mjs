@@ -33,8 +33,10 @@ export function toolOf(name, input, mcp = false) {
   }
   if (WRITE_TOOLS.has(name.toLowerCase())) {
     const paths = [a.file_path, a.filePath, a.path, a.notebook_path].filter(p => typeof p === "string" && p);
-    for (const k of ["command", "input", "patch", "patchText"]) if (typeof a[k] === "string") paths.push(...patchPaths(a[k]));
-    return {kind: "write", name, paths: [...new Set(paths)]};
+    const patches = ["command", "input", "patch", "patchText"].filter(k => typeof a[k] === "string" && a[k].trim());
+    for (const k of patches) paths.push(...patchPaths(a[k]));
+    // a patch whose files cannot be read is not waved through: it asks (gate.mjs toolRules)
+    return {kind: "write", name, paths: [...new Set(paths)], ...(!paths.length && patches.length && {unreadable: true})};
   }
   // Hermes (mcp_<server>_<tool>), omp, and any tool an adapter says is not built in
   if (mcp || /^mcp[_:.]/.test(name)) return {kind: "mcp", name, server: null, tool: name.replace(/^mcp[_:.]/, ""), args: a};
