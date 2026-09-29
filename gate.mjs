@@ -798,7 +798,7 @@ export function readOnlyLegacy(cmd, extra = [], depth = 0, whole = null) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Read-only, simple (the default). readOnlyLegacy above understands a good part of the shell and was
+// Read-only, simple (opt-in: "readonly": "simple"). readOnlyLegacy above understands a good part of the shell and was
 // fooled about 50 ways in five reviews; this one understands almost none of it and refuses the rest.
 // A command is read-only only when it is simple commands, pipelines of them, or both joined by ; && ||
 // or a newline (no &, no redirect but 2>/dev/null and 2>&1, no $ ` ( ) { } * ? [ ] # ! < >, no $'...',
@@ -807,8 +807,10 @@ export function readOnlyLegacy(cmd, extra = [], depth = 0, whole = null) {
 // unknown program, subcommand or flag is not read-only: it falls through to the rules and the engine.
 // Words are judged as the shell passes them (quotes removed), so '-'X is -X. A word that names a
 // secret file (SENSITIVE, /proc/…/environ) is never read-only, whatever the rules say.
-// config.json "readonly": "legacy" (or REFLEX_READONLY=legacy) brings back readOnlyLegacy for one release.
-export const READ_ONLY_MODE = ["legacy", "simple"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? ENV.REFLEX_READONLY ?? USER_CONFIG.readonly : "simple";
+// The default is readOnlyLegacy: on the author's last 7 days simple still sent 68.1 commands per 100 to a
+// human against legacy's 54.7 (globs, $, ssh remote text). config.json "readonly": "simple" (or
+// REFLEX_READONLY=simple) turns this one on.
+export const READ_ONLY_MODE = ["legacy", "simple"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? ENV.REFLEX_READONLY ?? USER_CONFIG.readonly : "legacy";
 export const readOnly = (cmd, extra = []) => READ_ONLY_MODE === "legacy" ? readOnlyLegacy(cmd, extra) : readOnlySimple(cmd, extra);
 
 // The command as pipeline segments of words, or null for anything but plain words, pipes and ; && ||
@@ -2708,7 +2710,7 @@ function hermesPost(input) {
 async function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
   // read-only detection: readOnlyLegacy's cases, as before ("readonly": "legacy"). Every command
-  // legacy refuses must be refused by readOnlySimple (the default) too; `leaks` lists any that is not.
+  // legacy refuses must be refused by readOnlySimple (opt-in) too; `leaks` lists any that is not.
   const leaks = [], readOnly = c => { const l = readOnlyLegacy(c); if (!l && readOnlySimple(c)) leaks.push(c); return l; };
   ok(readOnly("ls -la && git status | head"), "read-only chain");
   ok(readOnly("AWS_PROFILE=dev aws ec2 describe-instances"), "env prefix + aws describe");
