@@ -33,11 +33,12 @@ try {
   // a team policy that is stricter. The decision JSON and the trace carry the counts.
   {
     const box = join(scratch, "infra"), bin = join(box, "bin"), repo = join(box, "repo"), cfg = join(box, "config"), data = join(box, "data");
+    mkdirSync(join(scratch, ".terraform.d/plugin-cache"), {recursive: true});   // HOME is scratch: a plugin cache outside the repo
     for (const d of [bin, join(repo, ".git"), join(repo, ".reflex"), join(cfg, "reflex"), join(repo, "envs/prod")]) mkdirSync(d, {recursive: true});
     writeFileSync(join(bin, "terraform"), `#!/bin/sh\necho "$*" >> "${join(box, "calls.log")}"\n[ "$1" = show ] || exit 9\ntail -n +2 "$4"\n`, {mode: 0o755});
     const plan = (dir, name, fixture) => writeFileSync(join(dir, name), `PK\x03\x04\n${readFileSync(join(root, "setup/tool-gate/plans", `${fixture}.json`), "utf8")}`);
     plan(repo, "destroy.plan", "destroy"); plan(repo, "clean.plan", "clean"); plan(join(repo, "envs/prod"), "tfplan", "clean");
-    writeFileSync(join(cfg, "reflex/config.json"), JSON.stringify({infra: {destroy: "ask"}}));
+    writeFileSync(join(cfg, "reflex/config.json"), JSON.stringify({infra: {destroy: "ask", terraform_show: true}}));
     const ienv = {...env, PATH: `${bin}:${process.env.PATH}`, XDG_CONFIG_HOME: cfg, REFLEX_DATA_DIR: data, REFLEX_ENGINE: "local", REFLEX_MODE: "enforce"};
     const decideIn = (command, cwd = repo, e = ienv) => JSON.parse(success(invoke("gate.mjs", ["--decide"], {env: e, input: JSON.stringify({agent: "test", command, cwd})})));
     let d = decideIn("terraform apply destroy.plan");

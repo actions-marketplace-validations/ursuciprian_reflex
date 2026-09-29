@@ -20,14 +20,17 @@
 // ponytail: the plan is read when the hook runs and applied a moment later. A process the agent
 // left running could swap the file in between; Terraform itself still refuses a plan whose state
 // moved. Only a command that is nothing but cd steps and the apply can pass on a clean plan.
-import {accessSync, constants, lstatSync, openSync, readSync, closeSync, readdirSync, realpathSync, statSync} from "node:fs";
+import {accessSync, constants, lstatSync, openSync, readFileSync, readSync, closeSync, readdirSync, realpathSync, statSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
 import {homedir} from "node:os";
 import {basename, dirname, isAbsolute, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 
-export const INFRA_DEFAULTS = {enabled: true, destroy: "deny", require_plan_in_prod: false, kubectl_diff: false, timeout_ms: 3000};
+// terraform_show is off by default: `terraform show` starts the provider binaries in .terraform, and an
+// agent's file tools can write those (and the lock file) without passing the gate. On, it runs only when
+// every provider it would load is a symlink into a plugin cache outside the working tree (providersSafe).
+export const INFRA_DEFAULTS = {enabled: true, destroy: "deny", require_plan_in_prod: false, terraform_show: false, kubectl_diff: false, timeout_ms: 3000};
 /** User settings (config.json `infra`) with the team's stricter parts: a team can force deny-on-destroy or a saved plan in prod. */
 export function infraSettings(saved, team) {
   const s = {...INFRA_DEFAULTS, ...(saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {})};
@@ -41,7 +44,7 @@ export function infraError(saved) {
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) return "infra must be an object";
   const extra = Object.keys(saved).find(k => !(k in INFRA_DEFAULTS));
   if (extra) return `infra: unknown key "${extra}" (${Object.keys(INFRA_DEFAULTS).join(", ")})`;
-  for (const k of ["enabled", "require_plan_in_prod", "kubectl_diff"]) if (saved[k] !== undefined && typeof saved[k] !== "boolean") return `infra.${k} must be true or false`;
+  for (const k of ["enabled", "require_plan_in_prod", "terraform_show", "kubectl_diff"]) if (saved[k] !== undefined && typeof saved[k] !== "boolean") return `infra.${k} must be true or false`;
   if (saved.destroy !== undefined && !["deny", "ask"].includes(saved.destroy)) return 'infra.destroy must be "deny" or "ask"';
   // the hook has 10 s in all: a plan read that could take most of it would let the command through
   if (saved.timeout_ms !== undefined && !(Number.isInteger(saved.timeout_ms) && saved.timeout_ms >= 100 && saved.timeout_ms <= 4000)) return "infra.timeout_ms must be 100 to 4000";
@@ -116,8 +119,60 @@ function staleBy(dir, planMtime) {
   return null;
 }
 
+// The provider binaries `terraform show` would start, as far as the working directory decides them:
+// every entry under <data dir>/providers must be a symlink whose real path is inside the plugin cache
+// (TF_PLUGIN_CACHE_DIR, plugin_cache_dir in the CLI config, or ~/.terraform.d/plugin-cache), under the
+// home directory and outside both the directory the command runs in and the one it started in, and no
+// file there may be newer than the plan. A regular file or directory of binaries in .terraform, a
+// terraform.d in the working directory, dev_overrides or a reattach variable: not run. null when safe,
+// else the reason. ponytail: the cache is trusted as the user's own, and an agent that can write the
+// home directory outside the gate can also write the cache; the check keeps the working tree out.
+const insideOf = (p, root) => p === root || p.startsWith(root.endsWith("/") ? root : root + "/");
+const realOr = p => { try { return realpathSync(p); } catch { return null; } };
+export function providersSafe(dir, cwd, planMtime, env = process.env) {
+  const home = realOr(env.HOME || homedir());
+  if (!home) return "no home directory";
+  const tree = [dir, cwd].filter(Boolean).map(realOr).filter(Boolean);
+  if (Object.keys(env).some(k => /^TF_REATTACH_PROVIDERS$/.test(k))) return "TF_REATTACH_PROVIDERS is set";
+  const cliFile = env.TF_CLI_CONFIG_FILE || join(home, ".terraformrc");
+  let cli = "";
+  try { cli = readFileSync(cliFile, "utf8").slice(0, 256 * 1024); } catch { /* none */ }
+  if (/\bdev_overrides\b/.test(cli)) return "dev_overrides in the Terraform CLI config";
+  const configured = cli.match(/^\s*plugin_cache_dir\s*=\s*"([^"]+)"/m)?.[1]?.replace(/^(\$HOME|\$\{HOME\}|~)(?=\/|$)/, home);
+  const caches = [env.TF_PLUGIN_CACHE_DIR, configured, join(home, ".terraform.d/plugin-cache")].filter(Boolean).map(c => realOr(resolve(dir, c))).filter(Boolean)
+    .filter(c => insideOf(c, home) && c !== home && !tree.some(t => insideOf(c, t) || insideOf(t, c)));
+  if (!caches.length) return "no plugin cache outside the working tree";
+  if (tree.some(t => insideOf(home, t))) return "the working tree holds the home directory";
+  if (realOr(join(dir, "terraform.d"))) return "a terraform.d directory in the working tree";
+  const root = resolve(dir, env.TF_DATA_DIR || ".terraform", "providers");
+  let seen = 0;
+  const newer = (p, depth = 0) => {   // a file in the cache newer than the plan
+    let st; try { st = statSync(p); } catch { return "unreadable"; }
+    if (st.isFile()) return st.mtimeMs > planMtime ? p : null;
+    if (!st.isDirectory() || depth > 4) return null;
+    for (const n of readdirSync(p)) { if (++seen > 500) return "too many files"; const r = newer(join(p, n), depth + 1); if (r) return r; }
+    return null;
+  };
+  const walk = (p, depth) => {
+    let st; try { st = lstatSync(p); } catch { return depth === 0 ? null : "unreadable provider entry"; }
+    if (st.isSymbolicLink()) {
+      const real = realOr(p);
+      if (!real) return `a broken provider link (${basename(p)})`;
+      if (!caches.some(c => insideOf(real, c)) || tree.some(t => insideOf(real, t))) return `a provider outside the plugin cache (${basename(p)})`;
+      const n = newer(real);
+      return n ? `a provider in the cache is newer than the plan (${basename(n)})` : null;
+    }
+    if (st.isFile()) return `a provider binary inside the working tree (${basename(p)})`;
+    if (!st.isDirectory()) return `an unexpected provider entry (${basename(p)})`;
+    if (depth > 6) return "providers nested too deep";
+    for (const n of readdirSync(p)) { if (++seen > 500) return "too many provider entries"; const r = walk(join(p, n), depth + 1); if (r) return r; }
+    return null;
+  };
+  return walk(root, 0);
+}
+
 /** Read one saved plan. {plan} or {why} (why the plan cannot be trusted). */
-export function readPlan(dir, file, {deadline, env = process.env} = {}) {
+export function readPlan(dir, file, {deadline, env = process.env, cwd = dir} = {}) {
   const path = resolve(dir, file);
   let st;
   try { st = lstatSync(path); } catch { return {why: `plan file ${file} not found`}; }
@@ -134,6 +189,8 @@ export function readPlan(dir, file, {deadline, env = process.env} = {}) {
   if (stale) return {why: `stale: ${stale} changed after ${file} was written`};
   const bin = which("terraform", env.PATH);
   if (!bin) return {why: "terraform not found on PATH"};
+  const unsafe = providersSafe(dir, cwd, st.mtimeMs, env);
+  if (unsafe) return {why: `terraform show not run: ${unsafe}`};
   const left = deadline - Date.now();
   if (left < 50) return {why: "out of time"};
   const r = run(bin, ["show", "-json", "-no-color", path], dir, tfEnv(env), left);
@@ -325,7 +382,9 @@ export function planGate({command, cwd, settings: s, settingsAt = () => s, prod,
     if (tf.unreadable) return {outcome: noPlan, id: "plan-unreadable", rule: `no readable saved plan (${tf.unreadable}): ${FIX}`};
     if (!tf.plan) return {outcome: noPlan, id: "plan-missing", rule: `terraform apply without a saved plan: ${FIX}`};
     if (!dir) return {outcome: noPlan, id: "plan-unreadable", rule: `no readable saved plan (the directory it runs in is unknown): ${FIX}`};
-    const r = readPlan(dir, tf.plan, {deadline, env});
+    // off by default: the command is judged as before (the rules, then the usual judge)
+    if (!s.terraform_show) return {outcome: null, id: "plan-not-read", rule: "saved plan not read (infra.terraform_show is off)"};
+    const r = readPlan(dir, tf.plan, {deadline, env, cwd});
     if (!r.plan) return {outcome: noPlan, id: "plan-unreadable", rule: `no readable saved plan (${r.why}): ${FIX}`};
     const p = r.plan, counts = `${p.create} create, ${p.update} update, ${p.delete} delete, ${p.replace} replace`;
     const plan = {kind: "terraform", create: p.create, update: p.update, delete: p.delete, replace: p.replace, stateful: p.stateful, digest: p.digest};
@@ -363,6 +422,10 @@ async function selfcheck() {
   const here = fileURLToPath(new URL(".", import.meta.url)), fixture = n => readFileSync(join(here, "setup/tool-gate/plans", `${n}.json`), "utf8");
   const tmp = realpathSync(mkdtempSync(join(tmpdir(), "reflex-infra-"))), bin = join(tmp, "bin"), log = join(bin, "calls.log");
   mkdirSync(bin);
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "reflex-infra-home-"))), cache = join(home, ".terraform.d/plugin-cache");   // HOME below: the user's plugin cache, outside the trees
+  mkdirSync(join(cache, "registry.terraform.io/hashicorp/aws/5.0.0/darwin_arm64"), {recursive: true});
+  writeFileSync(join(cache, "registry.terraform.io/hashicorp/aws/5.0.0/darwin_arm64/terraform-provider-aws_v5.0.0"), "");
+  utimesSync(join(cache, "registry.terraform.io/hashicorp/aws/5.0.0/darwin_arm64/terraform-provider-aws_v5.0.0"), 1e9, 1e9);
   // fake terraform: `show -json -no-color <plan>` prints the plan's JSON (after the zip marker line);
   // a plan naming SLEEP hangs, one naming FAIL fails. Every call and its environment are logged.
   writeFileSync(join(bin, "terraform"), `#!/bin/sh\necho "terraform $*" >> "${log}"\nenv | grep -E '^(AWS_|CHECKPOINT_DISABLE|TF_VAR_|GITHUB_TOKEN)' | sed 's/^/  env /' >> "${log}"\n` +
@@ -371,13 +434,13 @@ async function selfcheck() {
   writeFileSync(join(bin, "kubectl"), `#!/bin/sh\necho "kubectl $*" >> "${log}"\ncase " $* " in\n  *" diff "*) printf '%s' "$KUBE_DIFF_OUT"; exit \${KUBE_DIFF_EXIT:-1};;\n` +
     `  *" --dry-run=server "*) printf '%s' "$KUBE_NAMES"; exit 0;;\nesac\nexit 7\n`);
   chmodSync(join(bin, "terraform"), 0o755); chmodSync(join(bin, "kubectl"), 0o755);
-  const env = {PATH: `relative/bin:${bin}:/usr/bin:/bin`, HOME: tmp, AWS_SECRET_ACCESS_KEY: "never-passed", TF_VAR_db_password: "never-passed", GITHUB_TOKEN: "never-passed"};
+  const env = {PATH: `relative/bin:${bin}:/usr/bin:/bin`, HOME: home, AWS_SECRET_ACCESS_KEY: "never-passed", TF_VAR_db_password: "never-passed", GITHUB_TOKEN: "never-passed"};
   const put = (dir, name, json, mtime) => {
     mkdirSync(dir, {recursive: true});
     writeFileSync(join(dir, name), `PK\x03\x04\n${json}`);
     if (mtime) utimesSync(join(dir, name), mtime, mtime);
   };
-  const gate = (command, cwd, over = {}, prod = () => false, e = env) => planGate({command, cwd, settings: {...INFRA_DEFAULTS, ...over}, prod, pipelines, shellWords, env: e});
+  const gate = (command, cwd, over = {}, prod = () => false, e = env) => planGate({command, cwd, settings: {...INFRA_DEFAULTS, terraform_show: true, ...over}, prod, pipelines, shellWords, env: e});
   try {
     // counting
     assert.deepEqual(countPlan(fixture("clean")), {create: 1, update: 1, delete: 0, replace: 0, stateful: [], destroyed: []}, "clean: no-op and data reads are not changes");
@@ -499,6 +562,40 @@ async function selfcheck() {
     assert.equal(gate("terraform apply tfplan", st).outcome, "pass", "older inputs: fresh");
     writeFileSync(join(st, ".terraform.lock.hcl"), "");
     assert.match(gate("terraform apply tfplan", st).rule, /stale: .terraform.lock.hcl/);
+    // terraform_show off (the default): nothing is run, the command is judged as before; no plan still asks
+    rmSync(log, {force: true});
+    g = gate("terraform apply destroy.plan", w, {terraform_show: false});
+    assert.ok(g.outcome === null && g.id === "plan-not-read" && !g.plan && !existsSync(log), `off: not read, not run: ${JSON.stringify(g)}`);
+    assert.equal(gate("terraform apply -auto-approve", w, {terraform_show: false}).id, "plan-missing", "off: an apply without a plan still asks with the fix");
+    assert.equal(INFRA_DEFAULTS.terraform_show, false, "off by default");
+    // the provider binaries show would start: only symlinks into the plugin cache, older than the plan
+    const pv = join(tmp, "pv"), prov = join(pv, ".terraform/providers/registry.terraform.io/hashicorp/aws/5.0.0");
+    put(pv, "tfplan", fixture("clean"));
+    mkdirSync(prov, {recursive: true});
+    symlinkSync(join(cache, "registry.terraform.io/hashicorp/aws/5.0.0/darwin_arm64"), join(prov, "darwin_arm64"));
+    assert.equal(gate("terraform apply tfplan", pv).outcome, "pass", "a provider linked into the plugin cache");
+    utimesSync(join(cache, "registry.terraform.io/hashicorp/aws/5.0.0/darwin_arm64/terraform-provider-aws_v5.0.0"), Date.now() / 1000 + 60, Date.now() / 1000 + 60);
+    assert.match(gate("terraform apply tfplan", pv).rule, /terraform show not run: a provider in the cache is newer than the plan/);
+    utimesSync(join(cache, "registry.terraform.io/hashicorp/aws/5.0.0/darwin_arm64/terraform-provider-aws_v5.0.0"), 1e9, 1e9);
+    mkdirSync(join(prov, "linux_amd64"));
+    writeFileSync(join(prov, "linux_amd64/terraform-provider-aws_v5.0.0"), "#!/bin/sh\n");
+    g = gate("terraform apply tfplan", pv);
+    assert.ok(g.outcome === "ask" && /terraform show not run: a provider binary inside the working tree/.test(g.rule), `a planted binary: ${JSON.stringify(g)}`);
+    rmSync(join(prov, "linux_amd64"), {recursive: true});
+    mkdirSync(join(pv, "planted"));
+    symlinkSync(join(pv, "planted"), join(prov, "linux_amd64"));
+    assert.match(gate("terraform apply tfplan", pv).rule, /a provider outside the plugin cache/, "a link back into the tree");
+    rmSync(join(prov, "linux_amd64"));
+    assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, TF_PLUGIN_CACHE_DIR: pv}).rule, /./, "a cache inside the tree does not count");
+    mkdirSync(join(pv, "terraform.d"));
+    assert.match(gate("terraform apply tfplan", pv).rule, /a terraform.d directory in the working tree/);
+    rmSync(join(pv, "terraform.d"), {recursive: true});
+    writeFileSync(join(home, ".terraformrc"), 'provider_installation {\n  dev_overrides { "hashicorp/aws" = "/x" }\n}\n');
+    assert.match(gate("terraform apply tfplan", pv).rule, /dev_overrides/);
+    rmSync(join(home, ".terraformrc"));
+    assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, TF_REATTACH_PROVIDERS: "{}"}).rule, /TF_REATTACH_PROVIDERS/);
+    assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, HOME: pv}).rule, /no plugin cache outside the working tree|holds the home/, "cwd is the home directory");
+    assert.equal(gate("terraform apply tfplan", pv).outcome, "pass", "and back to safe");
     // unknown directory, hidden text, no binary
     assert.equal(gate("terraform apply tfplan", undefined).id, "plan-unreadable");
     assert.equal(gate("cd $DIR && terraform apply tfplan", w), null, "an expansion: the usual judge decides");
@@ -552,7 +649,7 @@ async function selfcheck() {
     assert.equal(infraSettings({enabled: false}, {require_plan_in_prod: true}).enabled, true, "a team's infra section turns the gate on");
     assert.equal(infraSettings({require_plan_in_prod: true}, null).require_plan_in_prod, true);
     console.log("infra selfcheck ok");
-  } finally { rmSync(tmp, {recursive: true, force: true}); }
+  } finally { rmSync(tmp, {recursive: true, force: true}); rmSync(home, {recursive: true, force: true}); }
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]) && process.argv.includes("--selfcheck"))
   selfcheck().catch(e => { console.error(e); process.exit(1); });   // not awaited: gate.mjs imports this module
