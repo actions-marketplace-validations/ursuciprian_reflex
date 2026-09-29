@@ -10,6 +10,8 @@
 Claude Code, Codex CLI, opencode and pi that judges every shell command by where it points and what
 it will change, then lets it run, asks a human, or blocks it.**
 
+Documentation website: <https://ursuciprian.github.io/reflex/>
+
 <p align="center">
   <img src="assets/demo.gif" alt="Claude Code with the Reflex plugin blocking a force push to main and a prompt injection" width="900">
 </p>
@@ -199,6 +201,7 @@ reflex setup --mode enforce                                            # start e
 reflex setup --profile autonomous                                      # System 2 and the approval queue
 reflex queue                                                           # what waits for a human
 reflex policy init                                                     # team policy: a starter .reflex/policy.json for this repo
+reflex policy init --pack aws                                          # or a policy pack: aws, eks, terraform, startup-default
 reflex trust .                                                         # let this repo's team fast lane apply (your terminal only)
 reflex uninstall
 ```
@@ -1081,6 +1084,9 @@ package and the `reflex` link, and keeps your settings, policy and logs. Delete 
 
 ## Documentation
 
+- [ursuciprian.github.io/reflex](https://ursuciprian.github.io/reflex/): these docs as a website, with a page per topic
+- [GitHub Action](docs/SETUP.md#github-action-check-the-team-policy-and-commands-in-ci): validate `.reflex/policy.json` and fail CI when a listed command is denied
+- [examples/policies/](examples/policies/): policy packs for AWS, EKS, Terraform and a startup default
 - [docs/FAQ.md](docs/FAQ.md): questions and answers about Reflex, Jev, Laya, cost, data and rollout
 - [docs/SETUP.md](docs/SETUP.md): installation, configuration, per-agent setup, uninstalling
 - [docs/GUIDE.md](docs/GUIDE.md): design, testing, tuning, rollout, metrics, data handling, limits

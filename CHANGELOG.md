@@ -6,6 +6,27 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Documentation website at https://ursuciprian.github.io/reflex/, built by `site/build.mjs` (no
+  dependencies) from README.md, docs/GUIDE.md, docs/SETUP.md and docs/FAQ.md: a landing page, the
+  four docs, and one page per topic (Claude Code hooks, Terraform guardrails, kubectl delete, prompt
+  injection, Codex CLI, SOC 2 audit log, change freeze, Jev, Reflex vs Claude Code permissions),
+  each assembled from doc sections with its own title, description, canonical URL and links to
+  install and related pages. Also sitemap.xml, robots.txt, OpenGraph and Twitter tags, JSON-LD
+  (SoftwareApplication, and FAQPage on the FAQ) and llms.txt at the root. No JavaScript, system
+  fonts, dark mode through `prefers-color-scheme`. `.github/workflows/pages.yml` deploys it on push
+  to main with SHA-pinned actions; the build job has read permissions only, and only the deploy job gets `pages: write` and
+  `id-token: write`. `package.json` `homepage` is the site.
+- GitHub Action (`action.yml`, composite): validates `.reflex/policy.json`, judges a list of commands
+  with `reflex check` (keyless, so the result depends only on the rules and the team policy) and fails
+  on deny (or on ask with `fail-on: ask`), with a decision table in the job summary; optionally runs
+  the golden set with a TypeSafe key. It runs `npx @ursuciprian/reflex@<version>` pinned to the
+  package version, which `npm test` keeps in sync. Usage in docs/SETUP.md; a CI job runs it.
+- Policy packs in `examples/policies/`: `aws`, `eks`, `terraform` and `startup-default`, valid team
+  policies that only add checks, with a note on every rule. `reflex policy init --pack <name>` copies
+  one to `.reflex/policy.json` and never overwrites an existing file.
+
 ## [0.15.0] - 2026-09-29
 
 ### Added

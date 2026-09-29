@@ -119,4 +119,7 @@ When you change rules, questions, policy or redaction:
 | `install.sh` | The `curl` installer: fetches the package from npm and runs `reflex setup` |
 | `report.mjs` | Summary, replay under a candidate policy, allow calibration from your approvals, Prometheus Pushgateway export |
 | `dashboards/reflex.json` | Grafana dashboard for the pushed metrics |
+| `examples/policies/` | Team policy packs (`aws`, `eks`, `terraform`, `startup-default`) for `reflex policy init --pack` |
+| `action.yml` | The GitHub Action: validates `.reflex/policy.json` and fails on a denied command, with the npm package pinned to this version |
+| `site/build.mjs` | Builds the docs website from README.md and docs/ into `site/dist` (`node site/build.mjs`); `.github/workflows/pages.yml` deploys it |
 | `routing/` | LiteLLM pre-call hook for security- and cost-aware model routing (`reflex_router.py`, `questions.json`, `policy.json`, `golden.json`, an example LiteLLM config) |
