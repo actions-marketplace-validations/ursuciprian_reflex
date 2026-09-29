@@ -27,9 +27,9 @@ const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 // Every module a plugin hook, command or the MCP server loads, spawns or imports (statically or not).
 const MODULES = ["hook.mjs", "failsafe.mjs", "plugin.mjs", "gate.mjs", "guard.mjs", "instructions.mjs", "policy.mjs", "providers.mjs",
   "autonomy.mjs", "fastlane.mjs", "team.mjs", "infra.mjs", "freeze.mjs", "notify.mjs", "context.mjs", "judge2.mjs", "laya.mjs",
-  "mcp.mjs", "audit.mjs", "status.mjs", "replay.mjs", "report.mjs", "suggest.mjs"];
+  "mcp.mjs", "audit.mjs", "status.mjs", "replay.mjs", "report.mjs", "suggest.mjs", "tools.mjs"];
 // The setup files read at runtime; the golden sets, fixtures and plan fixtures stay out.
-const DATA = ["setup/redact.json", ...["rules", "policy", "questions", "escalation", "subgoals"].map(f => `setup/tool-gate/${f}.json`),
+const DATA = ["setup/redact.json", ...["rules", "policy", "questions", "escalation", "subgoals", "mcp", "protected"].map(f => `setup/tool-gate/${f}.json`),
   ...["policy", "detectors", "questions"].map(f => `setup/injection/${f}.json`)];
 const FILES = [".mcp.json", "hooks/hooks.json", "LICENSE", "assets/logo-512.png",
   ...readdirSync(join(ROOT, "commands")).filter(f => f.endsWith(".md")).sort().map(f => `commands/${f}`), "skills/reflex/SKILL.md"];

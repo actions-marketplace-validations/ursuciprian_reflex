@@ -2777,13 +2777,14 @@ function codexCall(input) {
 async function codexPre(input) {
   const call = codexCall(input);
   if (!call) return;
-  const out = codexOut(await decideSafe(call));
+  const out = codexOut(await decideSafe(call), !!call.tool);
   if (out) process.stdout.write(JSON.stringify(out));
 }
-function codexOut(d) {
+function codexOut(d, tool = false) {
   if (!["ask", "deny"].includes(d.effective)) return null;
   const reason = d.effective === "ask"
-    ? `${d.reason}. This hook cannot open an approval dialog. The user can review and run the exact command with reflex run in their own terminal (include --cwd). A chat confirmation does not unblock this hook; do not retry or disable it.` : d.reason;
+    ? `${d.reason}. This hook cannot open an approval dialog. ${tool ? "The user can make this change or run this tool themselves."
+      : "The user can review and run the exact command with reflex run in their own terminal (include --cwd)."} A chat confirmation does not unblock this hook; do not retry or disable it.` : d.reason;
   return {hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason}};
 }
 function codexPost(input) {

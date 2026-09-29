@@ -89,6 +89,8 @@ const promptGroup = (flag, script = INSTRUCTIONS, timeout = 10) => ({hooks: [{ty
 // Read's path, so every Read reaches the guard, which skips files inside the repository at once.
 const guardGroup = (matcher, flag) => ({matcher, hooks: [{type: "command", command: cmd(flag, GUARD), timeout: 15}]});
 const CLAUDE_GUARD = "^(WebFetch|WebSearch|Read|Bash)$|^mcp__", CODEX_GUARD = "^Bash$|^mcp__";
+// The gate: shell commands, subagent spawns, and the tool gate (tools.mjs): MCP tool calls and file writes.
+const CLAUDE_GATE = "^(Bash|Task|Agent|Edit|Write|MultiEdit|NotebookEdit)$|^mcp__", CODEX_GATE = "^(Bash|spawn_agent|apply_patch)$|^mcp__";
 
 // pi and oh-my-pi load TypeScript extensions from <home>/agent/extensions/.
 // The context layer sits next to the gate: --context installs it, --no-context removes it, and a
@@ -128,7 +130,7 @@ const AGENTS = {
     if (s.env?.REFLEX_ALLOW) delete s.env.REFLEX_ALLOW;
     if (!UNINSTALL) {
       // Task|Agent: subgoal dedup before a subagent is spawned, and its PostToolUse marks it launched
-      s.hooks.PreToolUse = [...(s.hooks.PreToolUse ?? []), group("Bash|Task|Agent", "--claude", GATE_TIMEOUT || 10)];
+      s.hooks.PreToolUse = [...(s.hooks.PreToolUse ?? []), group(CLAUDE_GATE, "--claude", GATE_TIMEOUT || 10)];
       for (const ev of ["PostToolUse", "PostToolUseFailure", "PermissionDenied"])
         s.hooks[ev] = [...(s.hooks[ev] ?? []), group("Bash|Task|Agent", "--claude-post", 5)];
       // records that Claude Code showed its own dialog (never answers it): calibration and rejected spawns
@@ -149,7 +151,7 @@ const AGENTS = {
     stripOurs(s.hooks);
     if (!UNINSTALL) {
       // spawn_agent: subgoal dedup before a subagent is spawned, and its PostToolUse marks it launched
-      s.hooks.PreToolUse = [...(s.hooks.PreToolUse ?? []), group("^(Bash|spawn_agent)$", "--codex", GATE_TIMEOUT || 15)];
+      s.hooks.PreToolUse = [...(s.hooks.PreToolUse ?? []), group(CODEX_GATE, "--codex", GATE_TIMEOUT || 15)];
       s.hooks.PostToolUse = [...(s.hooks.PostToolUse ?? []), group("^(Bash|spawn_agent)$", "--codex-post", 5)];
       s.hooks.PostToolUse.push(guardGroup(CODEX_GUARD, "--codex"));
       s.hooks.UserPromptSubmit = [...(s.hooks.UserPromptSubmit ?? []), promptGroup("--codex"), promptGroup("--codex-prompt", GUARD, 5)];
@@ -177,6 +179,10 @@ const AGENTS = {
       `      command: '${cmd("--hermes")}'`,
       `      timeout: ${GATE_TIMEOUT || 15}`,
       "      fail_closed: true",
+      `    - matcher: "mcp_.*|write_file|patch"`,   // the tool gate: MCP tool calls and file writes
+      `      command: '${cmd("--hermes")}'`,
+      `      timeout: ${GATE_TIMEOUT || 15}`,
+      "      fail_closed: true",
       `    - matcher: "delegate_task"`,          // subgoal dedup; never fail-closed, it only saves work
       `      command: '${cmd("--hermes")}'`,
       "      timeout: 15",
@@ -184,7 +190,7 @@ const AGENTS = {
       `    - matcher: "terminal|delegate_task"`,
       `      command: '${cmd("--hermes-post")}'`,
       "      timeout: 5",
-      `    - matcher: "terminal|web_search|web_extract|read_file|x_search|feishu_doc_read|browser_(?!vault_).*|mcp__.*|connectors__.*"`,   // injection guard; observe-only here; never the password vault
+      `    - matcher: "terminal|web_search|web_extract|read_file|x_search|feishu_doc_read|browser_(?!vault_).*|mcp_.*|connectors__.*"`,   // injection guard; observe-only here; never the password vault
       `      command: '${cmd("--hermes", GUARD)}'`,
       "      timeout: 15",
       "  pre_llm_call:",
@@ -274,10 +280,10 @@ if (argv.includes("--selfcheck")) {
       if (agent === "claude") {
         const pre = hooks.PreToolUse.find(g => g.hooks.some(h => h.command.includes(q(GATE))));
         const s = JSON.parse(first);
-        ok(pre.matcher === "Bash|Task|Agent" && s.model === "opus" && s.env.FOO === "1" && s.permissions.allow[0] === "Bash(ls)" &&
+        ok(pre.matcher === CLAUDE_GATE && s.model === "opus" && s.env.FOO === "1" && s.permissions.allow[0] === "Bash(ls)" &&
            s.permissions.ask.includes("Bash(rm *)") && s.permissions.ask.some(r => r.startsWith("Edit(")) && s.permissions.ask.includes("Edit(**/.reflex/**)") &&
            !s.permissions.ask.some(r => r.startsWith("Write(")), "claude: matcher, foreign settings and guard rules (Edit only; an old Write rule is removed)");
-      } else ok(hooks.PreToolUse.some(g => g.matcher === "^(Bash|spawn_agent)$"), "codex: Bash and spawn_agent");
+      } else ok(hooks.PreToolUse.some(g => g.matcher === CODEX_GATE), "codex: Bash, spawn_agent, apply_patch and MCP tools");
       run("--agent", agent);
       ok(read(f) === first, `${agent}: reinstall is byte-identical`);
       run("--agent", agent, "--mode", "enforce", "--allow", "on");

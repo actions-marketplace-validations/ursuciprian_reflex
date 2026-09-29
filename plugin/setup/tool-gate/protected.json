@@ -1,0 +1,138 @@
+{
+  "version": "protected-v1",
+  "note": "Paths a file tool (Edit, Write, MultiEdit, NotebookEdit, Codex apply_patch, opencode write, edit and apply_patch, pi edit and write, Hermes write_file and patch) may not change without a human (tools.mjs). A glob starting with ~/ or / is anchored there; any other matches at any depth. ** crosses directories, * and ? do not. `prod: true` counts only when the path points at production (the prod-destroy markers and a team policy's prod list). The Reflex checkout, its logs and its settings directory are always protected. config.json \"protected\" adds globs; a copy in ~/.config/reflex/tool-gate/protected.json replaces this file; a team policy can only add globs.",
+  "outcome": "ask",
+  "paths": [
+    {
+      "glob": ".github/workflows/**",
+      "why": "a CI workflow runs with the repository's secrets"
+    },
+    {
+      "glob": ".github/actions/**",
+      "why": "a CI action runs with the repository's secrets"
+    },
+    {
+      "glob": ".gitlab-ci.yml",
+      "why": "a CI pipeline runs with the repository's secrets"
+    },
+    {
+      "glob": "**/envs/prod/**",
+      "why": "production environment configuration"
+    },
+    {
+      "glob": "**/prod/**/*.tf",
+      "why": "production Terraform"
+    },
+    {
+      "glob": "**/*.tfvars",
+      "prod": true,
+      "why": "production Terraform variables"
+    },
+    {
+      "glob": "**/*.tf",
+      "prod": true,
+      "why": "production Terraform"
+    },
+    {
+      "glob": "**/Dockerfile*",
+      "prod": true,
+      "why": "a production image definition"
+    },
+    {
+      "glob": "**/.reflex/**",
+      "why": "a team policy: a human edits it"
+    },
+    {
+      "glob": "**/.git/hooks/**",
+      "why": "a git hook runs on every commit"
+    },
+    {
+      "glob": "**/.mcp.json",
+      "why": "an MCP server list: a new server runs code"
+    },
+    {
+      "glob": "**/.claude/settings*.json",
+      "why": "agent settings and hooks"
+    },
+    {
+      "glob": "**/.claude/hooks/**",
+      "why": "agent hooks"
+    },
+    {
+      "glob": "~/.claude.json",
+      "why": "agent settings and MCP servers"
+    },
+    {
+      "glob": "**/.codex/hooks.json",
+      "why": "agent hooks"
+    },
+    {
+      "glob": "~/.codex/config.toml",
+      "why": "agent settings and MCP servers"
+    },
+    {
+      "glob": "~/.codex/rules/**",
+      "why": "agent approval rules"
+    },
+    {
+      "glob": "~/.config/opencode/**",
+      "why": "agent settings and plugins"
+    },
+    {
+      "glob": "**/.opencode/plugin*/**",
+      "why": "agent plugins"
+    },
+    {
+      "glob": "~/.pi/agent/**",
+      "why": "agent settings and extensions"
+    },
+    {
+      "glob": "~/.omp/agent/**",
+      "why": "agent settings and extensions"
+    },
+    {
+      "glob": "~/.hermes/**",
+      "why": "agent settings and hooks"
+    },
+    {
+      "glob": "~/.bashrc",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.bash_profile",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.bash_login",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.profile",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.zshrc",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.zshenv",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.zprofile",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.zlogin",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.config/fish/config.fish",
+      "why": "a shell startup file runs in every new shell"
+    },
+    {
+      "glob": "~/.config/fish/conf.d/**",
+      "why": "a shell startup file runs in every new shell"
+    }
+  ]
+}

@@ -143,13 +143,16 @@ export default function (pi: any) {
       }
       return;
     }
-    if (event.toolName !== "bash" || !event.input?.command) return;
+    // The tool gate: file writes (a protected path asks) and MCP calls (pi-mcp-adapter's mcp proxy, mcp_* tools).
+    const tool = ["edit", "write"].includes(event.toolName) || event.toolName === "mcp" || /^mcp[_:.]/.test(event.toolName);
+    if (!tool && (event.toolName !== "bash" || !event.input?.command)) return;
     let d: Decision;
     try {
-      d = JSON.parse(await gate("--decide", {
-        agent: AGENT, command: event.input.command, cwd: event.input.cwd ?? ctx.cwd,
-        call_id: event.toolCallId, session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx),
-      }, ctx.signal));
+      d = JSON.parse(await gate("--decide", tool
+        ? {agent: AGENT, tool: event.toolName, input: event.input ?? {}, cwd: ctx.cwd, call_id: event.toolCallId,
+           session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx)}
+        : {agent: AGENT, command: event.input.command, cwd: event.input.cwd ?? ctx.cwd,
+           call_id: event.toolCallId, session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx)}, ctx.signal));
     } catch {
       // No JSON answer (the gate did not start, was killed at the timeout, or crashed before hook.mjs
       // could answer): an ask, except in shadow and off, which never get in the way.
@@ -160,7 +163,8 @@ export default function (pi: any) {
     if (!["pass", "allow"].includes(d?.effective)) {   // ask, or an answer that is not a decision
       d = {effective: "ask", reason: d?.reason ?? "reflex error: the gate gave no decision; a human must review"};
       if (!ctx.hasUI) return {block: true, reason: `${d.reason}. Needs human approval and there is no UI to ask.`};
-      const ok = await ctx.ui.confirm("Reflex: run this command?", `${event.input.command}\n\n${d.reason}`);
+      const ok = tool ? await ctx.ui.confirm(`Reflex: run ${event.toolName}?`, `${JSON.stringify(event.input ?? {}).slice(0, 600)}\n\n${d.reason}`)
+        : await ctx.ui.confirm("Reflex: run this command?", `${event.input.command}\n\n${d.reason}`);
       if (!ok) {
         await gate("--record", {agent: AGENT, event: "denied", call_id: event.toolCallId, session_id: ctx.sessionManager?.getSessionId?.()});
         return {block: true, reason: `${d.reason}. The user declined.`};

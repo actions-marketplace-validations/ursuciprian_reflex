@@ -113,9 +113,13 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
       // Through hook.mjs (fails closed); the form before it still gates, but a crash while it loads passes.
       const entry = [`${quote(saved.node)} ${quote(join(saved.root, "hook.mjs"))} `, `${quote(saved.node)} `];
       const expected = entry.map(e => `${e}${quote(gate)} --${name} --mode ${saved.mode} --allow ${saved.allow}`);
-      const matcher = name === "claude" ? "Bash|Task|Agent" : "^(Bash|spawn_agent)$";
-      const pre = (JSON.parse(source).hooks?.PreToolUse ?? []).flatMap(g => g.matcher === matcher ? g.hooks ?? [] : []).filter(h => h.type === "command");
+      // the matcher before the tool gate (MCP tool calls, file writes) still gates commands
+      const matchers = name === "claude" ? ["^(Bash|Task|Agent|Edit|Write|MultiEdit|NotebookEdit)$|^mcp__", "Bash|Task|Agent"] : ["^(Bash|spawn_agent|apply_patch)$|^mcp__", "^(Bash|spawn_agent)$"];
+      const groups = JSON.parse(source).hooks?.PreToolUse ?? [];
+      const pre = groups.flatMap(g => matchers.includes(g.matcher) ? g.hooks ?? [] : []).filter(h => h.type === "command");
       item.configured = pre.some(h => expected.includes(h.command));
+      if (item.configured && !groups.some(g => g.matcher === matchers[0] && g.hooks?.some(h => expected.includes(h.command))))
+        warnings.push(`${name}: the gate hook in ${file} predates the tool gate: MCP tool calls and file writes are not checked. Re-run reflex setup --agents ${name}.`);
       if (item.configured && !pre.some(h => h.command === expected[0]))
         warnings.push(`${name}: the hooks in ${file} predate the fail-closed entry (hook.mjs): an error while Reflex loads would let the command run. Re-run reflex setup --agents ${name}.`);
       const post = entry.map(e => `${e}${quote(guard)} --${name} --mode ${saved.mode}`);
