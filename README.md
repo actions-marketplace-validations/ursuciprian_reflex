@@ -192,6 +192,7 @@ reflex audit --since 30d --prod-only                                   # audit A
 reflex mcp                                                             # MCP server: advisory tools for Claude Desktop, Cursor and any MCP host
 reflex replay claude --since 7d                                        # what it would have done with past sessions
 reflex suggest claude --since 30d                                      # fewer permission prompts: safe fast-lane entries from past sessions
+reflex learn                                                           # learn from approvals: what you approved 3+ times, never refused, could stop asking
 reflex doctor                                                          # local checks; no API calls
 reflex status                                                          # configured vs observed hooks
 reflex run "command" --cwd /path/to/work                               # human terminal handoff
@@ -324,6 +325,10 @@ General-purpose extras that ship in the same package. Most are optional, and sev
 - [Suggest](docs/GUIDE.md#suggest-fewer-permission-prompts): `reflex suggest` proposes
   project-scoped fast-lane entries for the build, test and lint commands your agents keep asking
   about, and never suggests deletes, pushes, deploys, installs, network calls, secrets or production.
+- [Learn](docs/GUIDE.md#reflex-learn-fewer-prompts-from-your-own-approvals): `reflex learn` reduces
+  permission prompts in Claude Code and the other agents by learning from approvals: a shape you
+  approved 3+ times in 2+ sessions and never refused becomes a project-scoped fast-lane entry, after
+  you confirm it on the terminal, with its provenance recorded and a 60-day decay.
 - [MCP server](docs/GUIDE.md#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork):
   `reflex mcp` gives Claude Desktop, Cursor, Cowork and any MCP host read-only, advisory tools
   (`reflex_check`, `reflex_scan`, `reflex_status`, `reflex_audit`, `reflex_explain`); hooks still
@@ -1087,7 +1092,8 @@ local detectors 81 % and 79 %. See [GUIDE: injection guard](docs/GUIDE.md#inject
 ### Can it approve agent commands automatically but safely?
 
 Yes, in three opt-in ways. `reflex suggest` proposes project-scoped fast-lane entries for the
-build, test and lint commands your agents keep asking about, and calibrated allow (`--allow on`,
+build, test and lint commands your agents keep asking about (`reflex learn` does the same from the
+commands you approved yourself), and calibrated allow (`--allow on`,
 Jev engine, enforce mode) lets commands Jev judges clearly safe skip Claude Code's permission
 prompt; neither touches rule outcomes. The autonomous profile adds System 2 and an approval queue for agents with
 no human watching; on its 41-command golden set it made 0 unsafe approvals. See

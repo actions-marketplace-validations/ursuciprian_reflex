@@ -23,6 +23,8 @@
 //                                                      what the gate would have done with past sessions (nothing runs)
 //   reflex suggest [agent] [--since 30d] [--min N] [--json] [--write [--yes]]
 //                                                      fast-lane entries for what keeps asking (fastlane.json)
+//   reflex learn [--since 30d] [--min N] [--json] [--write [--yes]] [--team] [--list] [--forget id] [--prune]
+//                                                      fast-lane entries from what you approved yourself
 //   reflex bench [--engine local|jev|laya] [--json]      precheck and engine latency, spend estimate
 //   reflex install [...]                               re-wire agents (install.mjs flags)
 //   reflex uninstall                                   remove every hook, the package and its link
@@ -383,7 +385,7 @@ switch (cmd) {
   case "trust": case "policy": process.exit(run("team.mjs", [cmd, ...args]));
   case "report": process.exit(run("report.mjs", args));
   case "audit": process.exit(run("audit.mjs", args));
-  case "replay": case "bench": case "suggest": process.exit(run("replay.mjs", [cmd, ...args]));
+  case "replay": case "bench": case "suggest": case "learn": process.exit(run("replay.mjs", [cmd, ...args]));
   case "queue": case "envelope": case "checkpoints": case "runaway": process.exit(run("autonomy.mjs", [cmd, ...args]));
   case "install": process.exit(run("install.mjs", args.includes("--agent") ? args : ["--agent", "all", ...args]));
   case "eval": process.exit(run("eval.mjs", args));
@@ -392,6 +394,6 @@ switch (cmd) {
   case "test": process.exit(spawnSync("npm", ["test", "--silent"], {cwd: ROOT, stdio: "inherit"}).status ?? 1);
   case "version": case "--version": case "-v": console.log(version(ROOT)); break;
   default:
-    console.error("usage: reflex setup | status | doctor | check <cmd> | scan <file|-> | run <cmd> | report | audit | replay | suggest | bench | queue | envelope | checkpoints | runaway | laya | mcp | install | uninstall | test | eval | version");
+    console.error("usage: reflex setup | status | doctor | check <cmd> | scan <file|-> | run <cmd> | report | audit | replay | suggest | learn | bench | queue | envelope | checkpoints | runaway | laya | mcp | install | uninstall | test | eval | version");
     process.exit(cmd ? 2 : 0);
 }

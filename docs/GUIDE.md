@@ -9,6 +9,7 @@
 3. [Rolling out: shadow, tune, enforce](#rolling-out-shadow-tune-enforce)
    - [Replay and bench](#replay-and-bench)
    - [Suggest: fewer permission prompts](#suggest-fewer-permission-prompts)
+   - [reflex learn: fewer prompts from your own approvals](#reflex-learn-fewer-prompts-from-your-own-approvals)
    - [Calibrated allow](#calibrated-allow)
 4. [Changing behaviour](#changing-behaviour)
    - [Read-only allowlist](#read-only-allowlist)
@@ -538,6 +539,91 @@ to `$` with no `.` wildcard, negated class, `\S`, `\W`, `\D`, `\x`, `\u`, `\p`, 
 class, range other than `a-z`, `A-Z` and `0-9`, repeated group across words, lookaround or backreference.
 One invalid entry and the whole file is ignored: nothing is widened on a parse error, and
 `reflex doctor` prints a warning that names the problem.
+
+### reflex learn: fewer prompts from your own approvals
+
+`reflex suggest` looks at what your agents ran. `reflex learn` looks at what you approved. It is the
+way to reduce permission prompts in Claude Code, Codex and the other agents Reflex gates by learning
+from approvals: a command shape you said yes to often enough, and never said no to, becomes a
+project-scoped fast-lane entry, after you confirm it. Nothing is learned automatically and nothing is
+written without a person at a terminal.
+
+```sh
+reflex learn                           # proposals, why, and the effect on your history; writes nothing
+reflex learn --since 60d --min 5 --json
+reflex learn --write                   # show the entries, ask on the terminal, append to fastlane.json
+reflex learn --write --yes             # the same without a terminal (scripts)
+reflex learn --list                    # learned entries: where they came from, uses, last use
+reflex learn --forget l-1a2b3c4d       # remove one learned entry
+reflex learn --prune                   # remove learned entries unused for 60 days
+reflex learn --team                    # a .reflex/policy.json fastlane snippet instead (reflex trust applies it)
+```
+
+**What counts as an answer.** Only a person's:
+
+- an approval queue item you approved or denied with `reflex queue approve|deny`;
+- a Reflex ask shown at the agent's prompt, then run (approved) or refused (the `denied` event);
+- a pass that met Claude Code's own permission dialog (the PermissionRequest record), then run;
+- an ask with no run and no answer after 10 minutes counts as refused or interrupted.
+
+A System 1 allow, a System 2 approve or deny and a command the fast lane or a rule decided are never
+answers, and neither are Hermes' own approval modes or Claude Code outside its default permission
+mode (`bypassPermissions`, `acceptEdits`, auto). The same command approved again in one session is
+one answer, so an "always allow" or a retry loop does not add up. Refusals count from any time,
+approvals only inside `--since`. Everything is read from Reflex's own logs (the queue, `trace.jsonl`, `feedback.jsonl`),
+`--since` 30 days by default.
+
+**When a shape is proposed.** The approved commands are grouped with `reflex suggest`'s templates
+(literal words, `\d+` for numbers, a repository-relative path for test runners and linters) and put
+through the same proof, so every check in [Suggest](#suggest-fewer-permission-prompts) applies: the
+denylist, no quotes, expansions, redirects or paths out of the repository, the Makefile, npm script
+and interpreter checks, the always-human class and the probes. On top of that, all of these hold:
+
+- approved at least `--min` times (default 3) in at least 2 sessions;
+- never refused or left unanswered in that shape: one refusal of `npm run verify --fix` holds
+  `^npm\s+run\s+verify$` back, whatever the approvals;
+- not production (the markers `prodTier` reads), not always-human, no denied word in the pattern;
+- the project is a git repository: approvals in a folder with no `.git` (`~/work`, `/tmp`) are
+  held back, since an entry there would cover every repository below it.
+
+A learned entry is pinned: `pin` holds the sha256 of each local script it runs (the package.json
+script, the whole Makefile, the shell file) as it was when you confirmed it. If one of them changes,
+the entry stops passing that command until you learn it again. A script body that runs inline
+interpreter code (`node -e`, `python -c`, `sh -c`, `deno eval`) never qualifies for the user fast
+lane, and one that calls Reflex (`reflex learn --write`, `reflex queue approve`) is a tamper ask even
+in the bundled fast lane.
+
+Destructive, production, secret, tamper, always-human, change freeze and MCP commands are never
+learned, however many times you approved them: a rule decides them before the fast lane, or the
+denylist refuses the template. An approval given during a change freeze does not count.
+
+Each proposal shows its id, the pattern, the project it is scoped to, how many times it was approved,
+in how many sessions and by which route, `denied 0`, up to three samples with credentials masked, the
+exact entry it would add, and why it is safe. Shapes held back are listed with the reason.
+
+**The effect.** `reflex learn` reruns the `reflex replay` classification over every command in your
+transcripts (all agents, read only) with and without the proposals, and prints humans per 100
+commands before and after. On the maintainer's own history (32,001 commands over 30 days, keyless)
+that was 50.4 before and 50.4 after: no proposals. The asks there are `python3 -c`, `sed -i`,
+`curl`, `gh api`, `node -e` and `git`, which are exactly the shapes that must never be learned, and
+the logs held few human answers. Expect it to help when your asks are the same build, test and lint
+commands.
+
+**Provenance and decay.** A learned entry in `~/.config/reflex/fastlane.json` carries `id`,
+`learned_at` and `learned_from` (approved and denied counts, sessions, first and last approval, and
+the routes). `--list` shows each with its uses and last use (fast-lane passes in the trace).
+`reflex doctor` flags a learned entry unused for 60 days; `--prune` removes those. `--forget` and
+`--prune` never touch an entry you wrote by hand.
+
+**Who can write.** `--write` shows the lines and asks on the terminal (not stdin, so an agent's pipe
+cannot answer); without one it needs `--yes`. When an agent runs `reflex learn --write`, `--forget`
+or `--prune`, the tamper rule asks a human, as it does for `reflex suggest --write`, and so does
+`reflex learn` or `reflex suggest` with its flags hidden in a variable, `"$@"`, `xargs`, `eval` or a
+function. `reflex status`
+adds a passive line, "N commands you approved 3+ times could stop asking: run reflex learn", and
+never writes. `--team` prints a `fastlane` list per repository for `.reflex/policy.json`; teammates
+apply it with `reflex trust`, as for any team fast lane. `reflex learn` is part of the CLI only; the
+Claude Code plugin does not ship it.
 
 ### Calibrated allow
 

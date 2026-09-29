@@ -6,6 +6,34 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `reflex learn`: fast-lane entries from what you approved yourself, to reduce permission prompts
+  over time. It reads only a human's answers (approval queue items approved or denied with `reflex
+  queue`, Reflex asks and Claude Code permission dialogs that then ran, refusals, and asks left
+  unanswered for 10 minutes), never a System 1 allow or a System 2 verdict. It reuses `reflex
+  suggest`'s templates and safety proof and proposes a shape only when it was approved `--min` times
+  (default 3) in at least 2 sessions and never refused, and is not production or always-human.
+  Destructive, prod, secret, tamper, freeze and MCP commands are never learned. It prints the humans
+  per 100 commands before and after on your transcripts. `--write` asks on the terminal (or needs
+  `--yes`) and records `id`, `learned_at` and `learned_from` per entry; `--list`, `--forget <id>` and
+  `--prune` review and remove learned entries; `--team` prints a `.reflex/policy.json` fastlane
+  snippet. `reflex status` notes how many approved shapes could stop asking; `reflex doctor` flags
+  learned entries unused for 60 days. An agent running `reflex learn --write`, `--forget` or
+  `--prune` gets a tamper ask. CLI only: the Claude Code plugin does not ship it. On the maintainer's
+  history (32,001 commands, 30 days, keyless) it proposed nothing: 50.4 humans per 100 before and
+  after, because the commands that ask there are interpreters, `sed -i`, `curl`, `gh` and `git`.
+  A learned entry is pinned to the sha256 of the scripts it runs; an edited script stops passing.
+
+### Security
+
+- User fast lane: a script body with inline interpreter code (`node -e`, `python -c`, `sh -c`,
+  `deno eval`) no longer qualifies, and `reflex` and the gate's entry points are denied words.
+- Tamper: a local script (package.json script, Makefile recipe, shell file) that runs `reflex setup`,
+  `reflex queue approve|deny`, `reflex suggest --write` or `reflex learn --write` is a tamper ask,
+  also in the bundled fast lane (`npm run lint`). `reflex suggest` or `reflex learn` with its flags in
+  a variable, `"$@"`, `xargs`, `eval` or a function is a tamper ask too.
+
 ### Fixed
 
 - Plugin bundle: the stripped gate, run without `--plugin` and with no key source, no longer calls the Jev provider without a key; it asks. A test checks that no request is sent.

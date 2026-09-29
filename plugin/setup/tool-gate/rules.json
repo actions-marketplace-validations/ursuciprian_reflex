@@ -181,7 +181,7 @@
     "^git\\s+restore\\s+--staged(\\s+((?!-)[\\w./-]+|''))+$",
     "^git\\s+push\\s+(-u\\s+|--set-upstream\\s+)?origin\\s+(?!-)(?!(main|master|release|prod)\\b)[\\w./-]+$",
     "^reflex\\s+(status|queue(\\s+(list|show)(\\s+[\\w-]+)?)?|envelope\\s+show|checkpoints(\\s+list)?)(\\s+--(json|cwd\\s+\\S+|session\\s+\\S+))*\\s*$",
-    "^reflex\\s+(check\\s+(''|\\\\')+|report(\\s+--(since\\s+\\d+|list\\s+(ask|deny|pass)|calibration))*|replay(\\s+(claude|codex|opencode|pi|omp|all))?(\\s+--since\\s+\\d+[dhw]?)?|suggest(\\s+(claude|codex|opencode|pi|omp|all))?(\\s+--(since\\s+\\d+[dhw]?|min\\s+\\d+))*)(\\s+--json)?\\s*$"
+    "^reflex\\s+(check\\s+(''|\\\\')+|report(\\s+--(since\\s+\\d+|list\\s+(ask|deny|pass)|calibration))*|replay(\\s+(claude|codex|opencode|pi|omp|all))?(\\s+--since\\s+\\d+[dhw]?)?|suggest(\\s+(claude|codex|opencode|pi|omp|all))?(\\s+--(since\\s+\\d+[dhw]?|min\\s+\\d+))*|learn(\\s+--(since\\s+\\d+[dhw]?|min\\s+\\d+|list|team))*)(\\s+--json)?\\s*$"
   ],
   "tainted": [
     {

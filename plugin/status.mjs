@@ -269,8 +269,10 @@ if (hook_errors.last) {
   (hook_errors.gate ? errors : warnings).push(`${hookErrors.length} Reflex hook error${hookErrors.length === 1 ? "" : "s"} in the last 24 h, ${hook_errors.gate} in the pre-execution gate; last ${ago} min ago: ${l.script} ${l.flag} (${l.mode} mode) answered ${l.outcome}: ${l.error}.` +
     `${hookErrors.some(e => e.outcome === "pass" && e.mode === "shadow") ? " In shadow mode a broken gate checks nothing, deterministic rules included." : ""} Log: ${errorsFile}.`);
 }
+// reflex learn (learn.mjs, CLI only): what your own approvals could stop asking, and learned entries gone unused.
+let learned = null;
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? `Jev via ${provider.name} (${provider.host}) + policy` : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, provider, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, hook_errors, team_policy, freeze, notify, infra, agents, errors, warnings};
+  policy, provider, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, hook_errors, learned, team_policy, freeze, notify, infra, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
