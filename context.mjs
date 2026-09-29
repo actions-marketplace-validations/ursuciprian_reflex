@@ -495,6 +495,7 @@ export function reviewPrompt(b) {
   ].filter(Boolean).join("\n\n");
 }
 
+// @reflex:setup-only begin
 // ---------------------------------------------------------------------------------------------
 async function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
@@ -759,17 +760,20 @@ async function evalContext() {
               `hidden ${mean("hidden_pct")} % on average · ${results.reduce((s, r) => s + r.tokens, 0)} input tokens · model ${CONFIG.model}`);
   if (kept < want) process.exitCode = 1;
 }
+// @reflex:setup-only end
 
 const argv = process.argv.slice(2);
 const opt = n => { const i = argv.indexOf(n); return i > -1 ? argv[i + 1] : undefined; };
 // No top-level await: the selfcheck imports the pi adapter, which imports this module again, and
 // that import would wait forever on a module still evaluating.
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) (async () => {
-  if (argv.includes("--selfcheck")) await selfcheck();
-  else if (argv.includes("--smoke")) await smoke();
-  else if (argv.includes("--eval-context")) await evalContext();
-  else if (argv.includes("--prune")) console.log(JSON.stringify(pruneChunks()));
+  if (argv.includes("--prune")) console.log(JSON.stringify(pruneChunks()));
   else if (argv.includes("--expand")) console.log(expandChunk(opt("--expand"), opt("--lines")));
   else if (argv.includes("--bundle")) console.log(writeBundle(await bundle({base: opt("--base") ?? "HEAD", goal: opt("--goal")}), opt("--out")));
+  // @reflex:setup-only begin
+  else if (argv.includes("--selfcheck")) await selfcheck();
+  else if (argv.includes("--smoke")) await smoke();
+  else if (argv.includes("--eval-context")) await evalContext();
+  // @reflex:setup-only end
   else console.error("usage: context.mjs --selfcheck | --smoke | --eval-context | --prune | --expand <id> [--lines a-b] | --bundle [--base REF] [--goal T] [--out F]");
 })().catch(e => { console.error(`reflex context: ${e.message}`); process.exitCode = 1; });

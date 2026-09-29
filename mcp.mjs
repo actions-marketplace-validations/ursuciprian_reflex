@@ -326,6 +326,7 @@ export function serve(input = process.stdin) {
 }
 
 const main = process.argv[1] && fileURLToPath(import.meta.url) === (() => { try { return realpathSync(process.argv[1]); } catch { return process.argv[1]; } })();
+// @reflex:setup-only begin
 // ---------------------------------------------------------------------------------------------
 // The selfcheck (npm test): a real server process in a scratch home, over its stdio.
 async function selfcheck() {
@@ -446,11 +447,15 @@ async function selfcheck() {
     console.log("mcp selfcheck OK");
   } finally { clearTimeout(kill); server.kill("SIGKILL"); rmSync(scratch, {recursive: true, force: true}); rmSync(aux, {recursive: true, force: true}); }
 }
+// @reflex:setup-only end
 
-if (process.argv.includes("--selfcheck")) await selfcheck().catch(e => { console.error(e); console.log("mcp selfcheck FAILED"); process.exitCode = 1; });
-else if (process.argv.includes("--mcp-tool")) {
+if (process.argv.includes("--mcp-tool")) {
   const {name, args} = JSON.parse(readFileSync(0, "utf8"));
   Promise.resolve().then(() => RUN[name](args))
     .then(r => process.stdout.write("\n" + JSON.stringify(r) + "\n"))
     .catch(e => { process.stderr.write(`reflex mcp: ${e.message}\n`); process.stdout.write("\n" + JSON.stringify({error: "the tool failed"}) + "\n"); });
-} else if (main) serve();
+}
+// @reflex:setup-only begin
+else if (process.argv.includes("--selfcheck")) await selfcheck().catch(e => { console.error(e); console.log("mcp selfcheck FAILED"); process.exitCode = 1; });
+// @reflex:setup-only end
+else if (main) serve();

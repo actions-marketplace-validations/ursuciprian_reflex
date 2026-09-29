@@ -5,7 +5,7 @@
 // Claude Code (plugin.json userConfig; Claude Code gives hooks each one as CLAUDE_PLUGIN_OPTION_<KEY>,
 // and .mcp.json hands the same names to the MCP server) and Reflex's own config files
 // (~/.config/reflex/). Never the macOS Keychain, never a key that is already in the environment
-// (TYPESAFE_API_KEY and the other providers' variables), never the REFLEX_* overrides (only
+// (no *_API_KEY or *_API_TOKEN variable, the providers' included), never the REFLEX_* overrides (only
 // REFLEX_DATA_DIR, where the logs go, is kept). The plugin's commands run through the Bash tool,
 // which gets no plugin options: they read config.json only. The allow gate
 // is off: a plugin hook only tightens, it never answers "allow" and never rewrites a tool's input.
@@ -13,7 +13,6 @@
 // gate.mjs imports this module first (guard.mjs, instructions.mjs and status.mjs too), so every module
 // after it sees the cleaned environment, and so does every child it starts. The Codex CLI plugin
 // (--codex hooks) is not this: it keeps reading the environment as before.
-import {PROVIDERS} from "./providers.mjs";
 
 const E = process.env, argv = process.argv;
 export const PLUGIN_FLAG = argv.includes("--plugin");
@@ -23,10 +22,10 @@ export const option = key => E[`CLAUDE_PLUGIN_OPTION_${key}`]?.trim() || undefin
 // What the plugin must not take from the environment: every REFLEX_* setting (engine, mode, allow,
 // endpoint, policy directory, guard, judge, queue...) but where its logs go, every JEV_* variable,
 // and every variable a key is read from.
-const SCRUB = new Set(["CLOUDFLARE_ACCOUNT_ID", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", ...Object.values(PROVIDERS).flatMap(p => p.env)]);
+export const KEY_VAR = /_API_(KEY|TOKEN)$|^CLOUDFLARE_ACCOUNT_ID$/;   // every provider key variable and the System 2 ones (test.mjs checks)
 const KEEP = new Set(["REFLEX_PLUGIN", "REFLEX_DATA_DIR"]);
 // REFLEX_NOTIFY=off can only silence the webhook (the doctor's probes set it), so it stays too.
-const scrubbed = k => SCRUB.has(k) || k.startsWith("JEV_") || (k.startsWith("REFLEX_") && !KEEP.has(k) && !(k === "REFLEX_NOTIFY" && E[k] === "off"));
+const scrubbed = k => (KEY_VAR.test(k) && !k.startsWith("CLAUDE_PLUGIN_OPTION_")) || k.startsWith("JEV_") || (k.startsWith("REFLEX_") && !KEEP.has(k) && !(k === "REFLEX_NOTIFY" && E[k] === "off"));
 /** Hooks get every option as CLAUDE_PLUGIN_OPTION_<KEY>; a command Claude runs with the Bash tool gets none. */
 export const OPTIONS_VISIBLE = Object.keys(E).some(k => k.startsWith("CLAUDE_PLUGIN_OPTION_"));
 export const PLUGIN_ENGINES = ["local", "jev"];

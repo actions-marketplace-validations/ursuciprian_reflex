@@ -1500,7 +1500,7 @@ const LAUNCH = [
 // Names a script file without matching a launcher above (python3 -W ignore x.py): unseen.
 const NAMES_SCRIPT = new RegExp(String.raw`^${INTERP}\b.*\s["']?[^\s"']+\.(py|[cm]?[jt]s|sh|bash|rb|pl|php)\b`);
 const PREFIX = /^((\w+=\S*|rtk(\s+proxy)?|timeout(\s+-[sk]\s+\S+|\s+-\S+)*\s+\S+|time|nohup|command|exec|nice(\s+-n\s*-?\d+|\s+-\d+)?|xargs(\s+-\S+)*|env(\s+-\S+|\s+\w+=\S*)*|sudo(\s+(-[ugCDhRTp]\s+\S+|-\S+))*|doas(\s+-u\s+\S+)?|stdbuf(\s+-\S+)*|caffeinate(\s+-\S+)*|watch(\s+-n\s*\S+|\s+-\S+)*)\s+)+/;
-// A shell or interpreter reading its program from a pipe (`curl … | bash`, `cat x.sh | sh`) runs code nobody read.
+// A shell or interpreter reading its program from a pipe (a download piped to bash, `cat x.sh | sh`) runs code nobody read.
 const FROM_STDIN = /^(?:(?:ba|z|da|k)?sh|python[\d.]*|node|ruby|perl)(?:\s+-[a-zA-Z]+)*\s*(?:-\s*)?$/;
 // An earlier step that could have written the file this one runs: what is on disk now is not what will run.
 const WRITES = /(>|\s-o\s|--output|\btee\b|\bcp\b|\bmv\b|\bcurl\b|\bwget\b|\bsed\s+-i|\bgit\s+(checkout|pull|apply|restore)\b|\bpatch\b|\bunzip\b|\btar\b)/;
@@ -1668,7 +1668,7 @@ export function localScripts(command, cwd, depth = 0) {
         named = true;
       } else named = NAMES_SCRIPT.test(seg) || INTERP_ARG.test(seg);
     }
-    // Written by an earlier step of the same command (curl -o x.sh && bash x.sh): not what will run.
+    // Written by an earlier step of the same command (a download saved as x.sh, then bash x.sh): not what will run.
     const name = path && path.split("/").pop();
     if (got && name && before.some(b => b.includes(name) && WRITES.test(b))) got = null;
     before.push(raw);
@@ -2082,6 +2082,7 @@ function apiKey() {
     if (k) return k;
     throw new Error(`no API key for ${CONFIG.provider}: set the Jev API key in the Reflex plugin options (/plugin, reflex, Configure)`);
   }
+  // @reflex:setup-only begin
   if (KEYS[CONFIG.provider]) return KEYS[CONFIG.provider];
   const p = PROVIDERS[CONFIG.provider], env = p.env.map(n => ENV[n]?.trim()).find(Boolean);
   if (env) return (KEYS[CONFIG.provider] = env);
@@ -2094,6 +2095,7 @@ function apiKey() {
     } catch { /* fall through */ }
   }
   throw new Error(`no API key for ${CONFIG.provider}: set ${p.env.join(" or ")} or keychain item "${item}"`);
+  // @reflex:setup-only end
 }
 
 // Each provider's key goes to that provider's host only, checked on every call (keyRouteError):
@@ -2190,7 +2192,7 @@ export async function jevJudge({command, cwd, env, session = {}, useCache = true
     : policy.decide(res.answers, policy.values());
   // Allow needs Jev to have seen everything that matters, fresh: a cached answer has lost on_task;
   // without a stated intent on_task is "yes" by default; redaction can hide a payload such as
-  // --token "$(curl … | sh)"; and a home or root cwd makes "inside the working directory" meaningless.
+  // --token "$(a download piped to sh)"; and a home or root cwd makes "inside the working directory" meaningless.
   // Code the command runs that Jev did not see in full (unread, cut, redacted, a make target, a
   // package fetched or installed) makes its answer one about a name. Only an allow gate allows: a
   // policy whose default outcome is allow would otherwise allow whatever no gate caught.
@@ -2597,7 +2599,11 @@ async function claudePre(input) {
 }
 // pass is silent: Claude Code's own permission rules decide. allow skips its prompt, but its deny
 // and ask rules are still evaluated after the hook. The plugin never allows: its allow is a pass.
-const claudeOut = d => (PLUGIN_MODE ? ["ask", "deny"] : ["allow", "ask", "deny"]).includes(d.effective) ? {hookSpecificOutput: {hookEventName: "PreToolUse",
+const EMITTED = ["ask", "deny"];
+// @reflex:setup-only begin
+if (!PLUGIN_MODE) EMITTED.unshift("allow");
+// @reflex:setup-only end
+const claudeOut = d => EMITTED.includes(d.effective) ? {hookSpecificOutput: {hookEventName: "PreToolUse",
   permissionDecision: d.effective, permissionDecisionReason: d.reason}} : null;
 function claudePost(input) {
   if (input.tool_name && !["Bash", "Task", "Agent"].includes(input.tool_name)) return;
@@ -2686,6 +2692,7 @@ function hermesPost(input) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// @reflex:setup-only begin
 async function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
   // read-only detection: readOnlyLegacy's cases, as before ("readonly": "legacy"). Every command
@@ -3611,6 +3618,7 @@ async function selfcheck() {
       ok(readOnlySimple(c, pass), `fast lane (review): ${c}`); }
   console.log(process.exitCode ? "gate selfcheck FAILED" : "gate selfcheck OK");
 }
+// @reflex:setup-only end
 
 const readStdin = () => JSON.parse(readFileSync(0, "utf8"));
 // ask needs a human: read y/N from the controlling terminal; no terminal means no approval.
@@ -3632,7 +3640,9 @@ const main = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[
 const guarded = fn => Promise.resolve().then(fn).catch(hookFailure);
 
 if (!main) { /* imported as a library */ }
+// @reflex:setup-only begin
 else if (flag("--selfcheck")) await selfcheck();
+// @reflex:setup-only end
 else if (flag("--claude")) await guarded(async () => claudePre(readStdin()));
 else if (flag("--claude-post")) await guarded(async () => claudePost(readStdin()));
 else if (flag("--claude-prompted")) await guarded(async () => claudePrompted(readStdin()));

@@ -5,10 +5,13 @@ description: How to work with the Reflex pre-execution gate in Claude Code or Co
 
 Reflex judges every shell command and subagent spawn before it runs (PreToolUse hook) and screens
 web, MCP and Read results and user prompts for prompt injection. In the Claude Code plugin, run its
-scripts with `node` from the plugin directory, as below. If a script path below is not an absolute
+scripts with `node` from the plugin directory, as below.
+<!-- @reflex:setup-only begin -->
+If a script path below is not an absolute
 path (Codex CLI does not fill in the plugin root), the same commands are `reflex check`,
 `reflex replay`, `reflex status` and `reflex report`, available after `npm install -g @ursuciprian/reflex`;
 if `reflex` is not found, tell the user and do not search the disk for it.
+<!-- @reflex:setup-only end -->
 
 When to use which command:
 

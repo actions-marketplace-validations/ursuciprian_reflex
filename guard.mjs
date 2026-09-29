@@ -572,7 +572,7 @@ export function checkPrompt({agent, prompt, session_id}) {
 // ---------------------------------------------------------------------------------------------
 // Adapters.
 // Every string in a JSON value, in order, and the same value with them replaced: a rewrite keeps
-// the tool's output shape (Claude Code drops an updatedToolOutput that does not match it).
+// the tool's output shape (Claude Code drops a rewritten result that does not match it).
 // Keys are read too when they are text rather than names (an MCP server's structured output can
 // carry a sentence as a key: the model reads it). Content-block tags, MIME types and the bytes of
 // an image or audio block are not text anyone reads: never scanned, never sent to Jev.
@@ -604,7 +604,7 @@ export function lastPrompt(path) {
   return last;
 }
 // Claude Code PostToolUse: warn adds context next to the result; block also replaces the result
-// (updatedToolOutput, same shape, offending text removed). The Claude Code plugin never rewrites a
+// (a rewritten result, same shape, offending text removed). The Claude Code plugin never rewrites a
 // tool's result: a block there is the warning only (additionalContext), and the session is tainted as
 // with any block, so the gate is stricter for the commands that follow.
 async function claudePost(input) {
@@ -618,9 +618,15 @@ async function claudePost(input) {
   const out = claudeOut(d, input.tool_response);
   if (out) process.stdout.write(JSON.stringify(out));
 }
-export const claudeOut = (d, response) => d.effective === "pass" ? null : {hookSpecificOutput: {hookEventName: "PostToolUse",
-  additionalContext: d.note, ...(d.texts && !PLUGIN_MODE && {updatedToolOutput: replaceStrings(response, d.texts)})}};
-// Codex PostToolUse cannot rewrite a result (updatedMCPToolOutput fails the hook). decision "block"
+export function claudeOut(d, response) {
+  if (d.effective === "pass") return null;
+  const out = {hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: d.note}};
+  // @reflex:setup-only begin
+  if (d.texts && !PLUGIN_MODE) out.hookSpecificOutput.updatedToolOutput = replaceStrings(response, d.texts);
+  // @reflex:setup-only end
+  return out;
+}
+// Codex PostToolUse cannot rewrite a result (a rewritten MCP result fails the hook). decision "block"
 // replaces what the model sees with the reason, so a block puts the neutralised text there.
 async function codexPost(input) {
   const texts = strings(input.tool_response);
@@ -670,6 +676,7 @@ async function hermesLlm(input) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// @reflex:setup-only begin
 async function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
   // Fake credentials are assembled at runtime, so secret scanners do not flag this file.
@@ -1013,6 +1020,7 @@ async function evalGolden() {
   try { append(out.replace(/\.json$/, ".jsonl"), results); console.log(`details ${out.replace(/\.json$/, ".jsonl")}`); } catch { /* optional */ }
   if (n(r => r.verdict === "MISS")) process.exitCode = 1;
 }
+// @reflex:setup-only end
 
 // ---------------------------------------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -1026,6 +1034,7 @@ const guarded = fn => Promise.resolve().then(fn).catch(hookFailure);
 const emit = o => o && process.stdout.write(JSON.stringify(o));
 
 if (!main) { /* imported */ }
+// @reflex:setup-only begin
 // The self-check writes logs and taint: it reruns itself with a scratch data dir and settings.
 else if (flag("--selfcheck") && !ENV.REFLEX_GUARD_SELFCHECK) {
   const data = mkdtempSync(join(tmpdir(), "reflex-guard-"));
@@ -1038,6 +1047,7 @@ else if (flag("--selfcheck") && !ENV.REFLEX_GUARD_SELFCHECK) {
 }
 else if (flag("--selfcheck")) await selfcheck();
 else if (flag("--eval")) await evalGolden();
+// @reflex:setup-only end
 else if (flag("--claude")) await guarded(async () => claudePost(readStdin()));
 else if (flag("--codex")) await guarded(async () => codexPost(readStdin()));
 else if (flag("--claude-prompt") || flag("--codex-prompt")) await guarded(async () => {

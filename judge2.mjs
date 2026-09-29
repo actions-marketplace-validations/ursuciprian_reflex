@@ -55,6 +55,7 @@ export function onPath(bin, path = ENV.PATH ?? "") {
 // In the Claude Code plugin: the System 2 API key plugin option only.
 export function judgeKey(j = CONFIG.judge) {
   if (PLUGIN_MODE) return pluginJudgeKey();
+  // @reflex:setup-only begin
   if (j.key_env && ENV[j.key_env]?.trim()) return ENV[j.key_env].trim();
   if (j.keychain && platform() === "darwin") {
     try {
@@ -62,6 +63,7 @@ export function judgeKey(j = CONFIG.judge) {
                           {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1500}).trim() || null;
     } catch { /* no item */ }
   }
+  // @reflex:setup-only end
   return null;
 }
 const headers = (j, key) => j.backend === "anthropic"
@@ -447,6 +449,7 @@ if (mark === "slow") setTimeout(reply, 4000); else reply();
 }
 
 // ---------------------------------------------------------------------------------------------
+// @reflex:setup-only begin
 async function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
   // strict parsing
@@ -588,12 +591,15 @@ async function selfcheck() {
   }
   console.log(process.exitCode ? "judge2 selfcheck FAILED" : "judge2 selfcheck OK");
 }
+// @reflex:setup-only end
 
 const argv = process.argv.slice(2);
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  if (argv.includes("--selfcheck")) await selfcheck();
-  else if (argv.includes("--stub")) console.log((await stubServer({approveAll: argv.includes("--approve-all")})).url);
+  if (argv.includes("--stub")) console.log((await stubServer({approveAll: argv.includes("--approve-all")})).url);
   else if (argv.includes("--fake-cli")) console.log(writeFakeClis(argv[argv.indexOf("--fake-cli") + 1], {approveAll: argv.includes("--approve-all")}));
   else if (argv.includes("--probe")) console.log(JSON.stringify(await probe()));
+  // @reflex:setup-only begin
+  else if (argv.includes("--selfcheck")) await selfcheck();
+  // @reflex:setup-only end
   else console.error("usage: judge2.mjs --selfcheck | --stub [--approve-all] | --fake-cli <dir> | --probe");
 }
