@@ -27,9 +27,10 @@
 // its policy file, count only when owned by the current user (git's safe.directory idea), so another
 // account cannot plant /tmp/.git and /tmp/.reflex. A .reflex in a directory without .git is never read.
 //
-//   reflex trust [dir] | reflex trust --revoke [dir] | reflex policy [dir] | reflex policy init [dir]
+//   reflex trust [dir] | reflex trust --revoke [dir] | reflex policy [dir] | reflex policy init [dir] [--pack <name>]
+//   (a pack is a ready policy from examples/policies/: aws, eks, terraform, startup-default)
 import {createHash} from "node:crypto";
-import {closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, writeFileSync, writeSync} from "node:fs";
+import {closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, writeFileSync, writeSync} from "node:fs";
 import {homedir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -283,17 +284,22 @@ function confirm(question) {
   return answer.trim() === "trust";
 }
 
+export const PACKS = join(dirname(fileURLToPath(import.meta.url)), "examples/policies");
 function main(argv) {
-  const [cmd, ...rest] = argv, init = cmd === "policy" && rest[0] === "init";
+  const [cmd, ...args] = argv, init = cmd === "policy" && args[0] === "init";
+  const p = args.indexOf("--pack"), pack = init && p > -1 ? args[p + 1] ?? "" : null;
+  const rest = p > -1 ? args.filter((_, i) => i !== p && i !== p + 1) : args;
   const target = resolve((init ? rest.slice(1) : rest).find(a => !a.startsWith("--")) ?? ".");
   const root = repoRoot(target);
   if (!root) die(`${target} is not inside a git repository; a team policy lives at the repository root`);
   if (init) {
     const file = join(root, ".reflex/policy.json");
-    if (existsSync(file)) die(`${file} already exists`);
+    const packs = readdirSync(PACKS).filter(f => f.endsWith(".json")).map(f => f.slice(0, -5)).sort();
+    if (pack !== null && !packs.includes(pack)) die(`unknown pack "${pack}"; packs: ${packs.join(", ")}`);
+    if (existsSync(file)) die(`${file} already exists; it is never overwritten`);
     mkdirSync(dirname(file), {recursive: true});
-    writeFileSync(file, JSON.stringify(STARTER, null, 2) + "\n", {flag: "wx"});
-    return say(`wrote ${file}: stricter checks only. Edit it, commit it, and every teammate's Reflex applies it here.`);
+    writeFileSync(file, pack ? readFileSync(join(PACKS, `${pack}.json`), "utf8") : JSON.stringify(STARTER, null, 2) + "\n", {flag: "wx"});
+    return say(`wrote ${file}${pack ? ` from the ${pack} pack` : ""}: stricter checks only. Edit it, commit it, and every teammate's Reflex applies it here.`);
   }
   const t = teamPolicy(root);
   if (cmd === "policy") {
@@ -301,7 +307,7 @@ function main(argv) {
     return argv.includes("--json") ? console.log(JSON.stringify({...t, fastlane: undefined, rules: t.rules.map(r => r.id), always_human: t.always_human.map(r => r.id), notify: t.notify && targetLabel(t.notify), notify_target: t.notify_target && targetLabel(t.notify_target)}, null, 1)) : describe(t).forEach(l => say(l));
   }
   if (cmd === "trust" && rest.includes("--revoke")) { trustRepo(root, null); return say(`${root}: trust removed; its team fast lane is off`); }
-  if (cmd !== "trust") die("usage: reflex trust [dir] | reflex trust --revoke [dir] | reflex policy [dir] [--json] | reflex policy init [dir]");
+  if (cmd !== "trust") die("usage: reflex trust [dir] | reflex trust --revoke [dir] | reflex policy [dir] [--json] | reflex policy init [dir] [--pack aws|eks|terraform|startup-default]");
   if (!t || t.root !== root) die(`no team policy in ${root}`);
   if (t.errors.length || !t.sha256) { describe(t).forEach(l => console.error(l)); die("fix the team policy before trusting it"); }
   if (broad(root)) die(`${root} is your home or /; a team fast lane there would cover every project`);
