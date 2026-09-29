@@ -12,6 +12,7 @@ import {breaker, listItems, runawayTrips} from "./autonomy.mjs";
 import {health as layaHealth} from "./laya.mjs";
 import {FASTLANE_FILE, loadFastLane} from "./fastlane.mjs";
 import {teamPolicy} from "./team.mjs";
+import {infraSettings, which} from "./infra.mjs";
 import {inWindow} from "./freeze.mjs";
 import {targetLabel, testTargets} from "./notify.mjs";
 
@@ -39,6 +40,11 @@ const team_policy = tp && {file: tp.file, sha256: tp.sha256, trust: tp.trust, fa
 if (tp?.errors.length) warnings.push(`Team policy ${tp.file} is invalid: ${tp.errors.join("; ")}. Its valid stricter parts apply; its fast lane does not.`);
 if (tp?.trust === "changed") warnings.push(`Team policy ${tp.file} changed since you trusted it: its fast lane is off until you review it and run reflex trust again.`);
 if (tp?.mode === "enforce" && CONFIG.mode === "shadow") warnings.push(`Team policy sets a mode floor: enforce applies in ${tp.root}.`);
+// The plan-aware infra gate (infra.mjs): which binaries it would read plans and diffs with.
+const infraSet = infraSettings(USER_CONFIG.infra, tp?.infra);
+const infra = {enabled: infraSet.enabled, destroy: infraSet.destroy, require_plan_in_prod: infraSet.require_plan_in_prod, kubectl_diff: infraSet.kubectl_diff,
+  timeout_ms: infraSet.timeout_ms, terraform: which("terraform"), kubectl: which("kubectl")};
+if (infra.enabled && infra.kubectl_diff && !infra.kubectl) warnings.push("infra.kubectl_diff is on but kubectl is not on PATH: kubectl changes are judged by the command text only.");
 if (CONFIG.mode === "shadow") warnings.push("Shadow mode enforces deterministic rules. Other decisions are logged without blocking.");
 // Change freezes (freeze.mjs): config.json and this directory's team policy, checked against the clock now.
 const windows = [...CONFIG.freeze.windows, ...(tp?.freeze ?? [])], onNow = windows.filter(w => inWindow(w, new Date()));
@@ -86,12 +92,16 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
   } else if (files[name]) try {
     const file = files[name], source = readFileSync(file, "utf8");
     if (["claude", "codex"].includes(name)) {
-      const expected = `${quote(saved.node)} ${quote(gate)} --${name} --mode ${saved.mode} --allow ${saved.allow}`;
+      // Through hook.mjs (fails closed); the form before it still gates, but a crash while it loads passes.
+      const entry = [`${quote(saved.node)} ${quote(join(saved.root, "hook.mjs"))} `, `${quote(saved.node)} `];
+      const expected = entry.map(e => `${e}${quote(gate)} --${name} --mode ${saved.mode} --allow ${saved.allow}`);
       const matcher = name === "claude" ? "Bash|Task|Agent" : "^(Bash|spawn_agent)$";
-      item.configured = (JSON.parse(source).hooks?.PreToolUse ?? []).some(g => g.matcher === matcher &&
-        g.hooks?.some(h => h.type === "command" && h.command === expected));
-      const post = `${quote(saved.node)} ${quote(guard)} --${name} --mode ${saved.mode}`;
-      item.guard = (JSON.parse(source).hooks?.PostToolUse ?? []).some(g => g.hooks?.some(h => h.type === "command" && h.command === post));
+      const pre = (JSON.parse(source).hooks?.PreToolUse ?? []).flatMap(g => g.matcher === matcher ? g.hooks ?? [] : []).filter(h => h.type === "command");
+      item.configured = pre.some(h => expected.includes(h.command));
+      if (item.configured && !pre.some(h => h.command === expected[0]))
+        warnings.push(`${name}: the hooks in ${file} predate the fail-closed entry (hook.mjs): an error while Reflex loads would let the command run. Re-run reflex setup --agents ${name}.`);
+      const post = entry.map(e => `${e}${quote(guard)} --${name} --mode ${saved.mode}`);
+      item.guard = (JSON.parse(source).hooks?.PostToolUse ?? []).some(g => g.hooks?.some(h => h.type === "command" && post.includes(h.command)));
     } else {
       item.configured = source.includes(JSON.stringify(gate)) && source.includes(JSON.stringify(saved.node)) &&
         source.includes(JSON.stringify(saved.mode)) && source.includes(JSON.stringify(saved.allow));
@@ -116,7 +126,7 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
         const input = native ? {tool_name: "Bash", tool_input: {command}, cwd: scratch, session_id: "reflex-doctor"}
           : {agent: name, command, cwd: scratch, session_id: "reflex-doctor"};
         // Input is only judged, never executed. Probe records live in a disposable directory.
-        const result = spawnSync(saved.node, [gate, native ? `--${name}` : "--decide", "--mode", saved.mode, "--allow", saved.allow], {
+        const result = spawnSync(saved.node, [...(existsSync(join(saved.root, "hook.mjs")) ? [join(saved.root, "hook.mjs")] : []), gate, native ? `--${name}` : "--decide", "--mode", saved.mode, "--allow", saved.allow], {
           encoding: "utf8", timeout: 10000, input: JSON.stringify(input),
           env: {...process.env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: scratch}});
         let effective;
@@ -275,8 +285,19 @@ if (pending.length) warnings.push(`${pending.length} item${pending.length === 1 
 const trips = runawayTrips(Date.now() - 36e5);
 const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
 if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
+// Hook errors (failsafe.mjs): a hook that broke and answered ask, block, pass (shadow) or a warning instead of a decision.
+const errorsFile = join(CONFIG.data, "health", "errors.jsonl");
+let hookErrors = [];
+try { hookErrors = readFileSync(errorsFile, "utf8").split("\n").flatMap(l => { try { const e = JSON.parse(l); return Date.parse(e.at) > Date.now() - 864e5 ? [e] : []; } catch { return []; } }); }
+catch { /* no hook has failed */ }
+const hook_errors = {last_day: hookErrors.length, gate: hookErrors.filter(e => e.script === "gate.mjs" && !/post|prompted|record|bg/.test(e.flag)).length, last: hookErrors.at(-1) ?? null, file: errorsFile};
+if (hook_errors.last) {
+  const l = hook_errors.last, ago = Math.round((Date.now() - Date.parse(l.at)) / 60e3);
+  (hook_errors.gate ? errors : warnings).push(`${hookErrors.length} Reflex hook error${hookErrors.length === 1 ? "" : "s"} in the last 24 h, ${hook_errors.gate} in the pre-execution gate; last ${ago} min ago: ${l.script} ${l.flag} (${l.mode} mode) answered ${l.outcome}: ${l.error}.` +
+    `${hookErrors.some(e => e.outcome === "pass" && e.mode === "shadow") ? " In shadow mode a broken gate checks nothing, deterministic rules included." : ""} Log: ${errorsFile}.`);
+}
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, freeze, notify, agents, errors, warnings};
+  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, hook_errors, team_policy, freeze, notify, infra, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
@@ -288,6 +309,8 @@ else {
   console.log(`Team policy: ${team_policy ? `${team_policy.file}; ${team_policy.trust}${team_policy.valid ? "" : ", INVALID"}; sha256 ${team_policy.sha256?.slice(0, 12) ?? "unreadable"}; ` +
     `rules ${team_policy.rules}, always-human ${team_policy.always_human}, prod markers ${team_policy.prod_markers}, mode floor ${team_policy.mode_floor ?? "none"}, ` +
     `freezes ${team_policy.freezes}, fast lane ${team_policy.fastlane_entries} (${team_policy.fastlane_active ? "active" : "inactive"}), notify ${team_policy.notify}` : "none in this directory"}`);
+  console.log(`Infra gate: ${infra.enabled ? `on; destroy ${infra.destroy}; saved plan required in prod ${infra.require_plan_in_prod ? "yes" : "no"}; ` +
+    `terraform ${infra.terraform ?? "not found"}; kubectl ${infra.kubectl ?? "not found"} (diff ${infra.kubectl_diff ? "on" : "off"})` : "off"}`);
   console.log(`Change freeze: ${freeze.active.length ? `ACTIVE now: ${freeze.active.map(w => `${w.reason} (${w.outcome}, ${w.applies_to})`).join("; ")}` : "none active"} (${freeze.windows} window${freeze.windows === 1 ? "" : "s"})`);
   console.log(`Notify: ${notify.targets.length ? notify.targets.join("; ") : "off"}${notify.test ? `; test ${notify.test.map(t => t.error ?? `HTTP ${t.status}`).join(", ") || "not sent"}` : ""}`);
   console.log(`Runaway guard: ${runaway.enabled ? `on (${CONFIG.mode === "enforce" ? "stops" : CONFIG.mode === "shadow" ? "logs only, shadow" : "off with the mode"}); ${runaway.stops_last_hour} stop${runaway.stops_last_hour === 1 ? "" : "s"} in the last hour` : "off"}`);

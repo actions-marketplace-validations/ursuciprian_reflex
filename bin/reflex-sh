@@ -2,4 +2,5 @@
 # reflex-sh: a drop-in for `bash -c "<command>"` that asks Reflex first.
 # Point an agent's shell setting at this file when it has no pre-execution hook.
 # Interactive shells and anything without -c go straight to bash.
-exec node "$(dirname "$0")/../gate.mjs" --sh "$@"
+# hook.mjs: an error while Reflex loads still asks (a y/N on the terminal) instead of running unchecked.
+exec node "$(dirname "$0")/../hook.mjs" "$(dirname "$0")/../gate.mjs" --sh "$@"

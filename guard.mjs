@@ -37,6 +37,7 @@
 //   node guard.mjs --check <file|-> [--rewrite] judge text by hand (reflex scan); exit 0 pass, 1 warn, 2 block
 //   node guard.mjs --eval [--only id]          live golden set (npm run eval-injection)
 //   node guard.mjs --selfcheck                 offline, Jev stubbed
+import {hookFailure} from "./failsafe.mjs";   // first: an error after this warns and is logged, never blocks a result
 import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {spawn, spawnSync} from "node:child_process";
 import {homedir, tmpdir} from "node:os";
@@ -1018,7 +1019,7 @@ const opt = n => { const i = argv.indexOf(n); return i > -1 ? argv[i + 1] : unde
 const readStdin = () => { try { return JSON.parse(readFileSync(0, "utf8")); } catch { throw new Error("stdin is not JSON"); } };
 const main = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 // Errors go to stderr and the process exits 0: a broken guard never blocks a result or a prompt.
-const guarded = fn => Promise.resolve().then(fn).catch(e => console.error(`reflex guard: ${e.message}`));
+const guarded = fn => Promise.resolve().then(fn).catch(hookFailure);
 const emit = o => o && process.stdout.write(JSON.stringify(o));
 
 if (!main) { /* imported */ }

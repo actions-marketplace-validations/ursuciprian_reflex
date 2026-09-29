@@ -23,11 +23,57 @@ try {
     [process.execPath, ["policy.mjs"]], [process.execPath, ["gate.mjs", "--selfcheck"]],
     [process.execPath, ["instructions.mjs", "--selfcheck"]], [process.execPath, ["install.mjs", "--selfcheck"]],
     [process.execPath, ["guard.mjs", "--selfcheck"]], [process.execPath, ["judge2.mjs", "--selfcheck"]], [process.execPath, ["autonomy.mjs", "--selfcheck"]], [process.execPath, ["freeze.mjs", "--selfcheck"]], [process.execPath, ["mcp.mjs", "--selfcheck"]],
-    [process.execPath, ["context.mjs", "--selfcheck"]], [process.execPath, ["router/server.mjs", "--selfcheck"]],
+    [process.execPath, ["context.mjs", "--selfcheck"]], [process.execPath, ["router/server.mjs", "--selfcheck"]], [process.execPath, ["infra.mjs", "--selfcheck"]],
     ["python3", ["routing/reflex_router.py", "--selfcheck"]],
   ]) {
     const r = spawnSync(program, args, {cwd: root, env, stdio: "inherit", timeout: 60000});
     assert.equal(r.status, 0, `${program} ${args.join(" ")} failed: ${r.error ?? r.status}`);
+  }
+  // The plan-aware infra gate through the agent contract: a fake terraform on PATH, a user config and
+  // a team policy that is stricter. The decision JSON and the trace carry the counts.
+  {
+    const box = join(scratch, "infra"), bin = join(box, "bin"), repo = join(box, "repo"), cfg = join(box, "config"), data = join(box, "data");
+    mkdirSync(join(scratch, ".terraform.d/plugin-cache"), {recursive: true});   // HOME is scratch: a plugin cache outside the repo
+    for (const d of [bin, join(repo, ".git"), join(repo, ".reflex"), join(cfg, "reflex"), join(repo, "envs/prod")]) mkdirSync(d, {recursive: true});
+    writeFileSync(join(bin, "terraform"), `#!/bin/sh\necho "$*" >> "${join(box, "calls.log")}"\n[ "$1" = show ] || exit 9\ntail -n +2 "$4"\n`, {mode: 0o755});
+    const plan = (dir, name, fixture) => writeFileSync(join(dir, name), `PK\x03\x04\n${readFileSync(join(root, "setup/tool-gate/plans", `${fixture}.json`), "utf8")}`);
+    plan(repo, "destroy.plan", "destroy"); plan(repo, "clean.plan", "clean"); plan(join(repo, "envs/prod"), "tfplan", "clean");
+    writeFileSync(join(cfg, "reflex/config.json"), JSON.stringify({infra: {destroy: "ask", terraform_show: true}}));
+    const ienv = {...env, PATH: `${bin}:${process.env.PATH}`, XDG_CONFIG_HOME: cfg, REFLEX_DATA_DIR: data, REFLEX_ENGINE: "local", REFLEX_MODE: "enforce"};
+    const decideIn = (command, cwd = repo, e = ienv) => JSON.parse(success(invoke("gate.mjs", ["--decide"], {env: e, input: JSON.stringify({agent: "test", command, cwd})})));
+    let d = decideIn("terraform apply destroy.plan");
+    assert.ok(d.effective === "ask" && /plan destroys 1: aws_instance.old/.test(d.reason) && d.plan.delete === 1, `user config infra.destroy ask: ${JSON.stringify(d)}`);
+    writeFileSync(join(repo, ".reflex/policy.json"), JSON.stringify({version: 1, infra: {destroy: "deny", require_plan_in_prod: true}}));
+    d = decideIn("terraform apply destroy.plan");
+    assert.ok(d.effective === "deny" && d.source === "rule" && d.plan.delete === 1, `a team policy forces deny: ${JSON.stringify(d)}`);
+    d = decideIn("terraform apply clean.plan");
+    assert.ok(d.effective === "pass" && d.source === "plan" && d.plan.create === 1 && /verified saved plan/.test(d.reason), `a clean plan, keyless: pass: ${JSON.stringify(d)}`);
+    d = decideIn("terraform apply clean.plan", repo, {...ienv, REFLEX_MODE: "shadow"});
+    assert.equal(d.effective, "pass");
+    assert.equal(decideIn("terraform -chdir=envs/prod apply tfplan").effective, "ask", "production: a clean plan asks");
+    d = decideIn("terraform -chdir=envs/prod apply -auto-approve");
+    assert.ok(d.effective === "deny" && /without a saved plan/.test(d.reason), `team: a saved plan is required in production: ${JSON.stringify(d)}`);
+    d = decideIn("terraform apply -auto-approve", repo, {...ienv, REFLEX_MODE: "shadow"});
+    assert.ok(d.effective === "ask" && /terraform plan -out=tfplan/.test(d.reason), "no plan asks in every mode, with the fix");
+    const traced = readFileSync(join(data, "trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)).filter(t => t.plan);
+    assert.ok(traced.some(t => t.decision === "deny" && t.plan.delete === 1) && traced.some(t => t.plan.create === 1), "the trace has the counts");
+    // the Jev engine: a clean plan goes to the usual judge, with the counts in its state; Jev down is its fallback
+    d = decideIn("terraform apply clean.plan", repo, {...ienv, REFLEX_ENGINE: "jev", TYPESAFE_API_KEY: "test-key"});
+    assert.ok(d.source === "fallback" && d.effective === "ask" && d.plan.create === 1, `jev: the policy decides, not the plan: ${JSON.stringify(d)}`);
+    const lastTrace = () => JSON.parse(readFileSync(join(data, "trace.jsonl"), "utf8").trim().split("\n").at(-1));
+    assert.equal(lastTrace().state.call.plan.create, 1, "Jev's state carries the counts");
+    d = decideIn("terraform apply -auto-approve", repo, {...ienv, REFLEX_ENGINE: "jev", TYPESAFE_API_KEY: "test-key"});
+    assert.ok(d.source === "rule" && d.effective === "ask" && /without a saved plan/.test(d.reason), `jev enforce: the plan's ask is a floor under Jev: ${JSON.stringify(d)}`);
+    assert.match(lastTrace().error ?? "", /fetch failed/, "Jev was asked under the floor");
+    d = decideIn("terraform apply clean.plan", repo, {...ienv, REFLEX_ENGINE: "jev", TYPESAFE_API_KEY: "test-key", REFLEX_INFRA_LATE_MS: "0"});
+    assert.ok(d.effective === "ask" && /took too long/.test(d.reason), `a slow plan read does not also wait for Jev: ${JSON.stringify(d)}`);
+    assert.ok(readFileSync(join(box, "calls.log"), "utf8").trim().split("\n").every(l => /^show -json -no-color \//.test(l)), "the hook only ever ran terraform show");
+    // the Claude Code hook shape
+    const hook = JSON.parse(success(invoke("gate.mjs", ["--claude"], {env: ienv, input: JSON.stringify({tool_name: "Bash", tool_input: {command: "terraform apply destroy.plan"}, cwd: repo, session_id: "S"})})));
+    assert.equal(hook.hookSpecificOutput.permissionDecision, "deny");
+    // doctor names the binaries
+    const doc = JSON.parse(success(invoke("status.mjs", ["--json"], {env: ienv, cwd: repo})));
+    assert.ok(doc.infra.terraform === join(bin, "terraform") && doc.infra.destroy === "deny" && doc.infra.require_plan_in_prod === true, JSON.stringify(doc.infra));
   }
   // engine laya against a stub Laya server (no model, no download, no network): the Jev request
   // shape, no key sent, the configured checkpoint named, and an outage handled like a Jev outage.
@@ -717,7 +763,7 @@ try {
     const redos = String.raw`[\s\S]?`.repeat(24) + String.raw`[\s\S]{24}\x00`;
     for (const p of [redos, String.raw`[\s\S]{0,60}`.repeat(6), String.raw`(\w)\1`, "(?=a)b", "(", "x".repeat(501)]) assert.ok(regexError(p), `rejected: ${p}`);
     for (const p of [String.raw`\bkubectl\b.*\bdelete\b`, "a.*a.*b", "(a+)+b", String.raw`\bDROP\s+(table|schema)\b`, "clusters/main-eu"]) assert.equal(regexError(p), null, p);
-    write({version: 1, rules: [{id: "slow", outcome: "deny", before_read_only: true, rule: "slow", all: ["a.*a.*a.*b"]},
+    write({version: 1, rules: [{id: "slow", outcome: "deny", before_read_only: true, context: false, rule: "slow", all: ["a.*a.*a.*b"]},
       {id: "caps", outcome: "deny", rule: "caps", all: [String.raw`\bTERRAFORM\s+Destroy\b`]}]});
     // measure what the team patterns add, not precheck's own cost on 30 KB (slow CI runners vary)
     const hostile = "a".repeat(30000), timed = cwd => { const t = Date.now(); precheck(hostile, cwd, {}); return Date.now() - t; };
@@ -823,8 +869,8 @@ try {
     const installed = read(join(home, ".claude/settings.json")).hooks;
     assert.deepEqual(shape(hooks), shape(installed), "hooks.json events, matchers, flags and timeouts match install.mjs");
     for (const h of Object.values(hooks).flat().flatMap(g => g.hooks)) {
-      assert.match(h.command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/(gate|guard|instructions)\.mjs" --[\w-]+ --plugin$/, h.command);
-      assert.ok(existsSync(join(root, h.command.match(/\}\/(\w+\.mjs)/)[1])));
+      assert.match(h.command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hook\.mjs" "\$\{CLAUDE_PLUGIN_ROOT\}\/(gate|guard|instructions)\.mjs" --[\w-]+ --plugin$/, h.command);
+      for (const [, f] of h.command.matchAll(/\}\/(\w+\.mjs)/g)) assert.ok(existsSync(join(root, f)), f);
     }
     for (const c of ["status", "report", "replay", "check", "queue", "suggest"]) assert.ok(existsSync(join(root, "commands", `${c}.md`)), `/reflex:${c}`);
     for (const f of ["commands/suggest.md", "commands/queue.md", "commands/report.md", "commands/replay.md", "commands/status.md"]) {
@@ -844,7 +890,7 @@ try {
       "echo '{}' > ~/.claude/plugins/installed_plugins.json"])
       assert.notEqual(judged(c), "pass", c);
     // Run the plugin's PreToolUse command as Claude Code would. No saved config: local engine, shadow mode.
-    const pre = hooks.PreToolUse[0].hooks[0].command.replace("${CLAUDE_PLUGIN_ROOT}", root);
+    const pre = hooks.PreToolUse[0].hooks[0].command.replaceAll("${CLAUDE_PLUGIN_ROOT}", root);
     const canary = JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "git push --force origin main"}, session_id: "p", cwd: home});
     const hook = h => spawnSync("/bin/sh", ["-c", pre], {encoding: "utf8", input: canary, env: {...clean, HOME: h, XDG_CONFIG_HOME: join(h, ".config"), REFLEX_DATA_DIR: join(h, "data")}});
     const bare = join(scratch, "plugin-bare");
@@ -859,7 +905,7 @@ try {
     assert.equal(r.stdout, "", "plugin stands down when settings hooks exist");
     assert.ok(!existsSync(join(home, "data")), "a standing-down plugin hook records nothing");
     for (const h of Object.values(hooks).flat().flatMap(g => g.hooks)) {
-      const x = spawnSync("/bin/sh", ["-c", h.command.replace("${CLAUDE_PLUGIN_ROOT}", root)], {encoding: "utf8", input: canary,
+      const x = spawnSync("/bin/sh", ["-c", h.command.replaceAll("${CLAUDE_PLUGIN_ROOT}", root)], {encoding: "utf8", input: canary,
         env: {...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), REFLEX_DATA_DIR: join(home, "data")}});
       assert.ok(x.status === 0 && x.stdout === "", `stands down: ${h.command}`);
     }
@@ -900,7 +946,7 @@ try {
     })])]));
     assert.deepEqual(shape(hooks), shape(read(join(home, ".codex/hooks.json")).hooks), "hooks/codex.json events, matchers, flags and timeouts match install.mjs --agent codex");
     const all = Object.values(hooks).flat().flatMap(g => g.hooks);
-    for (const h of all) assert.match(h.command, /^node "\$PLUGIN_ROOT\/(gate|guard|instructions)\.mjs" --codex(-[\w]+)? --plugin$/, h.command);
+    for (const h of all) assert.match(h.command, /^node "\$PLUGIN_ROOT\/hook\.mjs" "\$PLUGIN_ROOT\/(gate|guard|instructions)\.mjs" --codex(-[\w]+)? --plugin$/, h.command);
     // Run the hooks as Codex does: $SHELL -lc with PLUGIN_ROOT in the environment. No saved config: local engine, shadow mode.
     const canary = JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "git push --force origin main"}, session_id: "cx", cwd: home});
     const run = (command, h, extra = {}) => spawnSync("/bin/sh", ["-c", command], {encoding: "utf8", input: canary,
@@ -1168,5 +1214,110 @@ try {
     assert.equal(invoke("audit.mjs", ["--format", "xml"], {env: fenv}).status, 2, "audit: a bad option is an error");
     assert.equal(snapshot(), s0, "audit writes nothing");
     console.log("freeze, notify and audit checks OK");
+  }
+  // Reflex fails closed (hook.mjs, failsafe.mjs): an error while a hook loads, or an unhandled
+  // rejection, answers each agent in its own contract. The pre-execution gate asks (Codex: deny with
+  // exit 2), shadow logs and passes, off passes without loading, and the other hooks only warn.
+  {
+    const fdir = join(scratch, "failsafe");
+    mkdirSync(fdir, {recursive: true});
+    const fenv = (extra = {}) => ({...clean, HOME: fdir, XDG_CONFIG_HOME: join(fdir, "config"), REFLEX_DATA_DIR: join(fdir, "data"), REFLEX_ENGINE: "local", ...extra});
+    const bash = {tool_name: "Bash", tool_input: {command: "touch /tmp/reflex-failsafe-probe"}, session_id: "fc", cwd: fdir};
+    const hookRun = (script, args, extra, input = bash, dir = root) => spawnSync(process.execPath, [join(dir, "hook.mjs"), join(dir, script), ...args],
+      {encoding: "utf8", input: typeof input === "string" ? input : JSON.stringify(input), env: fenv(extra), timeout: 30000, detached: true});
+    const parse = r => { try { return JSON.parse(r.stdout || "{}"); } catch { return {unparsed: r.stdout}; } };
+    // Per agent flag: [script, flag, input, check(r, strict)]
+    const pre = [
+      ["--claude", bash, (r, strict) => { assert.equal(r.status, 0, r.stderr); const o = parse(r);
+        assert.equal(o.hookSpecificOutput?.permissionDecision, strict ? "ask" : undefined, `claude: ${r.stdout}`);
+        assert.match(strict ? o.hookSpecificOutput.permissionDecisionReason : o.systemMessage, /^reflex error: .*; a human must review/); }],
+      ["--codex", bash, (r, strict) => { assert.equal(r.status, strict ? 2 : 0, r.stderr); const o = parse(r);
+        assert.equal(o.hookSpecificOutput?.permissionDecision, strict ? "deny" : undefined, `codex: ${r.stdout}`);
+        if (strict) assert.match(r.stderr, /reflex error: .*a human must review/); }],
+      ["--hermes", {tool_name: "terminal", tool_input: {command: "touch x"}}, (r, strict) => { assert.equal(r.status, 0); const o = parse(r);
+        assert.deepEqual(strict ? [o.action, /^reflex:error:/.test(o.rule_key)] : o, strict ? ["approve", true] : {}, `hermes: ${r.stdout}`); }],
+      ["--decide", {agent: "pi", command: "touch x", cwd: fdir}, (r, strict) => { assert.equal(r.status, 0);
+        assert.deepEqual([parse(r).effective, parse(r).source], [strict ? "ask" : "pass", "error"], `decide: ${r.stdout}`); }],
+    ];
+    for (const crash of ["load", "reject"]) for (const [flag, input, check] of pre) {
+      check(hookRun("gate.mjs", [flag, "--mode", "enforce"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}, input), true);
+      // a simulated crash is always strict, even in shadow: the test switch can only make a hook stricter
+      check(hookRun("gate.mjs", [flag, "--mode", "shadow"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}, input), true);
+      // mode off: nothing is loaded, so nothing can crash
+      const off = hookRun("gate.mjs", [flag, "--mode", "off"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}, input);
+      assert.ok(off.status === 0 && !/ask|deny|approve|error/.test(off.stdout), `off passes: ${flag} ${off.stdout}`);
+    }
+    // Without REFLEX_TEST=1 the switch does nothing.
+    assert.equal(hookRun("gate.mjs", ["--decide", "--mode", "enforce"], {REFLEX_TEST_CRASH: "load"}, {agent: "pi", command: "git status", cwd: fdir}).stdout.includes('"source":"error"'), false);
+    // A subagent spawn is subgoal dedup, which never blocks: it passes on a crash too.
+    assert.equal(parse(hookRun("gate.mjs", ["--claude", "--mode", "enforce"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}, {tool_name: "Agent", tool_input: {prompt: "x"}})).hookSpecificOutput, undefined);
+    // Post-execution and prompt hooks never block a result: exit 0 and a warning.
+    for (const [script, flag] of [["gate.mjs", "--claude-post"], ["gate.mjs", "--codex-post"], ["guard.mjs", "--claude"], ["guard.mjs", "--codex"],
+                                  ["guard.mjs", "--claude-prompt"], ["instructions.mjs", "--claude"]]) {
+      const r = hookRun(script, [flag, "--mode", "enforce"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"});
+      const o = parse(r);
+      assert.ok(r.status === 0 && /reflex error/.test(o.systemMessage) && !o.hookSpecificOutput?.permissionDecision && o.decision !== "block", `${script} ${flag} warns: ${r.stdout}`);
+      if (script === "guard.mjs" && ["--claude", "--codex"].includes(flag)) assert.match(o.hookSpecificOutput.additionalContext, /could not check this tool result/);
+    }
+    const scan = parse(hookRun("guard.mjs", ["--scan"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}, {texts: ["x"]}));
+    assert.ok(scan.effective === "warn" && /did not check this result/.test(scan.note), "guard --scan warns");
+    // The detached webhook child (notify.mjs --send) goes through the entry too: a crash is logged, nothing else.
+    const nr = hookRun("notify.mjs", ["--send"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}, "[]");
+    assert.ok(nr.status === 0 && nr.stdout === "" && readFileSync(join(fdir, "data/health/errors.jsonl"), "utf8").includes('"script":"notify.mjs","flag":"--send"'), `notify child: ${nr.status} ${nr.stdout}`);
+    assert.equal(hookRun("notify.mjs", ["--send"], {}, "[]").status, 0, "notify child runs through the entry");
+    assert.match(readFileSync(join(root, "notify.mjs"), "utf8"), /new URL\("hook\.mjs", import\.meta\.url\)\), fileURLToPath\(import\.meta\.url\), "--send"/, "notifyLater spawns through hook.mjs");
+    // A malformed hook input, read after the gate loaded, asks too.
+    assert.equal(parse(hookRun("gate.mjs", ["--claude", "--mode", "enforce"], {}, "not json")).hookSpecificOutput?.permissionDecision, "ask");
+    // reflex-sh: an ask with no terminal refuses (126); shadow runs the command.
+    const sh = (mode, crash = "load") => spawnSync(join(root, "bin/reflex-sh"), ["-c", "echo ran"], {encoding: "utf8", env: fenv({REFLEX_MODE: mode, REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}), detached: true, timeout: 30000});
+    let r = sh("enforce");
+    assert.ok(r.status === 126 && !r.stdout.includes("ran") && /reflex error/.test(r.stderr), `reflex-sh refuses: ${r.status} ${r.stderr}`);
+    r = sh("off");
+    assert.ok(r.status === 0 && r.stdout.includes("ran"), "reflex-sh off runs bash");
+    // Real crashes, in a copy of the checkout: a syntax error in an imported module (an import error)
+    // and a throw at the top level of gate.mjs.
+    for (const [name, file, patch] of [["import", "freeze.mjs", s => `${s}\nthis is not javascript\n`],
+                                       ["throw", "gate.mjs", s => s.replace("export const CONFIG = {", "throw new Error('top-level boom');\nexport const CONFIG = {")]]) {
+      const copy = join(fdir, name);
+      cpSync(root, copy, {recursive: true, filter: p => !/\/(\.git|node_modules)(\/|$)/.test(p.slice(root.length))});
+      writeFileSync(join(copy, file), patch(readFileSync(join(copy, file), "utf8")));
+      const e = {REFLEX_DATA_DIR: join(copy, "data")};
+      assert.equal(parse(hookRun("gate.mjs", ["--claude", "--mode", "enforce"], e, bash, copy)).hookSpecificOutput?.permissionDecision, "ask", `${name}: claude asks`);
+      const c = hookRun("gate.mjs", ["--codex", "--mode", "enforce"], e, bash, copy);
+      assert.ok(c.status === 2 && parse(c).hookSpecificOutput?.permissionDecision === "deny", `${name}: codex blocks`);
+      const shadow = hookRun("gate.mjs", ["--claude", "--mode", "shadow"], e, bash, copy);
+      assert.ok(shadow.status === 0 && !parse(shadow).hookSpecificOutput && /shadow mode: not blocked/.test(parse(shadow).systemMessage), `${name}: shadow does not block`);
+      const log = readFileSync(join(copy, "data/health/errors.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
+      assert.deepEqual(log.map(l => [l.flag, l.mode, l.outcome]), [["--claude", "enforce", "ask"], ["--codex", "enforce", "ask"], ["--claude", "shadow", "pass"]], `${name}: logged`);
+      // reflex status (from the working checkout) shows it as an error.
+      const doc = JSON.parse(spawnSync(process.execPath, [join(root, "status.mjs"), "--json"], {encoding: "utf8", env: fenv(e)}).stdout);
+      assert.ok(doc.hook_errors.gate === 3 && doc.errors.some(x => /Reflex hook errors? in the last 24 h.*shadow mode a broken gate checks nothing/.test(x)), `${name}: status: ${JSON.stringify(doc.hook_errors)}`);
+    }
+    // A bad config value asks through the entry, in shadow too, and never echoes the file's content.
+    mkdirSync(join(fdir, "config/reflex"), {recursive: true});
+    const secret = ["sk", "ant", "api03", "A".repeat(40)].join("-");
+    for (const bad of ['{"freeze": [{"from": "2026-13-45", "outcome": "deny"}]}', `{"mode": "enforce", "token": "${secret}"`, '{"mode": "enforc"}']) {
+      writeFileSync(join(fdir, "config/reflex/config.json"), bad);
+      for (const mode of bad.includes("enforc\"") ? [[]] : [[], ["--mode", "shadow"]]) {   // a --mode flag wins over a mistyped saved mode
+        const cr = hookRun("gate.mjs", ["--claude", ...mode], {});
+        assert.equal(parse(cr).hookSpecificOutput?.permissionDecision, "ask", `bad config ${bad} ${mode}: ${cr.stdout}`);
+        assert.ok(!cr.stdout.includes(secret) && !cr.stderr.includes(secret), "no secret in the answer");
+        assert.ok(hookRun("gate.mjs", ["--codex", ...mode], {}).stdout.includes('"deny"'), `bad config, codex: ${bad}`);
+      }
+    }
+    assert.ok(!readFileSync(join(fdir, "data/health/errors.jsonl"), "utf8").includes(secret), "no secret in the error log");
+    rmSync(join(fdir, "config/reflex/config.json"));
+    // opencode: a failed or non-JSON gate result asks (enforce), and never blocks in shadow.
+    const oc = `import assert from 'node:assert/strict';
+      const {Reflex} = await import(${JSON.stringify(join(root, "adapters/opencode.js"))});
+      const hooks = await Reflex({directory: ${JSON.stringify(fdir)}});
+      const run = () => hooks['tool.execute.before']({tool: 'bash', sessionID: 's', callID: 'c'}, {args: {command: 'touch x'}});
+      if (process.argv[1] === 'ask') await assert.rejects(run, /reflex error: .*a human must review.*cannot open an approval dialog/);
+      else await run();`;
+    const ocRun = (arg, extra) => spawnSync(process.execPath, ["--input-type=module", "-e", oc, arg], {encoding: "utf8", env: fenv({...extra, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`}), timeout: 30000});
+    success(ocRun("ask", {REFLEX_MODE: "enforce", REFLEX_GATE: join(fdir, "gone/gate.mjs")}));             // the gate cannot start
+    success(ocRun("ask", {REFLEX_MODE: "enforce", REFLEX_TEST: "1", REFLEX_TEST_CRASH: "load"}));            // it crashes while loading
+    success(ocRun("pass", {REFLEX_MODE: "shadow", REFLEX_GATE: join(fdir, "gone/gate.mjs")}));
+    console.log("fail-closed checks OK");
   }
 } finally { rmSync(scratch, {recursive: true, force: true}); }

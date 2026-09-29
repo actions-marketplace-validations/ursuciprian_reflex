@@ -34,6 +34,7 @@ const REPO = dirname(fileURLToPath(import.meta.url));
 const GATE = join(REPO, "gate.mjs");
 const INSTRUCTIONS = join(REPO, "instructions.mjs");
 const GUARD = join(REPO, "guard.mjs");
+const HOOK = join(REPO, "hook.mjs");   // the entry of every hook: an error while the script loads still answers (fails closed)
 const MODE = opt("--mode", process.env.REFLEX_MODE ?? USER_CONFIG.mode ?? "shadow");
 const NODE = opt("--node", process.execPath);   // absolute, so hooks work without the shell's PATH
 const ALLOW = opt("--allow", process.env.REFLEX_ALLOW ?? USER_CONFIG.allow ?? "off");
@@ -50,7 +51,7 @@ if (ALLOW === "on" && MODE !== "enforce") console.error(`note: --allow on only t
 if (Number(process.versions.node.split(".")[0]) < 18) throw new Error(`node 18+ required, found ${process.versions.node}`);
 
 const q = s => `"${s.replace(/(["\\`$])/g, "\\$1")}"`;
-const cmd = (flag, script = GATE) => `${q(NODE)} ${q(script)} ${flag} --mode ${MODE}${script === GATE ? ` --allow ${ALLOW}` : ""}`;
+const cmd = (flag, script = GATE) => `${q(NODE)} ${q(HOOK)} ${q(script)} ${flag} --mode ${MODE}${script === GATE ? ` --allow ${ALLOW}` : ""}`;
 const isOurs = c => typeof c === "string" && [GATE, INSTRUCTIONS, GUARD].some(f => c.includes(q(f)));
 const readJson = f => existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : {};
 function writeFile(f, text) {

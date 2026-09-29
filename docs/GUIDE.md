@@ -11,21 +11,24 @@
    - [Calibrated allow](#calibrated-allow)
 4. [Changing behaviour](#changing-behaviour)
    - [Team policy: share Reflex rules across a repo](#team-policy-share-reflex-rules-across-a-repo)
+   - [Plan-aware terraform gate: stop AI agents from destroying infrastructure](#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure)
    - [Change freeze for AI coding agents](#change-freeze-for-ai-coding-agents)
    - [Audit log for AI agent commands (SOC 2)](#audit-log-for-ai-agent-commands-soc-2)
 5. [Metrics](#metrics)
 6. [Data handling](#data-handling)
-7. [Safety properties and limits](#safety-properties-and-limits)
-8. [Injection guard](#injection-guard)
-9. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
-10. [Reflex MCP server: ask before acting (Claude Desktop, Cursor, Cowork)](#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork)
-11. [Autonomous agents](#autonomous-agents)
-12. [Conditional instructions](#conditional-instructions)
-13. [Tool router](#tool-router)
-14. [Model routing](#model-routing)
-15. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
-16. [Laya (local System 1)](#laya-local-system-1)
-17. [Where this goes next](#where-this-goes-next)
+7. [Reliability](#reliability)
+   - [Reflex fails closed](#reflex-fails-closed)
+8. [Safety properties and limits](#safety-properties-and-limits)
+9. [Injection guard](#injection-guard)
+10. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
+11. [Reflex MCP server: ask before acting (Claude Desktop, Cursor, Cowork)](#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork)
+12. [Autonomous agents](#autonomous-agents)
+13. [Conditional instructions](#conditional-instructions)
+14. [Tool router](#tool-router)
+15. [Model routing](#model-routing)
+16. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
+17. [Laya (local System 1)](#laya-local-system-1)
+18. [Where this goes next](#where-this-goes-next)
 
 ## Local and hosted operation
 
@@ -663,6 +666,162 @@ one repository. Decisions record it too: a rule from the team policy says `(team
 policy version reads `rules-v16+team-<hash>`. `reflex check --cwd <dir>` and `reflex replay` judge
 each command with the team policy of its own working directory.
 
+## Plan-aware terraform gate: stop AI agents from destroying infrastructure
+
+A rule can tell that `terraform destroy` destroys. It cannot tell what `terraform apply` will do:
+the same command creates one tag on Monday and replaces the production database on Tuesday. So
+when a coding agent (Claude Code, Codex, opencode and the others) runs `terraform apply`, Reflex
+judges the change, not only the command text. This is the part that prevents a `terraform destroy`
+hidden inside an apply.
+
+**What the hook runs, and what it never runs.** The hook never runs `terraform plan` or
+`terraform apply`. A plan executes providers with your credentials, runs `data "external"`
+programs and can take minutes. With `infra.terraform_show` on, the hook reads a saved plan the agent
+already made, with `terraform show -json <planfile>` in the directory the command runs in (`-chdir=`
+and a leading `cd dir &&` are followed). `terraform show` reads the plan file locally and configures
+no provider, so it makes no provider API calls, but it does start the provider binaries to read their
+schemas.
+
+**Why plan reading is off by default.** Those provider binaries live in `.terraform/providers`,
+and an agent can write that directory, and `.terraform.lock.hcl`, with its file tools (Write, Edit,
+apply_patch), which the command gate does not see. Reading the plan would then make the hook itself
+run code the agent put there, before any approval. So `infra.terraform_show` is `false` by default:
+a `terraform apply <planfile>` is judged as before (the rules, then Jev or, keyless, a human), and an
+apply without a plan file still asks with the fix. For the same reason `terraform plan`, `show`,
+`validate`, `state show`, `providers`, `graph` and `init` are no longer on the read-only list or the
+fast lane, nor `output` and `state list`, which start the backend saved in `.terraform`; `fmt -check`
+and `version` still are.
+
+**The plugin cache requirement.** Turn it on with `"infra": {"terraform_show": true}` only with a
+[provider plugin cache](https://developer.hashicorp.com/terraform/cli/config/config-file#provider-plugin-cache):
+`TF_PLUGIN_CACHE_DIR`, `plugin_cache_dir` in `~/.terraformrc`, or `~/.terraform.d/plugin-cache`. With
+a cache, `terraform init` puts symbolic links into `.terraform/providers` instead of copies ("when
+possible", in HashiCorp's words). The hook runs `terraform show` only when:
+
+- every entry under `.terraform/providers` (or `$TF_DATA_DIR/providers`) is a symlink whose real
+  path is inside that cache;
+- the cache is under your home directory and outside both the directory the apply runs in and the
+  one the command started in (a working directory that is your home never qualifies);
+- no file in the cache that is linked is newer than the plan file;
+- there is no `terraform.d` in the working directory, no `dev_overrides` in the CLI config and no
+  `TF_REATTACH_PROVIDERS`.
+
+Anything else (a copied provider, a regular file in `.terraform`, a link back into the tree, a
+packed filesystem mirror that Terraform had to extract) asks: "no readable saved plan (terraform
+show not run: ...)". The cache itself is trusted as yours: an agent that can write your home
+directory outside the gate can also write it. The check keeps the working tree out, which is where
+an agent's file tools usually write. It runs with a
+strict timeout (`infra.timeout_ms`, 3 s by default and 4 s at most, so the whole hook stays inside its 10 s), a
+sanitized environment (no `AWS_*`, `GOOGLE_*`, `ARM_*`, `TF_VAR_*` or tokens; only `PATH`, `HOME`,
+the locale and Terraform's data and plugin directories) and `CHECKPOINT_DISABLE=1`, so Terraform
+does not call HashiCorp's version service either. The `terraform` binary comes from an absolute
+`PATH` entry, never a relative one such as `./bin`.
+
+**What it decides.**
+
+| The command | Outcome |
+|---|---|
+| `terraform apply tfplan` with `infra.terraform_show` off (the default) | judged as before: the rules, then Jev or, keyless, a human |
+| `terraform apply tfplan`, the plan has 0 deletes and 0 replaces | allow-eligible: the usual policy decides, with the counts in Jev's state (keyless: pass). In production it asks, and the reason shows the counts |
+| the plan deletes or replaces anything | deny (`infra.destroy: "ask"` softens it), for example `plan destroys 3: aws_db_instance.main, aws_s3_bucket.logs, aws_iam_role.ci (1 replace); stateful: aws_db_instance.main, aws_s3_bucket.logs` |
+| `terraform apply` or `terraform apply -auto-approve`, no plan file | ask: "terraform apply without a saved plan: run `terraform plan -out=tfplan` and apply the plan file". Deny in production with `infra.require_plan_in_prod` |
+| the plan file is missing, not a plan (a state file shows as JSON too), stale, the providers are not all linked from the plugin cache, or `terraform show` failed or timed out | ask: "no readable saved plan (...)" with the same fix |
+| `terraform destroy`, `apply -destroy`, `apply -replace=` | unchanged: the destroy rules ask, and deny in production |
+
+A replace is a delete plus a create (`["delete","create"]` or `["create","delete"]` in the JSON
+plan format). Stateful types are named first: `aws_db_instance`, `aws_rds_cluster`,
+`aws_s3_bucket`, `aws_dynamodb_table`, `aws_efs_file_system`, `aws_ebs_volume`, ElastiCache,
+Redshift, DocumentDB, KMS keys, `google_sql_database_instance`, `google_storage_bucket`, BigQuery,
+`azurerm_*database*`, storage accounts, `kubernetes_persistent_volume*`, namespaces, statefulsets and
+others. A plan is stale when a `.tf`, `.tf.json`, `.tfvars`, `.terraform.lock.hcl` or local
+`terraform.tfstate` in its directory is newer than the plan file. Terraform itself also refuses to
+apply a plan whose state moved.
+
+A plan's deny is a rule outcome: it holds in shadow and enforce mode, and no approval in the queue
+lifts it. A plan's ask goes to a human, never to System 2. With the Jev engine in enforce mode, Jev
+still judges the command under the ask, and a deny Jev finds stands. A clean plan passes on its own
+only when the command is nothing but `cd` steps and the apply: `terraform apply tfplan && ./deploy.sh`
+gets the counts in its trace, and the rest is judged as usual. It also needs the apply to run exactly
+the plan that was read, so none of these pass (they keep the counts, and the usual judge decides):
+
+- a binary other than `terraform` from `PATH` (`./terraform`, `bin/../terraform`);
+- an assignment, `env`, `sudo`, `nice` or `exec` in front (`PATH=.`, `TF_CLI_ARGS_apply=-destroy`,
+  `env --chdir=/`), or `TF_CLI_ARGS*` in the hook's own environment;
+- an option outside `-auto-approve`, `-input=false`, `-no-color`, `-compact-warnings`, `-json`,
+  `-lock-timeout=`, `-parallelism=` (`--destroy`, `-target`, `-state-out`, an option Terraform adds later);
+- a `..` in the plan path, `-chdir` or a `cd` (it resolves through symlinks for Terraform);
+- a `cd` in a pipe, behind `&` or before `||` (it does not carry over; the directory is unknown and
+  the apply asks);
+- a plan that runs code at apply: a provisioner, a deferred `external` or `http` data source read,
+  or action invocations.
+
+Production is read in the directory the command runs in, the physical one too (a `current` symlink
+to `envs/prod`), and the team policy of that directory counts as well as the one the command started in.
+The hook budget: when the rules and the plan read took more than 5 s, Jev is not waited for as
+well, and the command asks.
+
+**Decision JSON and trace.** Every decision the plan gate spoke to carries the counts:
+
+```json
+{"effective": "deny", "decision": "deny", "reason": "reflex (rule): plan destroys 1: aws_instance.old", "source": "rule",
+ "policy": "rules-v19", "plan": {"kind": "terraform", "create": 1, "update": 0, "delete": 1, "replace": 0, "stateful": [], "digest": "..."}}
+```
+
+The `digest` (of the plan JSON) is also part of the approval queue key and the Jev cache key, so an
+approval of one plan is never reused for a different plan under the same command.
+
+**The workflow it asks agents for.** Plan, read, apply the file:
+
+```bash
+terraform plan -out=tfplan        # judged like any command that runs providers; the agent runs it, not the hook
+terraform show -json tfplan | jq '.resource_changes[] | select(.change.actions != ["no-op"]) | .address'
+terraform apply tfplan            # judged by what tfplan will change
+```
+
+**kubectl delete guardrail (optional).** With `"infra": {"kubectl_diff": true}` (off by default,
+because it calls the API server), `kubectl apply` is checked with `kubectl diff` and the same
+arguments, and `kubectl delete|replace|patch` with `--dry-run=server -o name` added at the end.
+Both use the current kube context (or the command's `--context`), the same timeout, and never a flag
+that writes: `--dry-run=server -o name` goes right after the verb, so an option of the command left
+waiting for a value cannot take it, and a command with its own `--dry-run`, `--raw`, `--`, `-f -` or
+`-o` is not run at all. Nor is one that names its own `--kubeconfig`, `--server` or `--token`, or runs
+with a `KUBECONFIG` inside its working directory: an agent's kubeconfig could carry an exec credential
+plugin, and an agent's server would receive your credentials. `kubectl
+diff` exits 0 for no differences, 1 for differences and above 1 on an error. Deletes of namespaces,
+PVCs, PVs, statefulsets or CRDs follow `infra.destroy` (deny by default); other deletes ask with the
+count; changes without deletes only add the counts. Off, or on any failure, kubectl commands are
+judged as before, and the production markers (`--context prod`, a prod kube context) still deny
+destructive ones.
+
+**Configuration.** In `~/.config/reflex/config.json`:
+
+```json
+{"infra": {"enabled": true, "destroy": "deny", "require_plan_in_prod": false, "terraform_show": false, "kubectl_diff": false, "timeout_ms": 3000}}
+```
+
+A team policy can only make it stricter (`.reflex/policy.json`):
+
+```json
+{"version": 1, "infra": {"destroy": "deny", "require_plan_in_prod": true}}
+```
+
+`destroy` there accepts only `"deny"` and `require_plan_in_prod` only `true`; a team `infra` section
+also turns the gate on for a user who turned it off. `reflex doctor` shows the settings and where
+`terraform` and `kubectl` were found.
+
+**Measured on real sessions.** A replay of 2,232 local Claude Code and Codex transcripts found 63
+unique commands that mention `terraform ... apply` or a mutating kubectl verb. Most only mention it
+(commit messages, heredocs that write CI workflows); the deterministic outcome changed for 2 real
+applies, both from "left to the judge" to an ask with the fix: one apply without a plan file and one
+whose plan file was gone. With the local engine those already asked, so the effective change there
+is the reason, not the outcome.
+
+**Limits.** The plan is read when the hook runs and applied a moment later: a process the agent left
+running could swap the file in between (Terraform still refuses a plan whose state moved). A command
+whose text hides what runs (`$VAR`, a heredoc) is not read, and is judged as before. OpenTofu
+(`tofu`), Terragrunt and Terraform Cloud saved plans are not read yet. `kubectl diff` does not show
+objects that a `--prune` would delete unless the command has `--prune`.
+
 ## Change freeze for AI coding agents
 
 A deploy freeze for AI coding agents: during a change window you define, a command that is not
@@ -876,6 +1035,56 @@ configured webhook and reports the HTTP status. Doctor sends nothing without tha
   set. No environment value is sent. See [decision webhook](#decision-webhook).
 - **Locally**, logs contain the same redacted data and stay in `~/.local/state/reflex/`. Trace and
   feedback files rotate at 50 MB. Command output is never stored.
+
+## Reliability
+
+### Reflex fails closed
+
+A hook that crashes must not let a command through unchecked. Most agents treat a hook that exits
+with a plain error as "no decision" and run the command, so every hook starts through a small
+entry, `hook.mjs`, that uses only Node built-ins:
+
+```
+node hook.mjs /path/to/gate.mjs --claude --mode enforce --allow off
+```
+
+It installs handlers for uncaught exceptions and unhandled rejections, then loads the script with a
+dynamic import. So a syntax or import error, a throw while the modules load (a bad config value, a
+top-level parse), or a rejection nobody handled still gives the agent an answer in its own hook
+contract. The reason is `reflex error: <short message>; a human must review`.
+
+| Entry point | On an error, in enforce mode |
+| --- | --- |
+| Claude Code `PreToolUse` (`--claude`) | `permissionDecision: "ask"`, exit 0 (the JSON is read only on exit 0; exit 2 would block, not ask) |
+| Codex `PreToolUse` (`--codex`) | `permissionDecision: "deny"` with the reason, the reason on stderr, exit 2 (Codex does not support ask yet) |
+| Hermes `pre_tool_call` (`--hermes`) | `{"action": "approve"}`, Hermes' own prompt, with a rule key used once |
+| opencode, pi, oh-my-pi (`--decide`) | `{"effective": "ask"}`; the adapters also treat no answer, or one that is not JSON, as ask |
+| `reflex-sh` (`--sh`) | a y/N on the terminal; no terminal or no refuses with exit 126 |
+| `PostToolUse`, `UserPromptSubmit`, record hooks, the injection guard, instructions | never blocked: exit 0 with a `systemMessage` warning; after a tool result the guard also tells the model it did not check the result |
+| The decision webhook's detached child (`notify.mjs --send`) | logged only; it never touches a decision |
+
+A change freeze (`freeze.mjs`) is read while the gate loads and when it decides: an error in it
+asks like any other. `reflex audit` is a terminal command, not a hook, so an error there is a plain
+non-zero exit.
+
+- **Shadow mode** stays non-blocking: the error is logged and the command runs, with a warning in
+  Claude Code and Codex. While the gate is broken it checks nothing, deterministic rules included,
+  so `reflex status` and `reflex doctor` show it as an error.
+- **Mode off** passes at once, without loading the gate.
+- **Subagent spawns** (subgoal dedup) pass on an error, as they do for any internal error.
+- **A decision already written stands.** An error after the gate has answered is only logged.
+- **The log** is `~/.local/state/reflex/health/errors.jsonl` (time, script, flag, mode, what the
+  hook answered, and the message). Messages are cut to one line, the quoted file content of a JSON
+  parse error is dropped, and anything shaped like a key is replaced by `<redacted>`.
+- **Hooks installed before this entry** (`node gate.mjs --claude`, without `hook.mjs`) still get
+  the same answers for any error after the modules have linked, because `gate.mjs`, `guard.mjs`
+  and `instructions.mjs` load the same handlers first. A syntax or import error needs the entry:
+  `reflex status` warns about such hooks, and `reflex setup` rewrites them.
+- **Limits.** A hook that times out, or a missing `node` or checkout, is outside Reflex: Claude
+  Code and Codex let the command run. In shadow mode a team policy's enforce floor does not apply
+  to a crash, since reading that policy may be what failed. Tests can simulate a crash with
+  `REFLEX_TEST=1 REFLEX_TEST_CRASH=load` (or `reject`); a simulated crash is always strict, even in
+  shadow mode, so the switch can only make a hook stricter.
 
 ## Safety properties and limits
 
@@ -1231,6 +1440,8 @@ the plugin, and use the MCP tools as a way for the agent to check before it trie
 | `reflex_status` | `cwd?` | Profile, engine, mode (after a team policy mode floor), guard mode, allow setting, whether a change freeze is in force, the team policy's trust state and counts, and how many items wait in the approval queue. |
 | `reflex_audit` | `since?` (`7d`), `prod_only?`, `limit?` (20, at most 100) | Counts by decision, source, rule and environment tier, and the latest rows, like `reflex audit`. |
 | `reflex_explain` | `rule_id` | What a rule or policy gate matches, its outcome, when it is enforced and why it exists. |
+
+Data: `reflex_check` and `reflex_scan` send redacted text to Jev or Laya when that engine is configured, the same as the hooks; with the local engine nothing leaves the machine. `reflex_status` returns the note of an active change freeze.
 
 ```text
 reflex_check {"command": "git push --force origin main"}

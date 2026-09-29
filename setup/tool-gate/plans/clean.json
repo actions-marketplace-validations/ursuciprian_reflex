@@ -1,0 +1,74 @@
+{
+ "format_version": "1.2",
+ "terraform_version": "1.13.2",
+ "planned_values": {
+  "root_module": {}
+ },
+ "resource_changes": [
+  {
+   "address": "aws_instance.web",
+   "mode": "managed",
+   "type": "aws_instance",
+   "name": "web",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {},
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "aws_security_group.web",
+   "mode": "managed",
+   "type": "aws_security_group",
+   "name": "web",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": null,
+    "after": {},
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "aws_iam_role.ci",
+   "mode": "managed",
+   "type": "aws_iam_role",
+   "name": "ci",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "no-op"
+    ],
+    "before": null,
+    "after": {},
+    "after_unknown": {}
+   }
+  },
+  {
+   "address": "data.aws_ami.base",
+   "mode": "data",
+   "type": "aws_ami",
+   "name": "base",
+   "provider_name": "registry.terraform.io/hashicorp/aws",
+   "change": {
+    "actions": [
+     "read"
+    ],
+    "before": null,
+    "after": {},
+    "after_unknown": {}
+   }
+  }
+ ],
+ "configuration": {},
+ "applyable": true,
+ "complete": true,
+ "errored": false,
+ "timestamp": "2026-09-28T00:00:00Z"
+}

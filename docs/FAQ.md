@@ -98,6 +98,23 @@ one is active.
 
 See: [README: opencode plugin](../README.md#opencode-plugin), [docs/SETUP.md: opencode plugin](SETUP.md#opencode-plugin).
 
+## How do I stop an AI agent from destroying infrastructure with terraform apply?
+
+`terraform destroy` is a rule: it asks, and denies in production. An apply without a saved plan asks
+with the fix: run `terraform plan -out=tfplan` and apply the file. To judge an apply by what it will
+change, turn on `infra.terraform_show` and use a provider plugin cache (`TF_PLUGIN_CACHE_DIR` or
+`plugin_cache_dir`). The hook then reads the plan with `terraform show -json tfplan` (local, no
+provider API calls, a 3 s timeout, no cloud credentials in its environment) and counts creates,
+updates, deletes and replaces. Any delete or replace is denied, with the addresses in the reason and
+stateful types such as `aws_db_instance`, `aws_s3_bucket` and `google_sql_database_instance` named
+first. A clean plan is allow-eligible outside production and still asks in production. It is off by
+default because `terraform show` starts the provider binaries in `.terraform`, which an agent can
+write with its file tools; on, it runs only when every provider there is a symlink into a plugin cache
+outside the working tree and older than the plan. The hook never runs `terraform plan` or
+`terraform apply` itself. For kubectl, the optional `infra.kubectl_diff` setting adds a `kubectl diff`
+or server dry run that flags deletes of namespaces, PVCs, statefulsets and CRDs. See
+[GUIDE: plan-aware terraform gate](GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure).
+
 ## How is Reflex different from Claude Code permission prompts and allowlists?
 
 Claude Code's permission rules match tools and command prefixes; Reflex judges each shell command

@@ -43,6 +43,8 @@ function setupPluginLive(file = join(XDG, "opencode/plugins/reflex.js")) {
 }
 const INSTRUCTIONS = GATE.replace(/gate\.mjs$/, "instructions.mjs");
 const GUARD = GATE.replace(/gate\.mjs$/, "guard.mjs");
+// Every script runs through hook.mjs, so an error while it loads still gives a JSON answer (fails closed).
+const HOOK = GATE.replace(/gate\.mjs$/, "hook.mjs");
 // 0: the default; with System 2 on, install.mjs writes how long a gate call may take (Jev plus the judge).
 const GATE_TIMEOUT_MS = Number("__REFLEX_GATE_TIMEOUT_MS__") || 15000;
 const selected = new Map();   // sessionID -> injected text. ponytail: never pruned; one short string per session.
@@ -95,8 +97,8 @@ function guardResult(input, output, directory, session_id) {
 function gate(flag, payload, script = GATE) {
   const args = !FILLED ? [script, flag] : script === GATE ? [script, flag, "--mode", MODE, "--allow", ALLOW] : [script, flag, "--mode", MODE];
   // the guard: an 8 s Jev budget plus node start; the gate: Jev, and System 2 when it is on
-  const r = spawnSync(NODE, args, {input: JSON.stringify(payload), encoding: "utf8", timeout: script === GATE ? GATE_TIMEOUT_MS : 15000});
-  return r.stdout;
+  const r = spawnSync(NODE, [HOOK, ...args], {input: JSON.stringify(payload), encoding: "utf8", timeout: script === GATE ? GATE_TIMEOUT_MS : 15000});
+  return r.error ? "" : r.stdout;   // not started, or killed at the timeout: no answer
 }
 
 export const Reflex = async ({directory, client}) => !FILLED && setupPluginLive() ? {} : ({
@@ -135,13 +137,14 @@ export const Reflex = async ({directory, client}) => !FILLED && setupPluginLive(
       d = JSON.parse(gate("--decide", {agent: "opencode", command: output.args?.command,
         cwd: output.args?.workdir || directory, session_id: await rootOf(client, input.sessionID), call_id: input.callID}));
     } catch {
-      // The gate itself failed. Only block when enforcing; shadow mode must never get in the way.
-      if (mode() === "enforce") throw new Error("reflex: gate unavailable, blocked (fail-closed)");
-      return;
+      // No JSON answer (the gate did not start, timed out or crashed before hook.mjs could answer): an
+      // ask, except in shadow and off, which never get in the way.
+      d = ["shadow", "off"].includes(mode()) ? {effective: "pass"}
+        : {effective: "ask", reason: "reflex error: the gate gave no decision; a human must review"};
     }
-    // pass and allow both run: opencode has no prompt of its own here to skip.
-    if (d.effective === "deny") throw new Error(d.reason);
-      if (d.effective === "ask") throw new Error(`${d.reason}. This plugin cannot open an approval dialog. The user can review and run the exact command with reflex run in their own terminal (include --cwd). A chat confirmation does not unblock this plugin; do not retry or disable it.`);
+    // pass and allow both run: opencode has no prompt of its own here to skip. Anything else asks.
+    if (d?.effective === "deny") throw new Error(d.reason);
+    if (!["pass", "allow"].includes(d?.effective)) throw new Error(`${d?.reason ?? "reflex error: the gate gave no decision; a human must review"}. This plugin cannot open an approval dialog. The user can review and run the exact command with reflex run in their own terminal (include --cwd). A chat confirmation does not unblock this plugin; do not retry or disable it.`);
   },
   "tool.execute.after": async (input, output) => {
     // A task that ran is a launched subgoal: dedup offers only those.

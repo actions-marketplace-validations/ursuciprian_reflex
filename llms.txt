@@ -19,7 +19,7 @@ npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/r
 - [Supported agents](https://github.com/ursuciprian/reflex#supported-agents-claude-code-hooks-codex-hooks-and-more): which hook each agent uses and how an ask is shown
 - [Cost and latency](https://github.com/ursuciprian/reflex#cost-and-latency): token use, timing and price assumptions per engine
 - [Limits](https://github.com/ursuciprian/reflex#limits): what Reflex does not cover
-- [FAQ](https://github.com/ursuciprian/reflex/blob/main/docs/FAQ.md): 27 questions with direct answers, from "how do I stop Claude Code from running dangerous commands" to uninstalling
+- [FAQ](https://github.com/ursuciprian/reflex/blob/main/docs/FAQ.md): 28 questions with direct answers, from "how do I stop Claude Code from running dangerous commands" to uninstalling
 - [Setup](https://github.com/ursuciprian/reflex/blob/main/docs/SETUP.md): TypeSafe key, install options, per-agent hooks, enforce mode, calibrated allow, the autonomous profile, configuration variables, uninstall
 - [Guide](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md): design, testing, rollout, data handling, safety properties, injection guard, autonomous agents, Laya
 
@@ -28,6 +28,7 @@ npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/r
 - [Data handling](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#data-handling): exactly what leaves the machine with each engine, and redaction
 - [Safety properties and limits](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#safety-properties-and-limits): fallbacks, failure modes and what is out of scope
 - [Injection guard](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#injection-guard): which tool results are scanned, detectors, what each agent can do with a finding
+- [Plan-aware terraform gate](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure): judging terraform apply by its saved plan (terraform show -json), denying destroys and replaces, an optional kubectl diff guardrail
 - [Autonomous agents](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#autonomous-agents): System 2 backends, the always-human class, the approval queue, task envelopes, checkpoints
 - [Suggest: fewer permission prompts](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#suggest-fewer-permission-prompts): `reflex suggest` proposes project-scoped fast-lane entries for repeated build, test and lint commands
 - [Calibrated allow](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md#calibrated-allow): letting clearly safe commands skip the agent's permission prompt
