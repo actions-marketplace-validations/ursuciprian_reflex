@@ -274,7 +274,7 @@ export async function handle(msg) {
 }
 
 export function serve(input = process.stdin) {
-  let buf = "";
+  let buf = "", skip = false;
   const inflight = new Set();
   const line = l => {
     if (l.endsWith("\r")) l = l.slice(0, -1);
@@ -288,8 +288,9 @@ export function serve(input = process.stdin) {
   input.on("data", chunk => {
     buf += chunk;
     let i;
-    while ((i = buf.indexOf("\n")) > -1) { const l = buf.slice(0, i); buf = buf.slice(i + 1); line(l); }
-    if (buf.length > MAX_LINE) { buf = ""; fail(null, -32600, "Invalid Request: message too large"); }
+    while ((i = buf.indexOf("\n")) > -1) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (skip) skip = false; else line(l); }
+    // an oversized message is answered once and the rest of it, up to its newline, dropped
+    if (buf.length > MAX_LINE) { buf = ""; if (!skip) fail(null, -32600, "Invalid Request: message too large"); skip = true; }
   });
   // stdin closed: finish what is in flight, then exit
   input.on("end", async () => { if (buf) line(buf); await Promise.allSettled([...inflight]); process.exit(0); });
