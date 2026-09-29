@@ -105,7 +105,9 @@ All notable changes to Reflex are documented here. The format follows
   (no `-`, `+`, `$`, backtick, backslash, glob, brace or `~user`); a word after it is also checked
   as a path from there against the secret file list, so `cd ~ && cat .ssh/id_rsa` is not
   read-only. The remote command of a read-only `ssh` follows the same rules
-  (`ssh h 'uptime; df -h'`). The tamper check still sees each `cd` and runs first.
+  (`ssh h 'uptime; df -h'`), except a newline or other control character, even quoted, and `2>&1`
+  in the remote text (a csh login shell runs a quoted newline's next line and reads `2>&1` as a
+  write to a file named `1`). The tamper check still sees each `cd` and runs first.
 - In the simple mode the read-only pass runs after every rule, the tamper check and the local
   script scan, just before the fast lane, so a command that looks like a read cannot skip a rule.
   The bundled, user and team fast lanes then apply only to a command that is one pipeline, each

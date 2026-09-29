@@ -661,7 +661,10 @@ command of only `cd` is not read-only. A word after a `cd` is also checked as a 
 directory, so `cd ~/.ssh && ls` and `cd ~ && cat .ssh/id_rsa` are secret reads, not read-only.
 The tamper check still sees the `cd` and runs first: `cd .. && sed -i … gate.mjs` from inside the
 checkout asks. A `CDPATH` in the agent's environment (not in the command, where tamper catches it)
-can send a relative `cd` elsewhere; each part after it is still only a read. A fast lane pattern
+can send a relative `cd` elsewhere; each part after it is still only a read. A `cd` hook in your
+own shell setup (a zsh `chpwd` function, or a tool that wraps `cd` such as rvm or autoenv) runs
+when the agent's shell changes directory, and may source a file from the new one: keep such hooks
+out of the shell your agent uses (the legacy mode passes `cd` chains too). A fast lane pattern
 applies only to a command that is one pipeline: `cd x && npm test` and `ls; go test ./...` are
 judged, not passed.
 
@@ -691,7 +694,9 @@ reads a secret.
 
 The remote command of `ssh` is the words after the host joined by spaces, which is what the remote
 shell reads, and it must be read-only by these same rules, chains and `cd` included:
-`ssh h 'uptime; df -h'` and `ssh h 'cd /var/log && tail -n 5 syslog'` are read-only.
+`ssh h 'uptime; df -h'` and `ssh h 'cd /var/log && tail -n 5 syslog'` are read-only. The remote
+text may not hold a newline or other control character, even quoted, or `2>&1`: a csh or tcsh login
+shell ends a command at a quoted newline and reads `2>&1` as a redirect to a file named `1`.
 
 A repository's own configuration still applies to what runs: a `diff.external` or `core.fsmonitor`
 set in `.git/config` runs for `git diff` and `git status` as it would for any git command, and

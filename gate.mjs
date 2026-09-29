@@ -1109,6 +1109,8 @@ function sshOk(a, {first, tilde}) {
   }
   const host = a[i], remote = a.slice(i + 1).join(" ");
   if (remote.includes("\\")) return false;   // a remote fish shell reads \' inside '...' as a quote
+  // a remote csh reads a quoted newline as the end of the command, and 2>&1 as `2 >& 1` (a file named 1)
+  if (/[\0-\x1f\x7f]|>&/.test(remote)) return false;
   // an unquoted ~ is the local home, sent to the host: refused
   return first && !tilde && !!host && /^([\w][\w.-]*@)?[\w][\w.-]*$/.test(host) && !!remote.trim() && readOnlySimple(remote);
 }
@@ -3631,6 +3633,7 @@ async function selfcheck() {
     "cd .aws && cat credentials", "cd ~ && cd .ssh && ls", "cd ~/.config/gh && cat hosts.yml", "cd /proc/1 && cat environ", "cd x && cat .env", "cd '~' && cat .ssh/id_rsa",
     "cd a b && ls", "cd -P x && ls", "cd +1 && ls", "cd x | ls", "ls | cd x", "cd 'a*' && ls", "cd 'a\\b' && ls", "cd '$HOME' && ls", "cd ~root && ls", "cd x; (ls)",
     "ls;;pwd", "ls; ", "ls &&", "&& ls", "ls |& cat", "ls 2>/dev/null&", "ls &", "cd x && ls > f", "ls; cat f | ssh h cat", "ssh h 'ls; rm x'", "ssh h 'ls & rm x'",
+    "ssh h \"echo 'x\ntouch y\n'\"", "ssh h 'echo \"a\rb\"'", "ssh h 'cd /etc && ls 2>&1'",
     "ssh h 'cd $D && ls'", "ls; echo $X", "ls && cat <<EOF\nx\nEOF", "ls; `rm x`", "ls; ls *.md", "cd x && git -c core.pager=sh log"])
     ok(!readOnlySimple(c), `simple, composed not read-only: ${c}`);
   { const pass = load("rules.json").pass.map(p => new RegExp(p, "i"));
