@@ -32,17 +32,52 @@ What the plugin adds:
 | Part | What it is |
 |---|---|
 | `hooks/hooks.json` | the same Claude Code events, matchers and timeouts as `install.mjs --agent claude` (see step 3): `PreToolUse` on `Bash\|Task\|Agent` (10 s), `PostToolUse`, `PostToolUseFailure` and `PermissionDenied` records (5 s), `PermissionRequest` (5 s), `UserPromptSubmit` instructions (10 s) and prompt guard (5 s), and the injection guard on `PostToolUse` for `^(WebFetch\|WebSearch\|Read\|Bash)$\|^mcp__` (15 s). Each runs `node "${CLAUDE_PLUGIN_ROOT}/<script>.mjs" <flag> --plugin`; a test keeps the file in step with `install.mjs` |
-| `commands/` | `/reflex:status`, `/reflex:check <command>`, `/reflex:report`, `/reflex:replay`, `/reflex:queue`, `/reflex:suggest`. All read-only: Claude runs the matching `reflex` command with the Bash tool, through the gate like any other command, and never with `--write`, `approve` or `--push` |
-| `skills/reflex` | tells Claude when to use `reflex check` and `reflex replay`, and not to work around a deny |
-| `bin/` | `reflex` and `reflex-sh` are on the Bash `PATH` while the plugin is enabled |
-| `.mcp.json` | the Reflex MCP server (`node "${CLAUDE_PLUGIN_ROOT}/mcp.mjs"`): read-only, advisory tools `reflex_check`, `reflex_scan`, `reflex_status`, `reflex_audit` and `reflex_explain` ([MCP server](#mcp-server-claude-desktop-cursor-codex)) |
+| `commands/` | `/reflex:status`, `/reflex:check <command>`, `/reflex:report`, `/reflex:replay`, `/reflex:queue`, `/reflex:suggest`. All read-only: Claude runs the plugin's own script with the Bash tool (`node "${CLAUDE_PLUGIN_ROOT}/<script>.mjs" --plugin ...`, never a `reflex` from `PATH`), through the gate like any other command, and never with `--write`, `approve` or `--push` |
+| `skills/reflex` | tells Claude when to check a command and replay past sessions, and not to work around a deny |
+| `.mcp.json` | the Reflex MCP server (`node "${CLAUDE_PLUGIN_ROOT}/mcp.mjs"`, the plugin options in its `env`): read-only, advisory tools `reflex_check`, `reflex_scan`, `reflex_status`, `reflex_audit` and `reflex_explain` ([MCP server](#mcp-server-claude-desktop-cursor-codex)). A local server: it runs in Claude Code and Cowork, not in claude.ai chat |
 
-Configuration is the same as for `reflex setup`: `~/.config/reflex/config.json`, the environment
-(`REFLEX_MODE` and the other variables under [Configuration](#configuration)) and, for Jev, the
-`TYPESAFE_API_KEY` variable or the Keychain item. With no saved settings the gate runs the local
-engine in shadow mode, which is also where a fresh `reflex setup` starts. The plugin writes no
-settings: to switch mode or engine, edit `config.json` or run `reflex setup --mode enforce` (which
-also installs the settings hooks; see below). Logs go to `~/.local/state/reflex` as usual.
+The plugin puts nothing on the Bash `PATH` (the CLI lives in `scripts/`, not a top-level `bin/`,
+which claude.ai and Cowork refuse to install), and nothing it runs downloads or installs anything:
+the Laya setup, `install.sh` and npx are for `reflex setup` only.
+
+### Plugin options
+
+Claude Code asks for these when you enable the plugin; change them later with `/plugin`, then
+reflex, then Configure, or under `pluginConfigs` in `settings.json`. Each one may stay empty.
+
+| Option | Values | Empty means |
+|---|---|---|
+| `engine` | `local` (rules only, no key, nothing leaves the machine) or `jev` | `engine` in `config.json`, else `jev` when the Jev API key is set, else `local` |
+| `provider` | `typesafe`, `openrouter`, `cloudflare`, `vercel` or `compatible` | `provider` in `config.json`, else `typesafe` |
+| `jev_api_key` | the key for that provider (sensitive: kept in the system's secure storage) | no Jev: the engine stays local |
+| `mode` | `off`, `shadow` or `enforce` | `mode` in `config.json`, else `shadow` |
+| `judge_api_key` | the key for a System 2 judge with backend `anthropic` or `openai-compatible` (sensitive) | no key for System 2 |
+
+Claude Code hands the options to the hooks as `CLAUDE_PLUGIN_OPTION_<KEY>` and to the MCP server
+through its `env` in `.mcp.json`. In the plugin those options and Reflex's own config files
+(`~/.config/reflex/config.json`, `fastlane.json`, the policy under `~/.config/reflex/tool-gate/`) are
+the only settings the hooks and the MCP server read. They never ask the macOS Keychain, never read
+`TYPESAFE_API_KEY` or another provider's key variable, `ANTHROPIC_API_KEY` or the `judge.key_env`
+variable, and ignore every `REFLEX_*` variable but `REFLEX_DATA_DIR` (where the logs go), every
+`JEV_*` variable and `CLOUDFLARE_ACCOUNT_ID` (set `cloudflare_account_id` or `provider_url` in
+`config.json` instead). The Codex CLI plugin below keeps reading the environment and the Keychain as
+`reflex setup` does.
+
+The `/reflex:*` commands run through the Bash tool, which Claude Code gives no plugin options, so
+they read `config.json` alone: `/reflex:check` judges with its engine (local when none is set), and
+`/reflex:status` shows its mode and engine and says that the hooks apply the options on top.
+
+Two more differences from `reflex setup`, both from the plugin directory's policy:
+
+- The allow gate is off: a plugin hook never answers `allow` (what setup would allow is a silent
+  pass, so Claude Code's own permission rules decide) and never rewrites a tool's input.
+- The injection guard does not replace a tool result. A result it would block reaches Claude with
+  the guard's warning next to it (`additionalContext`), and the session is checked more strictly
+  from then on, as after any block. `reflex setup` removes the injected text instead.
+
+With no options and no saved settings the gate runs the local engine in shadow mode, which is also
+where a fresh `reflex setup` starts. The plugin writes no settings. Logs go to
+`~/.local/state/reflex` as usual.
 
 Hooks run with the `PATH` Claude Code was started with. If `node` is not on it (for example Claude
 Code started from a desktop launcher with a minimal `PATH`), the hook command fails, Claude Code
@@ -106,7 +141,8 @@ new release changes one.
 Codex loads `skills/` by default and turns two of the Claude Code commands (`status`, `queue`) into skills (checked with Codex 0.157: they appear under `.codex-plugin/migrated-command-skills/` in the installed copy). The `reflex` CLI
 is not put on the `PATH` by Codex; install the package (`npm install -g @ursuciprian/reflex`) if you
 want those skills and `reflex status` to work. Configuration, defaults and logs are the same as for
-the Claude Code plugin above.
+`reflex setup`: `config.json`, the environment and, for Jev, the key variable or the Keychain item
+(the Claude Code plugin options above do not apply to Codex).
 
 **Plugin and `reflex setup` together.** Codex runs every matching hook from every source, so both
 would judge each call. When `reflex setup` (or `install.mjs --agent codex`) has written Reflex hooks
@@ -317,7 +353,7 @@ sends redacted excerpts of tool output to TypeSafe, so turn it on deliberately. 
 without installing: `pi -e /path/to/reflex/adapters/pi-context.ts` with
 `REFLEX_CONTEXT=/path/to/reflex/context.mjs` in the environment (same for `omp -e`).
 
-For an agent with no hook system, point its shell setting at `bin/reflex-sh`: it behaves like
+For an agent with no hook system, point its shell setting at `scripts/reflex-sh`: it behaves like
 `bash`, but judges every `-c` command first. Set `REFLEX_AGENT=<name>` so the logs say which agent
 it was.
 
@@ -696,7 +732,7 @@ variables:
 | `REFLEX_CHUNK_DAYS` / `REFLEX_CHUNK_MB` | `7` / `200` | Context-layer chunk store: delete chunks unused for this many days, then the least recently used beyond this size |
 | `REFLEX_CACHE_READ` / `REFLEX_CACHE_WRITE` | `0.1` / `1.25` | Prompt-cache read and write price as a fraction of uncached input, for the rebuild-or-keep decision |
 | `REFLEX_CONTEXT` | set by `install.mjs` | Path to `context.mjs` for the pi / omp context extension |
-| `REFLEX_REVIEWER` | none | Reviewer command for `bin/reflex-review`, e.g. `codex exec -s read-only -` |
+| `REFLEX_REVIEWER` | none | Reviewer command for `scripts/reflex-review`, e.g. `codex exec -s read-only -` |
 
 ## Optional: Grafana
 

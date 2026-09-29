@@ -80,7 +80,7 @@
     "node": ">=18"
   },
   "bin": {
-    "reflex": "bin/reflex"
+    "reflex": "scripts/reflex"
   },
   "files": [
     "*.mjs",
@@ -92,7 +92,7 @@
     "commands/",
     "skills/",
     "adapters/",
-    "bin/",
+    "scripts/",
     "dashboards/",
     "docs/",
     "examples/",

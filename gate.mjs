@@ -7,7 +7,7 @@
 //   node gate.mjs --codex         Codex CLI PreToolUse hook     (--codex-post)
 //   node gate.mjs --hermes        Hermes pre_tool_call hook     (--hermes-post)
 //   adapters/opencode.js, adapters/pi.ts                        plugins that call --decide / --record
-//   bin/reflex-sh -c "<cmd>"      bash drop-in for agents without hooks: judge, then run/confirm/refuse
+//   scripts/reflex-sh -c "<cmd>"      bash drop-in for agents without hooks: judge, then run/confirm/refuse
 //   node gate.mjs --check "<cmd>" judge one command from the terminal
 //   node gate.mjs --selfcheck     offline tests, no API calls
 //   --mode off|shadow|enforce, --allow off|shadow|on   written into hook commands by install.mjs
@@ -22,6 +22,8 @@
 // only for a fresh Jev answer that clears the policy's allow gate.
 // First: failsafe.mjs answers the agent (ask, or block where it cannot ask) on any error after this.
 import {hookFailure} from "./failsafe.mjs";
+// Next: in the Claude Code plugin, settings come from the plugin options and config.json only (plugin.mjs).
+import {PLUGIN_ERROR, PLUGIN_FLAG, PLUGIN_MODE, pluginKey} from "./plugin.mjs";
 import {appendFileSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
         openSync, readSync, writeSync, closeSync, rmSync, readdirSync, fstatSync, lstatSync, realpathSync, symlinkSync} from "node:fs";
 import {createHash, randomUUID} from "node:crypto";
@@ -113,23 +115,24 @@ export function settingsHooks(file = CLAUDE_SETTINGS, agent = "claude") {
   return {live: [...new Set(live)], stale: [...new Set(stale)]};
 }
 export const settingsHooksInstalled = (file, agent) => settingsHooks(file, agent).live.length > 0;
-export const PLUGIN = process.argv.includes("--plugin");
+export const PLUGIN = PLUGIN_FLAG;
 const CODEX_PLUGIN = PLUGIN && process.argv.some(a => /^--codex(-|$)/.test(a));
 // Standing down, read the input first: an agent writing a large tool result must not get EPIPE.
-if (PLUGIN && (CODEX_PLUGIN ? settingsHooksInstalled(CODEX_HOOKS, "codex") : settingsHooksInstalled())) {
+if (PLUGIN && process.argv.some(a => /^--(claude|codex)(-|$)/.test(a)) && (CODEX_PLUGIN ? settingsHooksInstalled(CODEX_HOOKS, "codex") : settingsHooksInstalled())) {
   // isatty, not process.stdin.isTTY: touching process.stdin makes a pipe non-blocking and the read fails with EAGAIN
   if (!isatty(0)) try { readFileSync(0); } catch { /* nothing to read */ }
   process.exit(0);
 }
 // With no saved engine the gate starts where a fresh `reflex setup` does: local, no key needed, or
 // Jev when a TypeSafe key is in the environment, or a Keychain item or an earlier install is
-// recorded. The plugin relies on this default.
+// recorded. The Claude Code plugin starts local too, or Jev when its options hold a key.
 // Which provider carries Jev (providers.mjs): TypeSafe direct, OpenRouter, Cloudflare, Vercel or a
 // compatible endpoint, from REFLEX_PROVIDER, config.json "provider" or the keys in the environment.
 export const PROVIDER = resolveProvider(ENV, USER_CONFIG);
-const ENGINE = ENV.REFLEX_ENGINE ?? flagValue("--engine", USER_CONFIG.engine ??
+// The Claude Code plugin: jev when its options hold a key, else local (no Keychain, no environment).
+const ENGINE = ENV.REFLEX_ENGINE ?? flagValue("--engine", USER_CONFIG.engine ?? (PLUGIN_MODE ? (pluginKey() ? "jev" : "local") :
   (PROVIDER.detected || USER_CONFIG.provider || USER_CONFIG.keychain ||
-   Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
+   Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local")));
 // engine laya: the same questions and policy as Jev, answered by a Laya checkpoint served on this
 // machine (setup/laya/server.py, `reflex laya start`); nothing leaves it and no key is needed.
 export const LAYA_DEFAULTS = {port: 8421, model: "typed-decisions"};
@@ -188,7 +191,7 @@ export const setupFile = f => !ENV.REFLEX_SETUP_DIR && CONFIG.setup === join(HER
   existsSync(join(policyDirectory, f)) ? join(policyDirectory, f) : join(CONFIG.setup, f);
 export const load = f => JSON.parse(readFileSync(setupFile(f), "utf8"));
 export function configurationError() {
-  return USER_CONFIG_ERROR ?? (!ENGINES.includes(CONFIG.engine) ? "engine must be local, jev or laya"
+  return USER_CONFIG_ERROR ?? PLUGIN_ERROR ?? (!ENGINES.includes(CONFIG.engine) ? "engine must be local, jev or laya"
     : CONFIG.engine === "jev" && PROVIDER.error ? PROVIDER.error
     : !["off", "shadow", "enforce"].includes(CONFIG.mode) ? "mode must be off, shadow or enforce"
     : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra));
@@ -1402,7 +1405,15 @@ const SEVERITY = {deny: 2, ask: 1};
 const COMMAND_BYTES = 32 * 1024, PRECHECK_MS = 3000;
 // Granting trust in a team policy (team.mjs), by the CLI or by its file or function.
 const TEAM_TAMPER = /\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b|\bteam\.mjs\b|\btrusted\.json\b|\btrustRepo\b/;
+// The Claude Code plugin's commands (commands/*.md) run this copy's own scripts with node, as
+// scripts/reflex does for `reflex check|status|report|replay|suggest|queue`: judged as that `reflex`
+// command, so they get its fast lane and its tamper rules. Only this directory's files, as the
+// command's first words; anything after them is judged as usual.
+const OWN = new RegExp(String.raw`^node[ \t]+("?)${HERE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:gate\.mjs\1[ \t]+--plugin[ \t]+--(check)|` +
+  String.raw`status\.mjs\1[ \t]+--plugin[ \t]+--(status)|(report)\.mjs\1[ \t]+--plugin|replay\.mjs\1[ \t]+--plugin[ \t]+(replay|suggest)|autonomy\.mjs\1[ \t]+--plugin[ \t]+(queue))(?=[ \t]|$)`);
+export const ownCommand = c => { const m = OWN.exec(c); return m ? `reflex ${m.slice(2).find(Boolean)}${c.slice(m[0].length)}` : null; };
 export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now() + PRECHECK_MS, scan: Date.now() + SCAN_MS, scripts: new Set()}) {
+  if (depth === 0) command = ownCommand(command) ?? command;
   env = withAwsProfile(command, env);
   const size = n => ({outcome: "ask", rule: `command too large to check (${n})`, id: "command-size", source: "rule", policy_version: load("rules.json").version});
   if (command.length > COMMAND_BYTES) return largeDeny(command, cwd, env, run.deadline) ?? size(`over ${COMMAND_BYTES / 1024} KB`);
@@ -1590,7 +1601,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
       /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(command.replace(/["'\\]/g, "")) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
       (inRepo && /\bCDPATH=/.test(command)) ||
-      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
+      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra|plugin|failsafe|hook|guard|providers)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bscripts\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // A repo's team policy (.reflex/) and the user's trust in it (team.mjs): a human's call.
   // A glob that expands to .reflex counts, and so does naming policy.json where a team policy applies.
@@ -1634,8 +1645,14 @@ function precheckAs(command, cwd, env, run, alt = false) {
 // ---------------------------------------------------------------------------------------------
 // Jev. The active provider's key: its environment variables, else its macOS Keychain item (TypeSafe's
 // is REFLEX_KEYCHAIN_SERVICE or "keychain" in config.json, as before). Read once per process, never logged.
+// In the Claude Code plugin: the Jev API key plugin option, and nothing else.
 const KEYS = {};   // per provider, so a key read for one is never sent as another's
 function apiKey() {
+  if (PLUGIN_MODE) {
+    const k = pluginKey();
+    if (k) return k;
+    throw new Error(`no API key for ${CONFIG.provider}: set the Jev API key in the Reflex plugin options (/plugin, reflex, Configure)`);
+  }
   if (KEYS[CONFIG.provider]) return KEYS[CONFIG.provider];
   const p = PROVIDERS[CONFIG.provider], env = p.env.map(n => ENV[n]?.trim()).find(Boolean);
   if (env) return (KEYS[CONFIG.provider] = env);
@@ -2150,8 +2167,8 @@ async function claudePre(input) {
   if (out) process.stdout.write(JSON.stringify(out));
 }
 // pass is silent: Claude Code's own permission rules decide. allow skips its prompt, but its deny
-// and ask rules are still evaluated after the hook.
-const claudeOut = d => ["allow", "ask", "deny"].includes(d.effective) ? {hookSpecificOutput: {hookEventName: "PreToolUse",
+// and ask rules are still evaluated after the hook. The plugin never allows: its allow is a pass.
+const claudeOut = d => (PLUGIN_MODE ? ["ask", "deny"] : ["allow", "ask", "deny"]).includes(d.effective) ? {hookSpecificOutput: {hookEventName: "PreToolUse",
   permissionDecision: d.effective, permissionDecisionReason: d.reason}} : null;
 function claudePost(input) {
   if (input.tool_name && !["Bash", "Task", "Agent"].includes(input.tool_name)) return;
@@ -2640,7 +2657,7 @@ async function selfcheck() {
     "(cd ~/.claude && ls) && echo x > notes.txt", "(cd ~/.codex && cat hooks.json) > /tmp/h",
     "cd /w/.claude/worktrees/a && gh pr comment 6 --repo ursuciprian/reflex --body-file /tmp/b", "cd /srv/app && npx -y -p @ursuciprian/reflex@0.3.0 reflex version",
     "cd /tmp/x && curl -sL https://example.com/reflex/hooks.md -o pm.md", "D=/tmp/logo; cd $D && python3 - <<'EOF'\nopen('a.svg', 'w').write('reflex')\nEOF",
-    "rtk proxy grep -n x bin/reflex; rtk proxy grep -n \"destructive-delete\\|\\\"prod\\\",\" setup/x.json"])
+    "rtk proxy grep -n x scripts/reflex; rtk proxy grep -n \"destructive-delete\\|\\\"prod\\\",\" setup/x.json"])
     ok(pw(c) !== "tamper", `not tamper, a read after cd: ${c}`);
   // ssh options after the host, timeout options, ip prefixes per iproute2 first match, a remote find
   for (const c of ["ssh -J a h -J b uptime", "ssh h -J b uptime", "ssh h -J b 'uptime'", "timeout -k1 5 ssh h uptime", "timeout -k 1 5 ssh h uptime",
@@ -2777,7 +2794,8 @@ async function selfcheck() {
   ok((await judge({command: "sed -i '' s/0.5/0/ instructions.mjs", cwd: HERE, env: {}})).outcome === "ask", "judge: tamper with instructions.mjs");
   // the router's command templates and server list decide what it executes: same protection as setup/
   ok((await judge({command: "sed -i '' s/rg/sh/ router/commands.json", cwd: HERE, env: {}})).outcome === "ask", "judge: tamper with the router");
-  for (const c of ["sed -i '' s/restricted/public/ routing/policy.json", "sed -i '' s/0.5/0/ context.mjs", "chmod -x bin/reflex-review"])
+  for (const c of ["sed -i '' s/restricted/public/ routing/policy.json", "sed -i '' s/0.5/0/ context.mjs", "chmod -x scripts/reflex-review",
+    "sed -i '' s/PLUGIN_MODE/false/ plugin.mjs", "cp /tmp/x.mjs failsafe.mjs"])
     ok((await judge({command: c, cwd: HERE, env: {}})).outcome === "ask", `judge: tamper (${c})`);
   // ssh options that run a local command ask without a Jev call (Jev once passed the -J one)
   for (const cmd of ["ssh -J bastion,-oProxyCommand=/tmp/x.sh db-1 'uptime'", "ssh -o ProxyJump=-oProxyCommand=x h", "ssh -oProxyCommand='nc %h %p' h",
@@ -3150,7 +3168,7 @@ else if (flag("--decide")) await guarded(async () => process.stdout.write(JSON.s
 else if (flag("--record")) await guarded(async () => record(readStdin()));
 else if (flag("--bg")) await guarded(async () => decide(readStdin(), {background: true}));
 else if (flag("--sh")) {
-  // Shell shim (bin/reflex-sh): bash-compatible `-c` / `-lc` calls are judged, then run, confirmed
+  // Shell shim (scripts/reflex-sh): bash-compatible `-c` / `-lc` calls are judged, then run, confirmed
   // on the terminal, or refused with exit 126. Everything else is passed to bash untouched.
   const args = argv.slice(argv.indexOf("--sh") + 1);
   const ci = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a));

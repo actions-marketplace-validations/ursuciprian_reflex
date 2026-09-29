@@ -53,8 +53,8 @@ NODE="$(command -v node)"
 PKG_DIR="$PREFIX/lib/node_modules/$NAME"
 
 if [ "$UNINSTALL" = 1 ]; then
-  if [ -f "$PKG_DIR/bin/reflex" ]; then
-    exec "$NODE" "$PKG_DIR/bin/reflex" uninstall
+  if [ -f "$PKG_DIR/scripts/reflex" ]; then
+    exec "$NODE" "$PKG_DIR/scripts/reflex" uninstall
   fi
   rm -rf "$PREFIX" "$HOME/.local/bin/reflex"
   say "nothing installed in $PREFIX"
@@ -75,8 +75,8 @@ if ! npm install --global --prefix "$PREFIX" --no-audit --no-fund --loglevel=err
   cat "$TMP/npm.err" >&2
   die "npm install failed"
 fi
-[ -f "$PKG_DIR/bin/reflex" ] || die "package installed but $PKG_DIR/bin/reflex is missing"
+[ -f "$PKG_DIR/scripts/reflex" ] || die "package installed but $PKG_DIR/scripts/reflex is missing"
 
 # Everything else (the reflex command, the API key, the agent hooks) is `reflex setup`, the same
 # code npx / pnpm dlx / bunx run.
-exec "$NODE" "$PKG_DIR/bin/reflex" setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
+exec "$NODE" "$PKG_DIR/scripts/reflex" setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}

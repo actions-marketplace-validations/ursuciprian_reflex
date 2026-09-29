@@ -118,7 +118,7 @@ Every decision is logged with the policy and rule versions to `~/.local/state/re
 | pi, oh-my-pi | extension `tool_call` | Native confirm dialog |
 | opencode | plugin `tool.execute.before` | Blocked; human uses `reflex run` in their own terminal |
 | Hermes | `pre_tool_call` | Hermes approval prompt |
-| Other | `bin/reflex-sh` as the shell | y/N on the terminal |
+| Other | `scripts/reflex-sh` as the shell | y/N on the terminal |
 
 Coverage is agent shell tools, subagent spawns (for dedup) and the optional tool router's own calls. File-edit tools and MCP tool calls go through each agent's own permissions. Hosts without hooks (Claude Desktop, Cursor, Cowork, any MCP host) can run `reflex mcp`, an MCP server for AI agent safety with five read-only, advisory tools: `reflex_check {command, cwd?}` (the gate's decision, reason, rule and source, nothing runs), `reflex_scan {text, source?}` (the injection guard's verdict and cleaned text), `reflex_status`, `reflex_audit {since?, prod_only?, limit?}` and `reflex_explain {rule_id}`. Hooks enforce; an MCP server cannot stop a client from running a command. The tools redact their output and never change Reflex's configuration. Codex hooks must be trusted in `/hooks` before they run.
 
@@ -329,7 +329,7 @@ the agent acts on them. They are complementary, and both can run on the same age
 ### Which AI coding agents does Reflex support?
 
 Claude Code, Codex CLI, pi, oh-my-pi, opencode and Hermes, each through its own hook system; any
-other agent can use `bin/reflex-sh` as its shell. Setup hooks every supported agent it finds (for
+other agent can use `scripts/reflex-sh` as its shell. Setup hooks every supported agent it finds (for
 Hermes it prints a block to paste into `config.yaml`), or the ones you name with
 `--agents claude,codex`. Reflex needs Node.js 18+ on macOS or Linux,
 including WSL; native Windows is not supported yet.

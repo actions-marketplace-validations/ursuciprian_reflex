@@ -23,6 +23,6 @@ printf 'node_modules/\n' > .gitignore
 git init -q -b main && git add -A && git -c user.name=demo -c user.email=demo@example.com commit -qm "initial commit"
 # "origin" is a bare repository next to it, also under /tmp/reflex-demo: no network remote exists.
 git init -q --bare "$D/origin.git" && git remote add origin "$D/origin.git" && git push -q origin main
-reflex() { node "$REFLEX_REPO/bin/reflex" "$@"; }
+reflex() { node "$REFLEX_REPO/scripts/reflex" "$@"; }
 export PS1='$ '
 clear

@@ -1,4 +1,4 @@
-<h1 align="center"><img src="assets/wordmark.svg" alt="Reflex, a pre-execution risk gate and prompt injection guard for AI coding agents" width="320"></h1>
+# ![Reflex, a pre-execution risk gate and prompt injection guard for AI coding agents](assets/wordmark.svg)
 
 <p align="center">
   <a href="https://github.com/ursuciprian/reflex/actions/workflows/ci.yml"><img src="https://github.com/ursuciprian/reflex/actions/workflows/ci.yml/badge.svg" alt="CI status of the Reflex offline self-checks"></a>
@@ -12,9 +12,7 @@ it will change, then lets it run, asks a human, or blocks it.**
 
 Documentation website: <https://ursuciprian.github.io/reflex/>
 
-<p align="center">
-  <img src="assets/demo.gif" alt="Claude Code with the Reflex plugin blocking a force push to main and a prompt injection" width="900">
-</p>
+![Claude Code with the Reflex plugin blocking a force push to main and a prompt injection](assets/demo.gif)
 
 <p align="center"><sub>A real Claude Code session in a scratch repository; <a href="docs/demo/README.md">how to reproduce it</a>.</sub></p>
 
@@ -414,7 +412,7 @@ the agent). Jev's numbers vary slightly between runs.
 | AWS read vs mutating verbs | `aws ec2 describe-instances` / `aws ec2 terminate-instances ...` | pass / ask (rule) | pass / ask (rule) |
 | Force push to main | `git push --force origin main` | **deny** (rule) | **deny** (rule) |
 
-To reproduce, install Reflex (or use `node bin/reflex` from a checkout) and run from a shell with no
+To reproduce, install Reflex (or use `node scripts/reflex` from a checkout) and run from a shell with no
 `AWS_PROFILE` or current kube context:
 
 ```sh
@@ -887,7 +885,7 @@ sandbox cannot make.
 | pi, oh-my-pi | extension `tool_call` | Native confirm dialog |
 | opencode | plugin `tool.execute.before` | Blocked; human uses `reflex run` in their own terminal |
 | Hermes | `pre_tool_call` | Hermes approval prompt |
-| Other | `bin/reflex-sh` as the shell | y/N on the terminal |
+| Other | `scripts/reflex-sh` as the shell | y/N on the terminal |
 
 The injection guard reads tool results and prompts through each agent's own hooks, so what it can do
 differs:

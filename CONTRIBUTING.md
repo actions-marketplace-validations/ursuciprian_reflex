@@ -102,9 +102,9 @@ When you change rules, questions, policy or redaction:
 | `examples/instructions/` | Example fragments (front end, billing, Terraform) in a fixture repo, and the golden set |
 | `adapters/` | `pi.ts` (pi and oh-my-pi extension), `pi-context.ts` (pi / oh-my-pi context layer), `opencode.js` (opencode plugin) |
 | `context.mjs` | Context layer core: visibility ladder, chunk store, per-request assembly and cache decision, `/fresh` recall, retrieval bundles |
-| `bin/reflex` | The CLI: `setup` (what `curl` / `npx` / `pnpm dlx` / `bunx` run), `check`, `report`, `install`, `uninstall`, `test`, `eval`, `version` |
-| `bin/reflex-sh` | Drop-in `bash -c` for agents without hooks |
-| `bin/reflex-review` | Background cross-model review that consumes a retrieval bundle |
+| `scripts/reflex` | The CLI: `setup` (what `curl` / `npx` / `pnpm dlx` / `bunx` run), `check`, `report`, `install`, `uninstall`, `test`, `eval`, `version` |
+| `scripts/reflex-sh` | Drop-in `bash -c` for agents without hooks |
+| `scripts/reflex-review` | Background cross-model review that consumes a retrieval bundle |
 | `policy.mjs` | Policy evaluator: ordered gates over answers, no `eval`, no domain knowledge |
 | `setup/tool-gate/` | `rules.json`, `questions.json`, `policy.json`, `golden.json`, `subgoals.json`, `escalation.json` (the always-human class and System 2's prompt), `ladder.json` (the escalation golden set): all behaviour lives here; `fixtures/` holds the scripts the golden set runs |
 | `setup/redact.json` | The credential shapes and `KEY=` / `--password` patterns redacted before anything is judged or logged; shared by the gate and the model router, with a corpus both self-checks assert |

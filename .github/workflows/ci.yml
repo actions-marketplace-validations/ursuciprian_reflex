@@ -36,10 +36,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Syntax check
         run: |
-          for f in *.mjs router/*.mjs adapters/*.js bin/reflex bin/reflex-review; do
+          for f in *.mjs router/*.mjs adapters/*.js scripts/reflex scripts/reflex-review; do
             node --check "$f" || exit 1
           done
-          sh -n bin/reflex-sh
+          sh -n scripts/reflex-sh
           bash -n install.sh
       - name: Offline selfchecks
         run: npm test
