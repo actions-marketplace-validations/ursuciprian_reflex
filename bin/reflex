@@ -26,6 +26,8 @@
 //   reflex uninstall                                   remove every hook, the package and its link
 //   reflex setup --engine laya [--dry-run]             local System 1: a Laya server on 127.0.0.1 (no key)
 //   reflex laya start|stop|status|install-service      the Laya server's lifecycle (laya.mjs)
+//   reflex mcp                                         an MCP server on stdio (mcp.mjs): read-only, advisory tools
+//                                                      for Claude Desktop, Cursor, Cowork and any MCP host
 //   reflex test | eval                                 offline selfchecks | live golden set
 //   reflex version
 import {spawnSync} from "node:child_process";
@@ -352,9 +354,10 @@ switch (cmd) {
   case "install": process.exit(run("install.mjs", args.includes("--agent") ? args : ["--agent", "all", ...args]));
   case "eval": process.exit(run("eval.mjs", args));
   case "laya": process.exit(run("laya.mjs", args));
+  case "mcp": process.exit(run("mcp.mjs", args));
   case "test": process.exit(spawnSync("npm", ["test", "--silent"], {cwd: ROOT, stdio: "inherit"}).status ?? 1);
   case "version": case "--version": case "-v": console.log(version(ROOT)); break;
   default:
-    console.error("usage: reflex setup | status | doctor | check <cmd> | scan <file|-> | run <cmd> | report | audit | replay | suggest | bench | queue | envelope | checkpoints | runaway | laya | install | uninstall | test | eval | version");
+    console.error("usage: reflex setup | status | doctor | check <cmd> | scan <file|-> | run <cmd> | report | audit | replay | suggest | bench | queue | envelope | checkpoints | runaway | laya | mcp | install | uninstall | test | eval | version");
     process.exit(cmd ? 2 : 0);
 }
