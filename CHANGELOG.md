@@ -23,6 +23,16 @@ All notable changes to Reflex are documented here. The format follows
   `--prune` gets a tamper ask. CLI only: the Claude Code plugin does not ship it. On the maintainer's
   history (32,001 commands, 30 days, keyless) it proposed nothing: 50.4 humans per 100 before and
   after, because the commands that ask there are interpreters, `sed -i`, `curl`, `gh` and `git`.
+  A learned entry is pinned to the sha256 of the scripts it runs; an edited script stops passing.
+
+### Security
+
+- User fast lane: a script body with inline interpreter code (`node -e`, `python -c`, `sh -c`,
+  `deno eval`) no longer qualifies, and `reflex` and the gate's entry points are denied words.
+- Tamper: a local script (package.json script, Makefile recipe, shell file) that runs `reflex setup`,
+  `reflex queue approve|deny`, `reflex suggest --write` or `reflex learn --write` is a tamper ask,
+  also in the bundled fast lane (`npm run lint`). `reflex suggest` or `reflex learn` with its flags in
+  a variable, `"$@"`, `xargs`, `eval` or a function is a tamper ask too.
 
 ### Fixed
 

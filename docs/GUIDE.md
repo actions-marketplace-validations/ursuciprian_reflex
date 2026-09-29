@@ -567,7 +567,10 @@ reflex learn --team                    # a .reflex/policy.json fastlane snippet 
 - an ask with no run and no answer after 10 minutes counts as refused or interrupted.
 
 A System 1 allow, a System 2 approve or deny and a command the fast lane or a rule decided are never
-answers. Everything is read from Reflex's own logs (the queue, `trace.jsonl`, `feedback.jsonl`),
+answers, and neither are Hermes' own approval modes or Claude Code outside its default permission
+mode (`bypassPermissions`, `acceptEdits`, auto). The same command approved again in one session is
+one answer, so an "always allow" or a retry loop does not add up. Refusals count from any time,
+approvals only inside `--since`. Everything is read from Reflex's own logs (the queue, `trace.jsonl`, `feedback.jsonl`),
 `--since` 30 days by default.
 
 **When a shape is proposed.** The approved commands are grouped with `reflex suggest`'s templates
@@ -579,7 +582,16 @@ and interpreter checks, the always-human class and the probes. On top of that, a
 - approved at least `--min` times (default 3) in at least 2 sessions;
 - never refused or left unanswered in that shape: one refusal of `npm run verify --fix` holds
   `^npm\s+run\s+verify$` back, whatever the approvals;
-- not production (the markers `prodTier` reads), not always-human, no denied word in the pattern.
+- not production (the markers `prodTier` reads), not always-human, no denied word in the pattern;
+- the project is a git repository: approvals in a folder with no `.git` (`~/work`, `/tmp`) are
+  held back, since an entry there would cover every repository below it.
+
+A learned entry is pinned: `pin` holds the sha256 of each local script it runs (the package.json
+script, the whole Makefile, the shell file) as it was when you confirmed it. If one of them changes,
+the entry stops passing that command until you learn it again. A script body that runs inline
+interpreter code (`node -e`, `python -c`, `sh -c`, `deno eval`) never qualifies for the user fast
+lane, and one that calls Reflex (`reflex learn --write`, `reflex queue approve`) is a tamper ask even
+in the bundled fast lane.
 
 Destructive, production, secret, tamper, always-human, change freeze and MCP commands are never
 learned, however many times you approved them: a rule decides them before the fast lane, or the
@@ -605,7 +617,9 @@ the routes). `--list` shows each with its uses and last use (fast-lane passes in
 
 **Who can write.** `--write` shows the lines and asks on the terminal (not stdin, so an agent's pipe
 cannot answer); without one it needs `--yes`. When an agent runs `reflex learn --write`, `--forget`
-or `--prune`, the tamper rule asks a human, as it does for `reflex suggest --write`. `reflex status`
+or `--prune`, the tamper rule asks a human, as it does for `reflex suggest --write`, and so does
+`reflex learn` or `reflex suggest` with its flags hidden in a variable, `"$@"`, `xargs`, `eval` or a
+function. `reflex status`
 adds a passive line, "N commands you approved 3+ times could stop asking: run reflex learn", and
 never writes. `--team` prints a `fastlane` list per repository for `.reflex/policy.json`; teammates
 apply it with `reflex trust`, as for any team fast lane. `reflex learn` is part of the CLI only; the

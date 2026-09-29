@@ -8,6 +8,7 @@
 // script rules (precheck), so it never overrides a deny, a secret read or a tamper ask, and a command
 // in the always-human class (escalation.json, every rule) or with a word from DENY is never passed.
 // A file that does not validate is ignored as a whole (`reflex doctor` says why): a typo never widens.
+import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 import {homedir} from "node:os";
 import {dirname, isAbsolute, join, resolve} from "node:path";
@@ -29,6 +30,8 @@ export const DENY = new RegExp([
   String.raw`\b(npx|bunx|pnpx|uvx|pipx|dlx|pip3?|gem|brew|apt|apt-get|yum|dnf|cargo\s+install|go\s+(install|get|run|generate))\b`,
   String.raw`(\.env\b|\.pem\b|\.p12\b|\.key\b|id_(rsa|ed25519|ecdsa)|\.ssh\b|\.aws\b|\.kube\b|\.gnupg\b|\.netrc\b|\.npmrc\b|\.pypirc\b|credential|secret|passw|token|api[-_]?key|keychain)`,
   String.raw`(?<!(non|pre)[-_])\b(prod|production|prd|live)\b`,
+  // Reflex itself: a script that answers its queue or edits its fast lane
+  String.raw`\b(reflex|replay\.mjs|autonomy\.mjs|gate\.mjs|learn\.mjs|suggest\.mjs)\b`,
 ].join("|"), "i");
 
 // The file, validated. {entries: [{pattern, cwd, re}], error}. Missing: no entries, no error.
@@ -41,7 +44,7 @@ export function parseFastLane(text) {
   for (const [i, e] of doc.entries.entries()) {
     const why = entryError(e);
     if (why) return {entries: [], error: `entry ${i + 1}: ${why}`};
-    entries.push({pattern: e.pattern, cwd: e.cwd, re: compilePattern(e.pattern)});
+    entries.push({pattern: e.pattern, cwd: e.cwd, re: compilePattern(e.pattern), ...(e.pin && {pin: e.pin})});
   }
   return {entries, error: null};
 }
@@ -51,6 +54,8 @@ function entryError(e) {
   if (!e || typeof e !== "object") return "not an object";
   if (typeof e.cwd !== "string" || !isAbsolute(e.cwd) || resolve(e.cwd) !== e.cwd) return "cwd must be an absolute, normalised path";
   if (broad(e.cwd)) return "cwd must be a project directory, not / or your home";
+  if (e.pin !== undefined && (!e.pin || typeof e.pin !== "object" || Array.isArray(e.pin) ||
+      Object.entries(e.pin).some(([k, v]) => !isAbsolute(k) || !/^[0-9a-f]{64}$/.test(String(v))))) return "pin must map absolute script paths to sha256 digests";
   return patternError(e.pattern);
 }
 
@@ -108,7 +113,9 @@ const inside = (cwd, root) => cwd === root || cwd.startsWith(root + "/");
 // read as code, so it never qualifies. A Makefile counts as a whole: make reads variables, includes,
 // $(shell), SHELL, double-colon and repeated rules and deeper prerequisites from anywhere in it.
 const CODE_FILE = /\.([cm]?[jt]sx?|py|rb|pl|php|lua)$/i, MAKEFILE = /(^|\/)(GNUmakefile|makefile|Makefile)$/;
-const opaque = text => /[$`]|\btee\b|npm_package_config/.test(text) ||
+// Inline interpreter code (node -e, python -c, sh -c, deno eval) is code nobody read as code.
+const INLINE = /\b(node|nodejs|deno|bun|python[\d.]*|ruby|perl|php|lua|osascript|(ba|z|da|k|c|tc|fi)?sh)\b[^\n;&|]*\s(-[a-zA-Z]*[cep]|--eval|--print|eval|-)(\s|$)/;
+const opaque = text => /[$`]|\btee\b|npm_package_config/.test(text) || INLINE.test(text) ||
   />/.test(text.replace(/[0-9&]?>{1,2}\s*\/dev\/null\b/g, "").replace(/[0-9]>&[0-9]/g, ""));
 function scriptOk(s) {
   if (s.unseen || !s.body || CODE_FILE.test(s.path)) return false;
@@ -126,6 +133,12 @@ function npmrcRedirects(cwd) {
   for (let d = cwd; d !== dirname(d); d = dirname(d)) dirs.push(d);
   return dirs.some(d => { try { return /^\s*(script-shell|node-options|shell)\s*=/mi.test(readFileSync(join(d, ".npmrc"), "utf8")); } catch { return false; } });
 }
+// What a pinned entry was confirmed with: the script body (a Makefile as a whole, as scriptOk reads it).
+export function scriptDigest(s) {
+  let text = s.body ?? "";
+  if (MAKEFILE.test(s.path)) try { text = readFileSync(s.path, "utf8"); } catch { return null; }
+  return createHash("sha256").update(text).digest("hex");
+}
 /** True when the user fast lane passes the command: every segment read-only, bundled fast lane or a
  *  user pattern for this directory, no DENY word, no `cd`, every local script it runs read in full and
  *  free of DENY words, and nothing in the always-human class. precheck calls it last, after the rules.
@@ -139,9 +152,18 @@ export function userFastPass(command, cwd, env = {}, entries = [...loadFastLane(
   if (/(^|[\s;&|(])(cd|pushd|popd)(\s|$)/.test(maskQuotes(command, "_"))) return false;
   const rules = load("rules.json"), bundled = rules.pass.map(p => new RegExp(p, "i"));
   let used = false;
-  const user = {test: seg => { const hit = !DENY.test(seg) && mine.some(e => e.re.test(seg)); used ||= hit; return hit; }};
+  const pins = [];
+  const user = {test: seg => {
+    const hits = DENY.test(seg) ? [] : mine.filter(e => e.re.test(seg));
+    // a pinned entry (reflex learn) passes only the scripts it was confirmed with
+    if (hits.length && hits.every(e => e.pin)) pins.push(...hits.map(e => e.pin));
+    used ||= hits.length > 0;
+    return hits.length > 0;
+  }};
   if (!readOnly(command, [...bundled, user]) || !used) return false;
-  if (localScripts(command, cwd).some(s => !scriptOk(s))) return false;
+  const scripts = localScripts(command, cwd);
+  if (scripts.some(s => !scriptOk(s))) return false;
+  if (pins.length && scripts.some(s => !pins.some(p => p[s.path] && p[s.path] === scriptDigest(s)))) return false;
   if (npmrcRedirects(cwd)) return false;
   const bare = stripDataHeredocs(command), haystack = [bare, `cwd=${cwd}`, ...Object.entries(env).map(([k, v]) => `${k}=${v}`)].join(" ");
   return !rulesHit(haystack, {rules: teamEscalation(load("escalation.json"), cwd).always_human.rules}, bare);

@@ -10,9 +10,10 @@
 import {createHash} from "node:crypto";
 import {readFileSync, readdirSync} from "node:fs";
 import {join} from "node:path";
-import {CONFIG, jsonLines, precheck, prodTier, promptKey} from "./gate.mjs";
+import {existsSync} from "node:fs";
+import {CONFIG, jsonLines, localScripts, precheck, prodTier, promptKey} from "./gate.mjs";
 import {alwaysHuman, listItems} from "./autonomy.mjs";
-import {DENY, FASTLANE_FILE, compilePattern, parseFastLane} from "./fastlane.mjs";
+import {DENY, FASTLANE_FILE, compilePattern, parseFastLane, scriptDigest} from "./fastlane.mjs";
 import {blockingSegments, mergeSuggestions, projectOf, suggest, writeSuggestions} from "./suggest.mjs";
 
 export const STALE_DAYS = 60;
@@ -32,12 +33,15 @@ const logs = name => {
 /** What a human approved and refused since `since`: [{command, cwd, session, ts, source, id}]. */
 export function humanAnswers({since = 0, now = Date.now()} = {}) {
   const approved = [], denied = [];
+  // One approval per session and command: an "always allow" or a retry loop is one answer, not many.
+  const once = new Set(), approve = x => { const k = `${x.session}\0${x.cwd}\0${x.command}`; if (!once.has(k)) { once.add(k); approved.push(x); } };
   // `reflex queue approve|deny` is a person at a terminal (an agent running it is a tamper ask).
   for (const it of listItems()) {
     const ts = Date.parse(it.decided_at);
-    if (!(ts >= since) || typeof it.command !== "string") continue;
+    // refusals from any time count against a shape; approvals only inside the window
+    if (!Number.isFinite(ts) || typeof it.command !== "string") continue;
     const x = {command: it.command, cwd: it.cwd, session: it.session_id, ts, source: "queue", id: it.id};
-    if (["approved", "used"].includes(it.status)) approved.push(x);
+    if (["approved", "used"].includes(it.status)) { if (ts >= since) approve(x); }
     else if (it.status === "denied") denied.push(x);
   }
   const fb = logs("feedback"), ids = events => new Set(fb.filter(r => events.includes(r.event ?? "ran")).map(r => r.call_id).filter(Boolean));
@@ -46,7 +50,10 @@ export function humanAnswers({since = 0, now = Date.now()} = {}) {
   for (const r of logs("trace")) {
     const command = r.state?.call?.command, ts = Date.parse(r.ts), id = r.call_id;
     // shell commands only: never a subgoal or an MCP tool call
-    if (!(ts >= since) || typeof command !== "string" || !id || seen.has(id) || (r.tag ?? "tool-gate") !== "tool-gate" || r.state.call.tool || /^mcp__/.test(command)) continue;
+    if (!Number.isFinite(ts) || typeof command !== "string" || !id || seen.has(id) || (r.tag ?? "tool-gate") !== "tool-gate" || r.state.call.tool || /^mcp(__|\s)/.test(command)) continue;
+    // Hermes answers asks with its own approval modes (smart, yolo, always): not a person's answer.
+    // Claude Code outside the default permission mode approves without a person (report.mjs's filter).
+    if (r.agent === "hermes" || (r.agent === "claude-code" && ![undefined, null, "default"].includes(r.permission_mode))) continue;
     // Not a human's answer: an allow (System 1 or 2), a deny, a queue approval (counted above), a System 2 verdict.
     if (["allow", "deny"].includes(r.emitted) || r.source === "queue" || ["approve", "deny"].includes(r.ladder?.judge?.verdict)) continue;
     // Shown to a human: a Reflex ask, or a pass that met Claude Code's own dialog (report.mjs's join).
@@ -57,7 +64,7 @@ export function humanAnswers({since = 0, now = Date.now()} = {}) {
     const x = {command, cwd: r.cwd ?? r.state?.call?.cwd, session: r.session_id, ts, source: r.emitted === "ask" ? "reflex ask" : "agent prompt", id};
     if (refused.has(id)) denied.push(x);
     // A change freeze ask says nothing about the shape outside the window.
-    else if (ran.has(id)) { if (r.rule_id !== "freeze") approved.push(x); }
+    else if (ran.has(id)) { if (r.rule_id !== "freeze" && ts >= since) approve(x); }
     // No answer and no run: refused at the prompt or interrupted. Counts against the shape.
     else if (now - ts > ANSWER_MS) denied.push({...x, interrupted: true});
   }
@@ -91,19 +98,25 @@ export function learn({approved, denied}, {judge = precheck, min = 3, sessions =
     const re = compilePattern(s.pattern), near = loose(s.pattern);
     // the approvals behind it: suggest() grouped only the commands no rule or fast lane decides
     const mine = approved.filter(a => projectOf(a.cwd) === s.cwd && segs(a.command).some(seg => re.test(seg)) && !judge(a.command, a.cwd, {}));
-    const no = denied.filter(d => near.test(d.command.replace(/\s+/g, " ")));
-    const why = no.length ? `refused or left unanswered ${no.length} time${no.length === 1 ? "" : "s"} in this shape`
+    // quotes and backslashes dropped, as the shell and the gate drop them: npm run "fmt" is npm run fmt
+    const no = denied.filter(d => near.test(d.command.replace(/["'\\]/g, "").replace(/\s+/g, " ")));
+    // a real repository: a folder without .git would cover every repository below it
+    const why = !existsSync(join(s.cwd, ".git")) ? "not a git repository (an entry there would cover every repository below it)"
+      : no.length ? `refused or left unanswered ${no.length} time${no.length === 1 ? "" : "s"} in this shape`
       : s.sessions < sessions ? `approved in ${s.sessions} session${s.sessions === 1 ? "" : "s"}; needs ${sessions}`
       : !mine.length ? "no approved command matches it" : never(s.pattern, mine);
     if (why) { held.push({pattern: s.pattern, cwd: s.cwd, approved: s.count, denied: no.length, why}); continue; }
-    proposals.push({id: entryId(s.cwd, s.pattern), pattern: s.pattern, cwd: s.cwd, approved: s.count, denied: 0, sessions: s.sessions,
+    // Pinned to the scripts it runs as they are now: an edited package.json script or Makefile stops passing.
+    const pin = {};
+    for (const a of mine) for (const sc of localScripts(a.command, a.cwd)) { const d = scriptDigest(sc); if (d) pin[sc.path] = d; }
+    proposals.push({id: entryId(s.cwd, s.pattern), pattern: s.pattern, cwd: s.cwd, approved: s.count, denied: 0, sessions: s.sessions, pin,
       first: iso(s.first), last: iso(s.last), sources: tally(mine, a => a.source), samples: s.samples, why: s.why});
   }
   return {proposals, held, skipped: r.skipped};
 }
 
 // A proposal as a fastlane.json entry, with where it came from.
-const toEntry = (p, today) => ({id: p.id, pattern: p.pattern, cwd: p.cwd, note: `reflex learn ${today}: approved ${p.approved} times in ${p.sessions} sessions`,
+const toEntry = (p, today) => ({id: p.id, pattern: p.pattern, cwd: p.cwd, pin: p.pin, note: `reflex learn ${today}: approved ${p.approved} times in ${p.sessions} sessions`,
   learned_at: new Date().toISOString(), learned_from: {approved: p.approved, denied: 0, sessions: p.sessions, first: p.first, last: p.last, sources: p.sources}});
 export const mergeLearned = (proposals, file = FASTLANE_FILE) => mergeSuggestions(proposals, file, toEntry);
 
