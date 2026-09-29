@@ -699,7 +699,8 @@ try {
     const {parseFastLane, userFastPass, loadFastLane} = await import("./fastlane.mjs");
     const passes = (c, cwd = proj, e = {}) => precheck(c, cwd, e)?.source === "fast-lane";
     assert.ok(loadFastLane().error === null && ["npm run typecheck", "make lint 2>&1 | tail -5", "ruff check src/app.py", "ruff check ./pkg/x_y.py",
-      "docker compose images", "git status && npm run typecheck"].every(c => passes(c)), "the written entries pass what they were made from");
+      "docker compose images"].every(c => passes(c)) && !passes("git status && npm run typecheck"),
+      "the written entries pass what they were made from, one command or pipeline at a time (readonly simple)");
     mkdirSync(join(proj, "src"));
     assert.ok(passes("ruff check app.py", join(proj, "src")) && !passes("ruff check app.py", other) && !passes("npm run typecheck", other) && !passes("npm run typecheck", home), "scoped to the project");
     for (const c of ["npm run typecheck; rm -rf ~", "npm run typecheck && rm -rf node_modules", "npm run build; rm -rf ~", "make deploy", "make lint deploy",
