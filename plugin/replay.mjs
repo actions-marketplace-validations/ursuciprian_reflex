@@ -7,6 +7,8 @@
 //   node replay.mjs bench [--engine local|jev|laya] [--json]
 //   node replay.mjs suggest [agent] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]
 //                          fast-lane entries for what keeps asking (suggest.mjs); --write edits fastlane.json
+//   node replay.mjs learn [--since 30d] [--min N] [--json] [--write [--yes]] [--team] [--list] [--forget id] [--prune]
+//                          fast-lane entries from what you approved yourself (learn.mjs, CLI only)
 //
 // Transcripts: Claude Code ~/.claude/projects/**/*.jsonl (Bash tool_use), Codex $CODEX_HOME/sessions
 // (exec_command / shell calls, or CommandExecution items), opencode's opencode.db (bash tool parts,
@@ -27,7 +29,7 @@ const opt = (n, d) => {
 };
 const AGENTS = ["claude", "codex", "opencode", "pi"];
 // The agent is the one word that is neither a flag nor a flag's value, wherever it stands.
-const VALUED = ["--since", "--project", "--engine", "--limit", "--min"], FLAGS = ["--json", "--yes", "--write"];
+const VALUED = ["--since", "--project", "--engine", "--limit", "--min", "--forget"], FLAGS = ["--json", "--yes", "--write", "--list", "--prune", "--team"];
 const words = argv.slice(1).filter((a, i, l) => !VALUED.includes(a) && !FLAGS.includes(a) && !VALUED.includes(l[i - 1]));
 if (words.some(w => w.startsWith("-")) || words.length > (["replay", "suggest"].includes(cmd) ? 1 : 0)) die(`unexpected argument ${words.at(-1)}`);
 const agentArg = words[0] ?? "all";
@@ -37,7 +39,7 @@ const engine = opt("--engine", "local");
 if (engine !== undefined && !["local", "jev", "laya"].includes(engine)) die("--engine must be local, jev or laya");
 const json = argv.includes("--json");
 const since = (() => {
-  const s = opt("--since", cmd === "suggest" ? "30d" : "7d"), m = /^(\d+)([dhm])$/.exec(s);
+  const s = opt("--since", ["suggest", "learn"].includes(cmd) ? "30d" : "7d"), m = /^(\d+)([dhm])$/.exec(s);
   if (!m) die("--since takes a number and d, h or m (7d, 12h, 30m)");
   return Date.now() - Number(m[1]) * {d: 864e5, h: 36e5, m: 6e4}[m[2]];
 })();
@@ -335,20 +337,24 @@ async function suggestCmd() {
   if (!argv.includes("--write") || !r.suggestions.length) return;
   const {text, add} = mergeSuggestions(r.suggestions);
   if (!add.length) return console.error("reflex: fastlane.json already has every suggestion");
-  console.error(`\n--- ${FASTLANE_FILE}\n${add.map(e => `+ ${JSON.stringify(e)}`).join("\n")}`);
-  if (!argv.includes("--yes")) {
-    let answer = "";
-    try {
-      const fd = openSync("/dev/tty", "r+"), buf = Buffer.alloc(1);
-      writeSync(fd, `add ${add.length} entr${add.length === 1 ? "y" : "ies"} to ${FASTLANE_FILE}? [y/N] `);
-      while (readSync(fd, buf, 0, 1, null) === 1 && buf[0] !== 10) answer += buf.toString();
-      closeSync(fd);
-    } catch { die("no terminal to confirm on; rerun with --write --yes to write without asking"); }
-    if (!/^y(es)?$/i.test(answer.trim())) return console.error("reflex: nothing written");
-  }
+  if (!confirmWrite(add, FASTLANE_FILE)) return console.error("reflex: nothing written");
   writeSuggestions(text);
   console.error(`reflex: wrote ${add.length} entr${add.length === 1 ? "y" : "ies"} to ${FASTLANE_FILE}`);
 }
+// The lines --write adds, then yes or no on the terminal (not stdin: an agent's pipe cannot answer), unless --yes.
+function confirmWrite(add, file) {
+  console.error(`\n--- ${file}\n${add.map(e => `+ ${JSON.stringify(e)}`).join("\n")}`);
+  if (argv.includes("--yes")) return true;
+  let answer = "";
+  try {
+    const fd = openSync("/dev/tty", "r+"), buf = Buffer.alloc(1);
+    writeSync(fd, `add ${add.length} entr${add.length === 1 ? "y" : "ies"} to ${file}? [y/N] `);
+    while (readSync(fd, buf, 0, 1, null) === 1 && buf[0] !== 10) answer += buf.toString();
+    closeSync(fd);
+  } catch { die("no terminal to confirm on; rerun with --write --yes to write without asking"); }
+  return /^y(es)?$/i.test(answer.trim());
+}
+
 
 if (cmd === "replay") await replay();
 else if (cmd === "suggest") await suggestCmd();

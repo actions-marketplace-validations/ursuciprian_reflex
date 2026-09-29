@@ -7,6 +7,8 @@
 //   node replay.mjs bench [--engine local|jev|laya] [--json]
 //   node replay.mjs suggest [agent] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]
 //                          fast-lane entries for what keeps asking (suggest.mjs); --write edits fastlane.json
+//   node replay.mjs learn [--since 30d] [--min N] [--json] [--write [--yes]] [--team] [--list] [--forget id] [--prune]
+//                          fast-lane entries from what you approved yourself (learn.mjs, CLI only)
 //
 // Transcripts: Claude Code ~/.claude/projects/**/*.jsonl (Bash tool_use), Codex $CODEX_HOME/sessions
 // (exec_command / shell calls, or CommandExecution items), opencode's opencode.db (bash tool parts,
@@ -27,7 +29,7 @@ const opt = (n, d) => {
 };
 const AGENTS = ["claude", "codex", "opencode", "pi"];
 // The agent is the one word that is neither a flag nor a flag's value, wherever it stands.
-const VALUED = ["--since", "--project", "--engine", "--limit", "--min"], FLAGS = ["--json", "--yes", "--write"];
+const VALUED = ["--since", "--project", "--engine", "--limit", "--min", "--forget"], FLAGS = ["--json", "--yes", "--write", "--list", "--prune", "--team"];
 const words = argv.slice(1).filter((a, i, l) => !VALUED.includes(a) && !FLAGS.includes(a) && !VALUED.includes(l[i - 1]));
 if (words.some(w => w.startsWith("-")) || words.length > (["replay", "suggest"].includes(cmd) ? 1 : 0)) die(`unexpected argument ${words.at(-1)}`);
 const agentArg = words[0] ?? "all";
@@ -37,7 +39,7 @@ const engine = opt("--engine", "local");
 if (engine !== undefined && !["local", "jev", "laya"].includes(engine)) die("--engine must be local, jev or laya");
 const json = argv.includes("--json");
 const since = (() => {
-  const s = opt("--since", cmd === "suggest" ? "30d" : "7d"), m = /^(\d+)([dhm])$/.exec(s);
+  const s = opt("--since", ["suggest", "learn"].includes(cmd) ? "30d" : "7d"), m = /^(\d+)([dhm])$/.exec(s);
   if (!m) die("--since takes a number and d, h or m (7d, 12h, 30m)");
   return Date.now() - Number(m[1]) * {d: 864e5, h: 36e5, m: 6e4}[m[2]];
 })();
@@ -377,24 +379,107 @@ async function suggestCmd() {
   if (!argv.includes("--write") || !r.suggestions.length) return;
   const {text, add} = mergeSuggestions(r.suggestions);
   if (!add.length) return console.error("reflex: fastlane.json already has every suggestion");
-  console.error(`\n--- ${FASTLANE_FILE}\n${add.map(e => `+ ${JSON.stringify(e)}`).join("\n")}`);
-  if (!argv.includes("--yes")) {
-    let answer = "";
-    try {
-      const fd = openSync("/dev/tty", "r+"), buf = Buffer.alloc(1);
-      writeSync(fd, `add ${add.length} entr${add.length === 1 ? "y" : "ies"} to ${FASTLANE_FILE}? [y/N] `);
-      while (readSync(fd, buf, 0, 1, null) === 1 && buf[0] !== 10) answer += buf.toString();
-      closeSync(fd);
-    } catch { die("no terminal to confirm on; rerun with --write --yes to write without asking"); }
-    if (!/^y(es)?$/i.test(answer.trim())) return console.error("reflex: nothing written");
-  }
+  if (!confirmWrite(add, FASTLANE_FILE)) return console.error("reflex: nothing written");
   writeSuggestions(text);
   console.error(`reflex: wrote ${add.length} entr${add.length === 1 ? "y" : "ies"} to ${FASTLANE_FILE}`);
 }
+// The lines --write adds, then yes or no on the terminal (not stdin: an agent's pipe cannot answer), unless --yes.
+function confirmWrite(add, file) {
+  console.error(`\n--- ${file}\n${add.map(e => `+ ${JSON.stringify(e)}`).join("\n")}`);
+  if (argv.includes("--yes")) return true;
+  let answer = "";
+  try {
+    const fd = openSync("/dev/tty", "r+"), buf = Buffer.alloc(1);
+    writeSync(fd, `add ${add.length} entr${add.length === 1 ? "y" : "ies"} to ${file}? [y/N] `);
+    while (readSync(fd, buf, 0, 1, null) === 1 && buf[0] !== 10) answer += buf.toString();
+    closeSync(fd);
+  } catch { die("no terminal to confirm on; rerun with --write --yes to write without asking"); }
+  return /^y(es)?$/i.test(answer.trim());
+}
+
+// @reflex:setup-only begin
+// ---------------------------------------------------------------------------------------------
+// `reflex learn`: fast-lane entries from your own approvals (learn.mjs). The answers come from the
+// approval queue and the trace; the effect is measured on every transcript command, as replay judges
+// them. Writes only with --write (after the terminal confirms), --forget or --prune, and only fastlane.json.
+async function learnCmd() {
+  if (engine !== "local") die("learn judges with the local rules only; drop --engine");
+  const min = Number(opt("--min", "3"));
+  if (!(Number.isInteger(min) && min >= 2)) die("--min must be a whole number of at least 2");
+  const L = await import("./learn.mjs");
+  const {FASTLANE_FILE, compilePattern, loadFastLane, userFastPass} = await import("./fastlane.mjs");
+  const day = t => t?.slice(0, 10) ?? "-";
+  if (argv.includes("--list")) {
+    const list = L.learnedEntries();
+    if (json) return console.log(JSON.stringify(list, null, 1));
+    if (!list.length) return console.log(`no learned entries in ${FASTLANE_FILE}`);
+    for (const e of list) console.log(`${e.id}  ${e.pattern}\n    in ${e.cwd} · learned ${day(e.learned_at)} from ${e.learned_from.approved} approvals in ${e.learned_from.sessions} sessions · ` +
+      `${e.uses} uses, last ${day(e.last_used)}${e.stale ? ` · STALE (unused ${L.STALE_DAYS} days): reflex learn --prune` : ""}`);
+    return;
+  }
+  const forgetId = opt("--forget");
+  if (forgetId || argv.includes("--prune")) {
+    const gone = forgetId ? L.forget(forgetId) : L.prune();
+    if (forgetId && !gone.length) die(`no learned entry ${forgetId} (reflex learn --list)`);
+    for (const e of gone) console.error(`- ${JSON.stringify({id: e.id, pattern: e.pattern, cwd: e.cwd})}`);
+    return console.error(`reflex: removed ${gone.length} learned entr${gone.length === 1 ? "y" : "ies"} from ${FASTLANE_FILE}`);
+  }
+  const within = x => !project || x.cwd === project || String(x.cwd).startsWith(project + "/");
+  const all = L.humanAnswers({since}), answers = {approved: all.approved.filter(within), denied: all.denied.filter(within)};
+  const r = L.learn(answers, {judge: precheck, min, mask});
+  if (argv.includes("--team")) {
+    const snippet = L.teamSnippet(r.proposals);
+    if (json) return console.log(JSON.stringify(snippet, null, 1));
+    if (!r.proposals.length) return console.log(`no proposals at --min ${min}`);
+    for (const [root, doc] of Object.entries(snippet))
+      console.log(`# ${root}/.reflex/policy.json: merge this "fastlane" list; each teammate applies it with reflex trust ${root}\n${JSON.stringify(doc, null, 2)}\n`);
+    return;
+  }
+  // The effect on your real history: every transcript command, judged as replay does, with and without them.
+  const {sources, calls} = await collect(AGENTS);
+  const existing = loadFastLane().entries, added = r.proposals.map(p => ({pattern: p.pattern, cwd: p.cwd, re: compilePattern(p.pattern)}));
+  const FL = {outcome: "pass", source: "fast-lane", rule: "fast lane (fastlane.json)"};
+  const judged = calls.map(c => ({c, j: precheck(c.command, c.cwd, {})}));
+  const b = tally(judged.map(({c, j}) => ({c, j: j ?? LOCAL})));
+  const a = tally(judged.map(({c, j}) => ({c, j: j ?? (added.length && userFastPass(c.command, c.cwd, {}, [...existing, ...added]) ? FL : LOCAL)})));
+  const by = xs => Object.entries(xs.reduce((m, x) => ({...m, [x.source]: (m[x.source] ?? 0) + 1}), {})).map(([k, v]) => `${v} ${k}`).join(", ") || "none";
+  const result = {since: new Date(since).toISOString(), project: project ?? null, min, fastlane_file: FASTLANE_FILE,
+    answers: {approved: answers.approved.length, refused: answers.denied.length, approved_by: by(answers.approved), refused_by: by(answers.denied)},
+    history: {sources, before: {commands: b.t.commands, per_100: b.per_100}, after: {commands: a.t.commands, per_100: a.per_100}},
+    proposals: r.proposals.map(p => ({...p, entry: {pattern: p.pattern, cwd: p.cwd}})), held: r.held.slice(0, 20)};
+  if (json) console.log(JSON.stringify(result, null, 1));
+  else {
+    const src = Object.entries(sources).map(([k, s]) => s.skipped ? `${k}: skipped (${s.skipped})` : `${k}: ${s.commands} commands`);
+    console.log(`reflex learn · since ${result.since.slice(0, 16)}${project ? ` · project ${project}` : ""} · from your own answers · nothing executed`);
+    console.log(`  answers      ${answers.approved.length} approved (${result.answers.approved_by}); ${answers.denied.length} refused or unanswered (${result.answers.refused_by})`);
+    console.log(`  history      ${src.join("; ")}`);
+    console.log(`  before       ${b.per_100.reach_human} per 100 commands reach a human (supervised), ${b.per_100.autonomous_human} autonomous`);
+    console.log(`  after        ${a.per_100.reach_human} per 100 (supervised), ${a.per_100.autonomous_human} autonomous, with the ${r.proposals.length} proposals below`);
+    for (const p of r.proposals) {
+      console.log(`\n  ${p.id}  ${p.pattern}\n    in ${p.cwd} · approved ${p.approved} in ${p.sessions} sessions (${Object.entries(p.sources).map(([k, v]) => `${v} ${k}`).join(", ")}), ` +
+        `${day(p.first)} to ${day(p.last)} · denied 0`);
+      for (const x of p.samples) console.log(`    e.g. ${x}`);
+      console.log(`    entry: ${JSON.stringify({pattern: p.pattern, cwd: p.cwd})}\n    safe because: ${p.why}`);
+    }
+    for (const x of r.held.slice(0, 8)) console.log(`\n  held back: ${x.pattern} in ${x.cwd} (approved ${x.approved}, refused ${x.denied}): ${x.why}`);
+    if (!r.proposals.length) console.log(`\n  no proposals at --min ${min} (approved ${min}+ times in 2+ sessions, never refused)`);
+  }
+  if (!argv.includes("--write") || !r.proposals.length) return;
+  const {text, add} = L.mergeLearned(r.proposals);
+  if (!add.length) return console.error("reflex: fastlane.json already has every proposal");
+  if (!confirmWrite(add, FASTLANE_FILE)) return console.error("reflex: nothing written");
+  const {writeSuggestions} = await import("./suggest.mjs");
+  writeSuggestions(text);
+  console.error(`reflex: wrote ${add.length} learned entr${add.length === 1 ? "y" : "ies"} to ${FASTLANE_FILE} (reflex learn --list, --forget <id>)`);
+}
+// @reflex:setup-only end
 
 if (cmd === "replay") await replay();
 // @reflex:setup-only begin
 else if (cmd === "bench") await bench();
 // @reflex:setup-only end
 else if (cmd === "suggest") await suggestCmd();
+// @reflex:setup-only begin
+else if (cmd === "learn") await learnCmd();
+// @reflex:setup-only end
 else die("usage: reflex replay [claude|codex|opencode|pi|all] [--since 7d] [--project path] [--engine local|jev|laya] [--yes] [--limit N] [--json] | reflex bench [--engine local|jev|laya] [--json] | reflex suggest [agent] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]");

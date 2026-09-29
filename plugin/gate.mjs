@@ -2059,9 +2059,9 @@ function precheckAs(command, cwd, env, run, alt = false) {
   if (TEAM_TAMPER.test(command.replace(/["'\\]/g, "")) || /(^|[^\w.-])\.reflex(?=[^\w.-]|$)/.test(writes) || globsReflex(writes) ||
       (/\bpolicy\.json\b/.test(writes) && teamPolicy(cwd)))
     hold(ruled({outcome: "ask", rule: "changes a team policy (.reflex/) or trusts one (reflex trust)", id: "tamper"}));
-  // `reflex suggest --write` widens the user fast lane: a human's call, never the agent's.
-  if (/\bsuggest\b[^\n;&|]*\s--write\b/.test(command.replace(/["'\\]/g, "")))
-    hold(ruled({outcome: "ask", rule: "widens the fast lane (reflex suggest --write)", id: "tamper"}));
+  // `reflex suggest --write` and `reflex learn --write|--forget|--prune` edit the user fast lane: a human's call, never the agent's.
+  if (/\b(suggest|learn)\b[^\n;&|]*\s--(write|forget|prune)\b/.test(command.replace(/["'\\]/g, "")))
+    hold(ruled({outcome: "ask", rule: "edits the fast lane (reflex suggest --write, reflex learn --write)", id: "tamper"}));
   const on = (r, what) => (r.applies_to ?? ["command"]).includes(what);
   // "shell" rules read commands: not the program of an interpreter heredoc that cannot run or write
   // anything, and nothing at all when every pipeline is inert and writes only notes.
