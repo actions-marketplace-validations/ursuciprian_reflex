@@ -6,7 +6,7 @@ import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
 import {CLAUDE_SETTINGS, CODEX_HOOKS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooks, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
-import {PLUGIN_MODE, pluginKey} from "./plugin.mjs";
+import {OPTIONS_VISIBLE, PLUGIN_MODE, pluginKey} from "./plugin.mjs";
 import {PROVIDERS, keyRouteError} from "./providers.mjs";
 import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
@@ -76,7 +76,10 @@ const provider = CONFIG.engine === "jev" ? {name: CONFIG.provider, host: PROVIDE
 const route = provider && PROVIDERS[CONFIG.provider] && keyRouteError(CONFIG.provider, CONFIG.api, CONFIG.keyHost, USER_CONFIG.laya?.port ?? 8421);
 if (route) errors.push(`Jev: ${route}, so every Jev call is refused (check REFLEX_API_URL).`);
 // The Claude Code plugin reads its key from its options only: no environment, no Keychain lookup.
-if (CONFIG.engine === "jev" && PLUGIN_MODE) {
+// From the Bash tool (/reflex:status) the options are not visible: this report is config.json's view.
+if (PLUGIN_MODE && !OPTIONS_VISIBLE) warnings.push("The plugin options (engine, provider, mode, keys) reach only the plugin's hooks, not a command run with the Bash tool: this report shows config.json and the defaults. The hooks apply the options on top.");
+if (CONFIG.engine === "jev" && PLUGIN_MODE && !OPTIONS_VISIBLE) key = "plugin option (not visible from the Bash tool)";
+else if (CONFIG.engine === "jev" && PLUGIN_MODE) {
   key = pluginKey() ? "plugin option" : "missing";
   if (key === "missing") errors.push(`Jev through ${CONFIG.provider} needs the Jev API key plugin option (/plugin, reflex, Configure), or the engine option set to local.`);
 } else if (CONFIG.engine === "jev") {

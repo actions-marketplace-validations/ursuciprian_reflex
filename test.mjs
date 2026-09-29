@@ -1074,6 +1074,9 @@ try {
       // keys and settings in the environment, all of which the plugin must ignore
       JEV_API_KEY: "env-jev-key", TYPESAFE_API_KEY: "env-typesafe-key", REFLEX_ALLOW: "on", REFLEX_MODE: "enforce", REFLEX_ENGINE: "jev",
       REFLEX_API_URL: "http://127.0.0.1:9/v1/systemone", CLAUDE_PLUGIN_OPTION_JEV_API_KEY: "option-key"};
+    // and REFLEX_* settings that would switch the gate or the guard off, or swap the policy out
+    const hostile = {REFLEX_MODE: "off", REFLEX_GUARD: "off", REFLEX_SETUP_DIR: join(pm, "no-policy"), REFLEX_RUNAWAY: "off", REFLEX_TIMEOUT_MS: "1"};
+    Object.assign(pmEnv, hostile);
     const sh = (command, input, e = pmEnv) => new Promise(res => {
       const p = spawn("/bin/sh", ["-c", command.replaceAll("${CLAUDE_PLUGIN_ROOT}", root)], {cwd: pm, env: e}); let out = "", err = "";
       p.stdout.on("data", d => out += d); p.stderr.on("data", d => err += d);
@@ -1091,6 +1094,7 @@ try {
     // Control: without --plugin the environment key goes out, the gate allows, the guard rewrites.
     const pre2 = h => h.command.replace(/ --plugin$/, "");
     const {REFLEX_API_URL: _url, ...ctrlEnv} = pmEnv;
+    for (const k of Object.keys(hostile)) delete ctrlEnv[k];   // the control runs a working setup install
     const ctrl = await sh(pre2(hooks.PreToolUse[0].hooks[0]), bash("prettier --write gen"), ctrlEnv);
     assert.equal(JSON.parse(ctrl.out || "{}").hookSpecificOutput?.permissionDecision, "allow", `control: the stub makes the setup hook allow: ${ctrl.out}${ctrl.err}`);
     assert.ok(seen.includes("Bearer env-jev-key"), "control: outside the plugin the environment key is used");
@@ -1132,7 +1136,8 @@ try {
     assert.ok(!seen.length && !existsSync(securityLog), `plugin without the key option: nothing sent, no Keychain: ${seen}`);
     // The commands, run as Claude Code runs them (CLAUDE_PLUGIN_ROOT substituted), in a home where
     // the setup hooks are installed too: they answer, pass the gate and never ask the Keychain.
-    const cmdEnv = {...pmEnv, HOME: home, XDG_CONFIG_HOME: join(pm, ".config"), CLAUDE_PLUGIN_OPTION_ENGINE: "local"};
+    // The Bash tool gets no plugin options (they reach the hooks only), so none are set here.
+    const cmdEnv = Object.fromEntries(Object.entries({...pmEnv, HOME: home, XDG_CONFIG_HOME: join(pm, ".config")}).filter(([k]) => !k.startsWith("CLAUDE_PLUGIN_OPTION_")));
     const commandOf = f => readFileSync(join(root, "commands", f), "utf8").match(/^allowed-tools: Bash\((.*?)\)(,|$)/m)[1].replace(/ \*$/, "");
     for (const f of ["status.md", "report.md", "replay.md", "suggest.md", "queue.md", "check.md"]) {
       const c = commandOf(f) + (f === "check.md" ? " 'git push --force origin main'" : "");
@@ -1143,8 +1148,10 @@ try {
       assert.equal(JSON.parse(success(spawnSync(process.execPath, [join(root, "gate.mjs"), "--check", c.replaceAll("${CLAUDE_PLUGIN_ROOT}", root)],
         {cwd: root, encoding: "utf8", env: {...env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: join(scratch, "plugin-check")}}))).decision, "pass", `the gate passes ${f}`);
     }
-    const status = JSON.parse((await sh(`node "\${CLAUDE_PLUGIN_ROOT}/status.mjs" --plugin --status --json`, undefined, {...cmdEnv, CLAUDE_PLUGIN_OPTION_ENGINE: "jev"})).out);
-    assert.ok(status.mode === "enforce" && status.api_key === "plugin option", `status in plugin mode: config.json mode, the option key: ${status.mode} ${status.api_key}`);
+    const status = JSON.parse((await sh(`node "\${CLAUDE_PLUGIN_ROOT}/status.mjs" --plugin --status --json`, undefined, cmdEnv)).out);
+    assert.ok(status.mode === "enforce" && status.engine === "jev" && /not visible from the Bash tool/.test(status.api_key) &&
+      !status.errors.some(e => /needs the Jev API key/.test(e)) && status.warnings.some(w => /reach only the plugin's hooks/.test(w)),
+      `status from the Bash tool: config.json's view, says the options are not visible: ${JSON.stringify(status).slice(0, 400)}`);
     assert.ok(!existsSync(securityLog), "plugin commands never ask the Keychain");
     // The MCP server as .mcp.json starts it: options through its env, the same guarantees.
     const mcpSpec = read(join(root, ".mcp.json")).mcpServers.reflex, opts = {engine: "", provider: "", mode: "", jev_api_key: "option-key"};
@@ -1170,7 +1177,16 @@ try {
     assert.match(readFileSync(join(root, pkg.bin.reflex), "utf8"), /^#!\/usr\/bin\/env node\n/, "the reflex bin is a node script");
     assert.match(success(spawnSync(process.execPath, [join(root, pkg.bin.reflex), "version"], {encoding: "utf8", env: clean})), new RegExp(pkg.version.replace(/\./g, "\\.")));
     // The icon: a complete PNG named by both manifests; the SVGs carry no style, script or event handler.
-    assert.ok(plugin.icon === "./assets/logo-512.png" && market.plugins[0].icon === plugin.icon, "plugin.json and marketplace.json name the PNG icon");
+    assert.ok(plugin.icon === "./assets/logo-512.png" && market.plugins[0].icon === undefined, "plugin.json names the PNG icon (a marketplace entry has no icon field)");
+    // /reflex:* commands are judged as the reflex command they are, and nothing else is.
+    const judgedOwn = c => JSON.parse(success(spawnSync(process.execPath, [join(root, "gate.mjs"), "--check", c], {cwd: root, encoding: "utf8",
+      env: {...env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: join(scratch, "plugin-check")}}))).decision;
+    for (const c of [`node "${root}/gate.mjs" --plugin --check 'x'; rm -rf ~`, `node "${root}/replay.mjs" --plugin\nreplay claude --since 7d`,
+      `node "${root}/gate.mjs" --plugin --check x --sh -c 'rm -rf ~'`, `node "/tmp/elsewhere/gate.mjs" --plugin --check 'x'`,
+      `node "${root}/gate.mjs" --check 'x' --plugin`, `FOO=1 node "${root}/status.mjs" --plugin --status`, `node "${root}/install.mjs" --plugin`,
+      `node "${root}/autonomy.mjs" --plugin queue approve abc`, `node "${root}/replay.mjs" --plugin suggest claude --write --yes`,
+      `node "${root}/report.mjs" --plugin --push http://x.invalid`, `node "${root}/gate.mjs' --plugin --check 'x'`])
+      assert.notEqual(judgedOwn(c), "pass", c);
     const png = readFileSync(join(root, plugin.icon));
     assert.ok(png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) && png.subarray(12, 16).toString() === "IHDR" &&
       png.subarray(-8, -4).toString() === "IEND", "logo-512.png is a complete PNG");

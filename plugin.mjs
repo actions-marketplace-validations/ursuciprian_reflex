@@ -5,7 +5,9 @@
 // Claude Code (plugin.json userConfig; Claude Code gives hooks each one as CLAUDE_PLUGIN_OPTION_<KEY>,
 // and .mcp.json hands the same names to the MCP server) and Reflex's own config files
 // (~/.config/reflex/). Never the macOS Keychain, never a key that is already in the environment
-// (TYPESAFE_API_KEY and the other providers' variables), never the REFLEX_* overrides. The allow gate
+// (TYPESAFE_API_KEY and the other providers' variables), never the REFLEX_* overrides (only
+// REFLEX_DATA_DIR, where the logs go, is kept). The plugin's commands run through the Bash tool,
+// which gets no plugin options: they read config.json only. The allow gate
 // is off: a plugin hook only tightens, it never answers "allow" and never rewrites a tool's input.
 //
 // gate.mjs imports this module first (guard.mjs, instructions.mjs and status.mjs too), so every module
@@ -18,15 +20,19 @@ export const PLUGIN_FLAG = argv.includes("--plugin");
 export const PLUGIN_MODE = E.REFLEX_PLUGIN === "1" || (PLUGIN_FLAG && !argv.some(a => /^--codex(-|$)/.test(a)));
 /** The option the user set in Claude Code, trimmed; undefined when unset or empty. */
 export const option = key => E[`CLAUDE_PLUGIN_OPTION_${key}`]?.trim() || undefined;
-// Settings the plugin must not take from the environment: engine, provider, endpoint, mode, allow,
-// Keychain item, and every variable a key is read from.
-const SCRUB = new Set(["REFLEX_ENGINE", "REFLEX_PROVIDER", "JEV_PROVIDER", "REFLEX_MODE", "REFLEX_ALLOW", "REFLEX_API_URL",
-  "REFLEX_MODEL", "REFLEX_KEYCHAIN_SERVICE", "JEV_API_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-  ...Object.values(PROVIDERS).flatMap(p => p.env)]);
+// What the plugin must not take from the environment: every REFLEX_* setting (engine, mode, allow,
+// endpoint, policy directory, guard, judge, queue...) but where its logs go, every JEV_* variable,
+// and every variable a key is read from.
+const SCRUB = new Set(["CLOUDFLARE_ACCOUNT_ID", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", ...Object.values(PROVIDERS).flatMap(p => p.env)]);
+const KEEP = new Set(["REFLEX_PLUGIN", "REFLEX_DATA_DIR"]);
+// REFLEX_NOTIFY=off can only silence the webhook (the doctor's probes set it), so it stays too.
+const scrubbed = k => SCRUB.has(k) || k.startsWith("JEV_") || (k.startsWith("REFLEX_") && !KEEP.has(k) && !(k === "REFLEX_NOTIFY" && E[k] === "off"));
+/** Hooks get every option as CLAUDE_PLUGIN_OPTION_<KEY>; a command Claude runs with the Bash tool gets none. */
+export const OPTIONS_VISIBLE = Object.keys(E).some(k => k.startsWith("CLAUDE_PLUGIN_OPTION_"));
 export const PLUGIN_ENGINES = ["local", "jev"];
 export let PLUGIN_ERROR = null;
 if (PLUGIN_MODE) {
-  for (const k of Object.keys(E)) if (SCRUB.has(k)) delete E[k];
+  for (const k of Object.keys(E)) if (scrubbed(k)) delete E[k];
   E.REFLEX_PLUGIN = "1";
   E.REFLEX_ALLOW = "off";
   const engine = option("ENGINE"), provider = option("PROVIDER"), mode = option("MODE");

@@ -1409,8 +1409,8 @@ const TEAM_TAMPER = /\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b|\bteam\.mjs\
 // scripts/reflex does for `reflex check|status|report|replay|suggest|queue`: judged as that `reflex`
 // command, so they get its fast lane and its tamper rules. Only this directory's files, as the
 // command's first words; anything after them is judged as usual.
-const OWN = new RegExp(String.raw`^node\s+("?)${HERE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:gate\.mjs\1\s+--plugin\s+--(check)|` +
-  String.raw`status\.mjs\1\s+--plugin\s+--(status)|(report)\.mjs\1\s+--plugin|replay\.mjs\1\s+--plugin\s+(replay|suggest)|autonomy\.mjs\1\s+--plugin\s+(queue))(?=\s|$)`);
+const OWN = new RegExp(String.raw`^node[ \t]+("?)${HERE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:gate\.mjs\1[ \t]+--plugin[ \t]+--(check)|` +
+  String.raw`status\.mjs\1[ \t]+--plugin[ \t]+--(status)|(report)\.mjs\1[ \t]+--plugin|replay\.mjs\1[ \t]+--plugin[ \t]+(replay|suggest)|autonomy\.mjs\1[ \t]+--plugin[ \t]+(queue))(?=[ \t]|$)`);
 export const ownCommand = c => { const m = OWN.exec(c); return m ? `reflex ${m.slice(2).find(Boolean)}${c.slice(m[0].length)}` : null; };
 export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now() + PRECHECK_MS, scan: Date.now() + SCAN_MS, scripts: new Set()}) {
   if (depth === 0) command = ownCommand(command) ?? command;
@@ -1601,7 +1601,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
       /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(command.replace(/["'\\]/g, "")) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
       (inRepo && /\bCDPATH=/.test(command)) ||
-      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bscripts\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
+      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra|plugin|failsafe|hook|guard|providers)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bscripts\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // A repo's team policy (.reflex/) and the user's trust in it (team.mjs): a human's call.
   // A glob that expands to .reflex counts, and so does naming policy.json where a team policy applies.
@@ -2794,7 +2794,8 @@ async function selfcheck() {
   ok((await judge({command: "sed -i '' s/0.5/0/ instructions.mjs", cwd: HERE, env: {}})).outcome === "ask", "judge: tamper with instructions.mjs");
   // the router's command templates and server list decide what it executes: same protection as setup/
   ok((await judge({command: "sed -i '' s/rg/sh/ router/commands.json", cwd: HERE, env: {}})).outcome === "ask", "judge: tamper with the router");
-  for (const c of ["sed -i '' s/restricted/public/ routing/policy.json", "sed -i '' s/0.5/0/ context.mjs", "chmod -x scripts/reflex-review"])
+  for (const c of ["sed -i '' s/restricted/public/ routing/policy.json", "sed -i '' s/0.5/0/ context.mjs", "chmod -x scripts/reflex-review",
+    "sed -i '' s/PLUGIN_MODE/false/ plugin.mjs", "cp /tmp/x.mjs failsafe.mjs"])
     ok((await judge({command: c, cwd: HERE, env: {}})).outcome === "ask", `judge: tamper (${c})`);
   // ssh options that run a local command ask without a Jev call (Jev once passed the -J one)
   for (const cmd of ["ssh -J bastion,-oProxyCommand=/tmp/x.sh db-1 'uptime'", "ssh -o ProxyJump=-oProxyCommand=x h", "ssh -oProxyCommand='nc %h %p' h",

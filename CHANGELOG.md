@@ -70,9 +70,13 @@ All notable changes to Reflex are documented here. The format follows
   sensitive, and `mode`), which Claude Code hands to the hooks as `CLAUDE_PLUGIN_OPTION_<KEY>` and to
   the MCP server through `.mcp.json` `env`, and from Reflex's own config files. In the plugin, Reflex
   never asks the Keychain (`security`), never reads `TYPESAFE_API_KEY`, another provider's key
-  variable, `ANTHROPIC_API_KEY` or `judge.key_env`, and ignores the `REFLEX_*` settings variables
-  (`plugin.mjs`). With no options it runs local in shadow mode, as before. `reflex setup` installs
-  and the Codex CLI plugin are unchanged.
+  variable, `ANTHROPIC_API_KEY` or `judge.key_env`, and ignores every `REFLEX_*` variable but
+  `REFLEX_DATA_DIR`, and every `JEV_*` one (`plugin.mjs`; the fail-closed fallback takes the mode
+  option too). With no options it runs local in shadow mode, as before. The `/reflex:*` commands run
+  through the Bash tool, which gets no plugin options, so they read `config.json` alone, and
+  `/reflex:status` says so. `reflex setup` installs and the Codex CLI plugin are unchanged.
+- The gate's tamper rule also covers `plugin.mjs`, `failsafe.mjs`, `hook.mjs`, `guard.mjs` and
+  `providers.mjs` in the checkout.
 - Plugin hooks never answer `allow` (the allow gate is off; what setup would allow is a silent pass)
   and never rewrite a tool's input. The plugin's injection guard warns next to a blocked result
   (`additionalContext`) instead of replacing it; `reflex setup` still removes the injected text.
@@ -84,7 +88,7 @@ All notable changes to Reflex are documented here. The format follows
   claude.ai and Cowork do not install a plugin with a top-level `bin/`. `package.json` `bin` points
   there, so `npx @ursuciprian/reflex` and the `reflex` command work as before; the plugin no longer
   puts `reflex` on the Bash `PATH`.
-- Plugin icon: `assets/logo-512.png`, named in `plugin.json` and `marketplace.json`. `logo.svg` and
+- Plugin icon: `assets/logo-512.png`, named in `plugin.json` (`icon`). `logo.svg` and
   `wordmark.svg` carry no `<style>` element, and the README shows its images with Markdown syntax.
 
 ## [0.15.0] - 2026-09-29

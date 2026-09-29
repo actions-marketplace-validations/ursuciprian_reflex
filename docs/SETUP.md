@@ -56,12 +56,16 @@ reflex, then Configure, or under `pluginConfigs` in `settings.json`. Each one ma
 Claude Code hands the options to the hooks as `CLAUDE_PLUGIN_OPTION_<KEY>` and to the MCP server
 through its `env` in `.mcp.json`. In the plugin those options and Reflex's own config files
 (`~/.config/reflex/config.json`, `fastlane.json`, the policy under `~/.config/reflex/tool-gate/`) are
-the only settings the hooks, commands and MCP server read. They never ask the macOS Keychain, never
-read `TYPESAFE_API_KEY` or another provider's key variable, `ANTHROPIC_API_KEY` or the `judge.key_env`
-variable, and ignore `REFLEX_ENGINE`, `REFLEX_PROVIDER`, `REFLEX_MODE`, `REFLEX_ALLOW`,
-`REFLEX_API_URL`, `REFLEX_MODEL`, `REFLEX_KEYCHAIN_SERVICE`, `JEV_PROVIDER`, `JEV_API_BASE_URL` and
-`CLOUDFLARE_ACCOUNT_ID` (set `cloudflare_account_id` or `provider_url` in `config.json` instead).
-The Codex CLI plugin below keeps reading the environment and the Keychain as `reflex setup` does.
+the only settings the hooks and the MCP server read. They never ask the macOS Keychain, never read
+`TYPESAFE_API_KEY` or another provider's key variable, `ANTHROPIC_API_KEY` or the `judge.key_env`
+variable, and ignore every `REFLEX_*` variable but `REFLEX_DATA_DIR` (where the logs go), every
+`JEV_*` variable and `CLOUDFLARE_ACCOUNT_ID` (set `cloudflare_account_id` or `provider_url` in
+`config.json` instead). The Codex CLI plugin below keeps reading the environment and the Keychain as
+`reflex setup` does.
+
+The `/reflex:*` commands run through the Bash tool, which Claude Code gives no plugin options, so
+they read `config.json` alone: `/reflex:check` judges with its engine (local when none is set), and
+`/reflex:status` shows its mode and engine and says that the hooks apply the options on top.
 
 Two more differences from `reflex setup`, both from the plugin directory's policy:
 

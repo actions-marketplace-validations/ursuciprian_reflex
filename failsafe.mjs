@@ -44,8 +44,11 @@ const flagValue = n => { const i = process.argv.indexOf(n); return i > -1 ? proc
 const configFile = () => join(ENV.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "reflex/config.json");
 // The gate's own order: the environment, then the --mode flag, then config.json, then shadow. A
 // config.json that cannot be read gives no mode: the gate asks on it, so the fallback does too.
+// The Claude Code plugin (plugin.mjs, not loaded yet here): its mode option instead of the environment.
+const pluginMode = () => ENV.REFLEX_PLUGIN === "1" || (process.argv.includes("--plugin") && !process.argv.some(a => /^--codex(-|$)/.test(a)));
 export function hookMode() {
-  if (ENV.REFLEX_MODE !== undefined) return ENV.REFLEX_MODE;
+  if (pluginMode()) { const m = ENV.CLAUDE_PLUGIN_OPTION_MODE?.trim(); if (m) return m; }
+  else if (ENV.REFLEX_MODE !== undefined) return ENV.REFLEX_MODE;
   if (flagValue("--mode") !== undefined) return flagValue("--mode");
   try { return JSON.parse(readFileSync(configFile(), "utf8"))?.mode ?? "shadow"; }
   catch (e) { return e.code === "ENOENT" ? "shadow" : "unknown"; }
