@@ -34,7 +34,7 @@ declines on its own before the command reaches Reflex.
 
 It sets `REFLEX_MODE=enforce` and `REFLEX_ENGINE=local` (no API key, nothing sent to TypeSafe),
 unsets AWS variables and points `KUBECONFIG` at `/dev/null`. Claude Code loads the plugin from this
-checkout with `--plugin-dir` and `--setting-sources project`, so your user settings, hooks and MCP
+checkout (`plugin/`) with `--plugin-dir` and `--setting-sources project`, so your user settings, hooks and MCP
 servers are not loaded. It uses your normal Claude Code login, and the three prompts cost a few
 Sonnet calls.
 

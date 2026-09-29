@@ -16,7 +16,7 @@ Env BASH_SILENCE_DEPRECATION_WARNING "1"
 Hide
 Type "source docs/demo/setup.sh" Enter
 Sleep 2s
-Type 'claude --plugin-dir "$REFLEX_REPO" --setting-sources project --strict-mcp-config --permission-mode default --disallowedTools AskUserQuestion --model sonnet' Enter
+Type 'claude --plugin-dir "$REFLEX_REPO/plugin" --setting-sources project --strict-mcp-config --permission-mode default --disallowedTools AskUserQuestion --model sonnet' Enter
 Sleep 6s
 # trust the scratch folder
 Down

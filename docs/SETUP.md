@@ -10,8 +10,8 @@ installs. For every other agent, or for the autonomous profile, follow the numbe
 ## Claude Code plugin
 
 This repository is a Claude Code plugin marketplace (`.claude-plugin/marketplace.json`) that lists
-one plugin, `reflex`, at the repository root. Claude Code clones it and runs the hooks from the
-clone with `node`: no build step, no `node_modules`, no npx at hook time.
+one plugin, `reflex`, in `plugin/`. Claude Code clones the repository, copies `plugin/` into its
+plugin cache and runs the hooks from there with `node`: no `node_modules`, no npx at hook time.
 
 ```text
 /plugin marketplace add ursuciprian/reflex        # inside Claude Code
@@ -25,7 +25,35 @@ claude plugin update reflex@reflex                 # later, for a new release
 ```
 
 Then restart the session or run `/reload-plugins`. To try it for one session without installing,
-clone the repository and run `claude --plugin-dir /path/to/reflex`.
+clone the repository and run `claude --plugin-dir /path/to/reflex/plugin`.
+
+### The plugin bundle (`plugin/`)
+
+`plugin/` is generated from the repository by `node scripts/build-plugin.mjs` and committed, since
+the marketplace installs from git. It holds only what plugin mode runs: the runtime modules, the
+setup files the gate and the guard read (no golden sets, fixtures or plan fixtures), `hooks/`,
+`commands/`, `skills/`, `.mcp.json`, `.claude-plugin/plugin.json` (with `userConfig` and the icon),
+`README.md`, `LICENSE` and `assets/logo-512.png`. Code that only `reflex setup` and the selfchecks
+run is marked in the source with `// @reflex:setup-only begin` and `// @reflex:setup-only end` (in
+Markdown, `<!-- @reflex:setup-only begin -->`) and left out: the allow answer, the rewritten tool
+result, the Keychain and key variable reads, Laya setup, the selfchecks, evals and benchmarks. A
+region may only hold code plugin mode cannot reach, never a check that makes a decision stricter.
+
+The build fails when a region is unbalanced, when a module does not parse or does not link, when a
+file is over 256 KiB, when a file other than the icon is binary, or when a forbidden pattern (the
+list is `FORBIDDEN` in the script: an allow answer, a rewritten input or output, a Keychain call, a
+provider key variable, pip, a Hugging Face download, curl, npx, a global npm install) is left in it.
+After changing anything the plugin ships, rebuild and commit `plugin/`:
+
+```sh
+node scripts/build-plugin.mjs                        # writes plugin/ and lists every file with its size
+CLAUDE_PLUGIN_ROOT=plugin node test.mjs --plugin-only # the plugin-mode checks against the bundle
+claude plugin validate --strict plugin
+```
+
+CI builds it again and fails when `plugin/` differs from what is committed. The directory
+submission to Anthropic uses the plugin path `plugin` in this repository (the marketplace entry's
+`"source": "./plugin"`); resubmit after a release that changes it.
 
 What the plugin adds:
 
@@ -58,7 +86,8 @@ through its `env` in `.mcp.json`. In the plugin those options and Reflex's own c
 (`~/.config/reflex/config.json`, `fastlane.json`, the policy under `~/.config/reflex/tool-gate/`) are
 the only settings the hooks and the MCP server read. They never ask the macOS Keychain, never read
 `TYPESAFE_API_KEY` or another provider's key variable, `ANTHROPIC_API_KEY` or the `judge.key_env`
-variable, and ignore every `REFLEX_*` variable but `REFLEX_DATA_DIR` (where the logs go), every
+variable (every `*_API_KEY` and `*_API_TOKEN` variable is removed from their environment, and from
+every process they start), and ignore every `REFLEX_*` variable but `REFLEX_DATA_DIR` (where the logs go), every
 `JEV_*` variable and `CLOUDFLARE_ACCOUNT_ID` (set `cloudflare_account_id` or `provider_url` in
 `config.json` instead). The Codex CLI plugin below keeps reading the environment and the Keychain as
 `reflex setup` does.
@@ -310,7 +339,8 @@ To work on Reflex itself, clone the repo, run `npm test`, and install that check
 ### Publishing a release (maintainers)
 
 Once: add the `NPM_TOKEN` repository secret (an npm access token with publish rights on the
-`@ursuciprian` scope). Then per release: bump `version` in `package.json`, `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`,
+`@ursuciprian` scope). Then per release: bump `version` in `package.json` and `.codex-plugin/plugin.json`, run
+`node scripts/build-plugin.mjs` (it writes the version into `plugin/.claude-plugin/plugin.json`),
 and the `@ursuciprian/reflex@<version>` pins in `action.yml`
 (`npm test` fails when they differ; plugin users receive a release only when this version changes) and
 `CHANGELOG.md`, merge,
