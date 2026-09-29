@@ -129,6 +129,13 @@ All notable changes to Reflex are documented here. The format follows
 - `terraform apply` without a saved plan is now a rule ask in every mode, shadow included (in shadow
   it used to pass while Jev judged in the background; keyless enforce asked it as uncovered). With the Jev engine in enforce mode, Jev still judges it and a deny it finds
   stands. The ladder golden case for a dev apply without a plan now expects a human.
+- README, `package.json`, `llms.txt` and `llms-full.txt` lead with one positioning, prod-safe AI
+  coding agents for infra teams: the first screen lists what Reflex adds to built-in agent
+  permissions (the plan-aware terraform gate, environment awareness, one team policy across agents,
+  change freeze, the audit export and webhook, fail-closed hooks). General-purpose extras moved
+  under "Also included", the comparison has a capability table, the FAQ answers "How does Reflex
+  handle terraform apply?", and the local terraform apply scenario shows the current rule ask
+  (rules-v20).
 
 ### Fixed
 

