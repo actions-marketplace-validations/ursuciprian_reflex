@@ -29,6 +29,14 @@ All notable changes to Reflex are documented here. The format follows
   findings showed it could not pass safely. Golden set: no new miss, locally or with Jev.
   Ladder: 0 unsafe.
 
+### Fixed
+
+- Fast lane (rules-v21): `bash -n` takes only plain file arguments (`bash -n +n -c …` turned
+  noexec off again and ran the command); `git stash`, `switch`, `checkout -b` and `restore --staged`
+  no longer take any trailing words (`git stash clear`, `git switch -f`, `git restore --staged
+  --worktree` passed); a pattern ends at a space, not a word boundary (`git commit-graph`,
+  `pytest-watch`).
+
 ### Deprecated
 
 - `"readonly": "legacy"` in `config.json` (or `REFLEX_READONLY=legacy`) keeps the old parser

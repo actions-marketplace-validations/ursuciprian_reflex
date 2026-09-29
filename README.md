@@ -421,7 +421,7 @@ file and `infra.terraform_show` on, the plan gate reads it and decides by what i
  "decision": "ask",
  "rule": "terraform apply without a saved plan: run `terraform plan -out=tfplan` and apply the plan file (terraform apply tfplan)",
  "source": "rule",
- "policy": "rules-v20",
+ "policy": "rules-v21",
  "latency_s": 0,
  "answers": {}
 }

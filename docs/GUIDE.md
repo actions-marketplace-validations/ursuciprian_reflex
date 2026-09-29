@@ -633,15 +633,18 @@ shell parser to fool: a command it does not fully recognise is judged by the rul
 like any other, which costs a prompt or a Jev call, never safety.
 
 **The shape.** One simple command, or a pipeline of them joined by `|`. Words are letters, digits
-and `_ @ % + = : , . / ~ ^ -`, single-quoted text, or double-quoted text without `$`, backticks,
+and `_ @ % + = : , . / -`, a `~` only at the start of a word before `/` (zsh with `EXTENDED_GLOB`
+reads `^` and a later `~` as glob operators, so `HEAD~3` must be quoted), single-quoted text, or double-quoted text without `$`, backticks,
 `!` or an escaping backslash. The only redirects are `2>/dev/null` and `2>&1`. Not read-only:
 `;`, `&&`, `||`, `&`, a newline, any other redirect, `$` in any form (variables, `$(…)`, `$'…'`),
 backticks, `( ) { }`, unquoted globs (`* ? [ ]`), heredocs, `#` and backslash escapes (the one
 exception is `\'` between single-quoted parts, which `/reflex:check` writes). A word is judged as
-the shell passes it, quotes removed, so `'-'X` is the flag `-X`. A word naming a secret file (a
-private key, `~/.aws/credentials`, `.env`, `/proc/…/environ`) is never read-only, even before the
-`secret-file-read` rule sees it. Before the program, only `AWS_PROFILE=`, `AWS_REGION=` and
-`AWS_DEFAULT_REGION=` with a plain value are allowed, and `rtk` or `rtk proxy` is transparent.
+the shell passes it, quotes removed, so `'-'X` is the flag `-X`. A word naming a secret file or directory (a
+private key, `~/.ssh`, `~/.aws`, `.kube/config`, `.env`, `.pgpass`, `.git-credentials`,
+`.vault-token`, `gh`'s `hosts.yml`, `auth.json`, `/proc/…/environ`, also as `HEAD:.env`) is never
+read-only, even before the `secret-file-read` rule sees it. Before the program, only unquoted
+`AWS_PROFILE=`, `AWS_REGION=` and `AWS_DEFAULT_REGION=` with a plain value are allowed, and
+`rtk proxy` is transparent (not `rtk grep` and the other rtk subcommands, which re-implement tools).
 
 **The programs.** Each has its own flag list; a flag not on it means not read-only. Flags are
 allowlisted, never denylisted, and the list leaves out every flag that writes, runs a program or
@@ -651,20 +654,20 @@ reads a secret.
 |---|---|---|
 | `ls`, `pwd`, `whoami`, `uname`, `id`, `hostname`, `uptime`, `nproc`, `sw_vers`, `which`, `type`, `sleep` | their listing flags | `hostname NAME` (sets it) |
 | `cat`, `head`, `tail`, `wc`, `nl`, `fold`, `rev`, `tac`, `od`, `strings`, `cut`, `tr`, `paste`, `column`, `comm`, `cmp`, `diff`, `basename`, `dirname`, `realpath`, `readlink`, `stat`, `du`, `df`, `shasum`, `sha256sum`, `md5`, `md5sum`, `echo`, `printf` | display and selection flags, paths | `printf -v` |
-| `date` | display flags, `+FORMAT` | `-s`, `--set`, an operand without `+` (sets the clock) |
+| `date` | display flags, one `+FORMAT` | `-s`, `--set`, an operand without `+` or a second one (sets the clock) |
 | `grep`, `egrep`, `fgrep`, `rg` | search and output flags, `-f -` | `-f FILE`, `rg --pre`, `--pre-glob`, `--hostname-bin`, `-z` (runs a program) |
 | `sort`, `uniq`, `tree`, `file` | ordering and display flags | `sort -o`, `-T`, `--compress-program`; `uniq IN OUT`; `tree -o`, `-R`, `-H`; `file -C`, `-m`, `-z` |
 | `sed` | `-n` with line-number `p` commands (`10,20p`), `Nq` | every other program (`w`, `e`, `s///w`, `-i`) |
 | `find` | tests (`-name`, `-type`, `-mtime`, …) and `-print`, `-print0`, `-printf`, `-ls`, `-prune` | `-exec`, `-execdir`, `-ok`, `-delete`, `-fprint*`, `-fls` |
 | `ps`, `pgrep`, `nvidia-smi` | listing and query flags | `ps -E` and BSD `e` (other processes' environment), `pkill`, `nvidia-smi` setters and `-f` |
-| `git` | `status`, `log`, `show`, `diff`, `shortlog`, `rev-list`, `branch` (list forms), `tag -l`, `rev-parse`, `ls-files`, `ls-tree`, `blame`, `describe`, `merge-base`, `show-ref`, `for-each-ref`, `remote [-v]`, `remote get-url`, `stash list/show`, `worktree list`, `ls-remote`; `-C DIR`, `--no-pager` | `-c`, `--output`, `--ext-diff`, `--textconv`, `--show-signature`, `--upload-pack`, a branch or tag name that creates one |
+| `git` | `status`, `log`, `show`, `diff`, `shortlog`, `rev-list`, `branch` (list forms), `tag -l`, `rev-parse`, `ls-files`, `ls-tree`, `blame`, `describe`, `merge-base`, `show-ref`, `for-each-ref`, `remote [-v]`, `remote get-url`, `stash list/show`, `worktree list`, `ls-remote`; `-C DIR`, `--no-pager` | `-c`, `--output`, `--ext-diff`, `--textconv`, `--show-signature` and `%G…` or `%(signature…)` in a format (they run gpg), `--upload-pack`, `ls-remote` to a host other than GitHub, a branch or tag name that creates one |
 | `kubectl` | `get`, `describe` with namespace, context, selector and `-o` format flags | `--kubeconfig`, `--token`, `--server`, `--as`, `--raw`, any Secret |
-| `aws` | `<service> describe-*`, `list-*`, `get-*`; `s3 ls`; `configure list`; CLI options `--profile`, `--region`, `--output`, `--query`, `--no-cli-pager` and similar | `--endpoint-url`, `--cli-input-*`, `--debug`, `file://` values, `--with-decryption`, `--include-value(s)`, operations that return a secret, token, password or credential, streaming operations that write a file (`s3api get-object`, `get-export`, …), `s3 cp` |
-| `jq` | output flags, `--arg`, `--argjson` | `-f`, `--from-file`, `--rawfile`, `--slurpfile`, `-L`, a filter that reads `$ENV` or `env` or imports a module |
-| `terraform` | `version`, `fmt -check` or `fmt -write=false` | everything that starts a provider binary (`plan`, `show`, `validate`, `state`, `output`, …), `fmt` that writes |
+| `aws` | `<service> describe-*`, `list-*`, `get-*`; `s3 ls`; `configure list`; CLI options `--profile`, `--region`, `--output`, `--query`, `--no-cli-pager` and similar | `--endpoint-url`, `--cli-input-*`, `--debug` and any prefix of them (the CLI expands `--endpoint`, `--debu`), `file://` values, `--with-decryption`, `--include-value(s)`, operations that return a secret, token, password, credential, stream key or access, `glue get-connection(s)`, streaming operations that write a file (`s3api get-object`, `get-export`, …), `s3 cp` |
+| `jq` | output flags, `--arg`, `--argjson` | `-f`, `--from-file`, `--rawfile`, `--slurpfile`, `-L`, `--`, a filter that reads `$ENV` or `env` or imports a module |
+| `terraform` | `version`, `fmt -check` or `fmt -write=false` (not `-diff`, which runs `diff` from PATH) | everything that starts a provider binary (`plan`, `show`, `validate`, `state`, `output`, …), `fmt` that writes |
 | `docker` | `ps`, `images`, `logs` | `--config`, `inspect` (prints environment variables), `exec` |
-| `gh` | `pr`, `issue`, `run`, `repo`, `release` view and list forms, `auth status`, `api ENDPOINT` as a GET | `--web`, `api -X`, `-f`, `-F`, `--input`, `-H`, `graphql`, `auth token`, `--show-token` |
-| `ssh` | `ssh [-nTqt46C] [-p N] [-o ConnectTimeout=…, BatchMode=…, StrictHostKeyChecking=…, ServerAlive*=…] [user@]host <read-only>` as the first command of its pipeline | `-J`, `-F`, `-i`, `ProxyCommand` and every other option, a pipe into ssh, a login, an unquoted `~` |
+| `gh` | `pr`, `issue`, `run`, `repo`, `release` view and list forms, `auth status`, `api ENDPOINT` as a GET | `--web`, `api -X`, `-f`, `-F`, `--input`, `-H`, `graphql`, a full URL, a `--jq` that reads `$ENV` or `env` (gh's jq sees `GH_TOKEN`), `auth token`, `--show-token` |
+| `ssh` | `ssh [-nTqt46C] [-p N] [-o ConnectTimeout=…, BatchMode=…, StrictHostKeyChecking=…, ServerAlive*=…] [user@]host <read-only>` as the first command of its pipeline | `-J`, `-F`, `-i`, `ProxyCommand` and every other option, a pipe into ssh, a login, an unquoted `~`, a backslash in the remote text (a fish login shell reads `\'` inside quotes differently) |
 | `node`, `npm`, `python3`, `git`, `docker`, `aws`, `terraform`, `kubectl`, `helm`, `jq`, `rg`, `gh`, `uv`, `brew`, `make` | `--version` alone | `go`, `cargo`, `pnpm`, `yarn` (may fetch and run a toolchain the project names) |
 
 The remote command of `ssh` is the words after the host joined by spaces, which is what the remote
@@ -672,7 +675,11 @@ shell reads, and it must be read-only by these same rules.
 
 A repository's own configuration still applies to what runs: a `diff.external` or `core.fsmonitor`
 set in `.git/config` runs for `git diff` and `git status` as it would for any git command, and
-`kubectl` and `aws` use your kubeconfig and profiles as configured. Keep those files under review.
+`kubectl` and `aws` use your kubeconfig and profiles as configured (exec plugins, `credential_process`).
+Read APIs also return what was configured into them: Lambda and ECS environment variables, EC2
+user data, pod specs, logs, other processes' command lines. Shell aliases, `PATH`, `RIPGREP_CONFIG_PATH`
+and macOS `COMMAND_MODE=legacy` (where `ps -e` prints environments) come from your own setup.
+Keep those under review.
 
 **Extending it.** Pick the narrowest place:
 
@@ -875,7 +882,7 @@ well, and the command asks.
 
 ```json
 {"effective": "deny", "decision": "deny", "reason": "reflex (rule): plan destroys 1: aws_instance.old", "source": "rule",
- "policy": "rules-v20", "plan": {"kind": "terraform", "create": 1, "update": 0, "delete": 1, "replace": 0, "stateful": [], "digest": "..."}}
+ "policy": "rules-v21", "plan": {"kind": "terraform", "create": 1, "update": 0, "delete": 1, "replace": 0, "stateful": [], "digest": "..."}}
 ```
 
 The `digest` (of the plan JSON) is also part of the approval queue key and the Jev cache key, so an
