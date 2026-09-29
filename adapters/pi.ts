@@ -25,6 +25,8 @@ const AGENT = "__REFLEX_AGENT__";
 const GATE_TIMEOUT_MS = Number("__REFLEX_GATE_TIMEOUT_MS__") || 20_000;
 const INSTRUCTIONS = GATE.replace(/gate\.mjs$/, "instructions.mjs");
 const GUARD = GATE.replace(/gate\.mjs$/, "guard.mjs");
+// Every script runs through hook.mjs, so an error while it loads still gives a JSON answer (fails closed).
+const HOOK = GATE.replace(/gate\.mjs$/, "hook.mjs");
 // Tools whose results are the user's own work, never third-party text: not sent to the guard.
 const LOCAL_TOOLS = new Set(["edit", "write", "grep", "find", "ls", "task", "todo", "todo_write", "goal", "ask"]);
 
@@ -34,7 +36,7 @@ type Decision = {effective: "pass" | "allow" | "ask" | "deny"; reason?: string};
 function gate(flag: string, payload: unknown, signal?: AbortSignal, script = GATE): Promise<string> {
   return new Promise(resolve => {
     const args = script === GATE ? [script, flag, "--mode", MODE, "--allow", ALLOW] : [script, flag, "--mode", MODE];
-    const p = spawn(NODE, args, {signal, stdio: ["pipe", "pipe", "ignore"]});
+    const p = spawn(NODE, [HOOK, ...args], {signal, stdio: ["pipe", "pipe", "ignore"]});
     let out = "";
     const t = setTimeout(() => p.kill("SIGKILL"), script === GATE ? GATE_TIMEOUT_MS : 20_000);   // omp gives a handler 30 s
     p.stdout.on("data", d => (out += d));
@@ -149,11 +151,14 @@ export default function (pi: any) {
         call_id: event.toolCallId, session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx),
       }, ctx.signal));
     } catch {
-      // The gate itself failed. Only block when enforcing; shadow mode must never get in the way.
-      return MODE === "enforce" ? {block: true, reason: "reflex: gate unavailable, blocked (fail-closed)"} : undefined;
+      // No JSON answer (the gate did not start, was killed at the timeout, or crashed before hook.mjs
+      // could answer): an ask, except in shadow and off, which never get in the way.
+      if (["shadow", "off"].includes(MODE)) return;
+      d = {effective: "ask", reason: "reflex error: the gate gave no decision; a human must review"};
     }
-    if (d.effective === "deny") return {block: true, reason: d.reason};
-    if (d.effective === "ask") {
+    if (d?.effective === "deny") return {block: true, reason: d.reason};
+    if (!["pass", "allow"].includes(d?.effective)) {   // ask, or an answer that is not a decision
+      d = {effective: "ask", reason: d?.reason ?? "reflex error: the gate gave no decision; a human must review"};
       if (!ctx.hasUI) return {block: true, reason: `${d.reason}. Needs human approval and there is no UI to ask.`};
       const ok = await ctx.ui.confirm("Reflex: run this command?", `${event.input.command}\n\n${d.reason}`);
       if (!ok) {

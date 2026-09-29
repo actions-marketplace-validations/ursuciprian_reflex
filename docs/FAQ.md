@@ -14,6 +14,7 @@ docs. The short version of this page is the [FAQ section of the README](../READM
 - [What guardrails can I add to Codex CLI, and how does Reflex work with the Codex sandbox?](#what-guardrails-can-i-add-to-codex-cli-and-how-does-reflex-work-with-the-codex-sandbox)
 - [How is Reflex different from abide?](#how-is-reflex-different-from-abide)
 - [Which AI coding agents does Reflex support?](#which-ai-coding-agents-does-reflex-support)
+- [Does Reflex work in Claude Desktop or Cursor?](#does-reflex-work-in-claude-desktop-or-cursor)
 - [Does Reflex need an API key, an account or LiteLLM?](#does-reflex-need-an-api-key-an-account-or-litellm)
 - [What is TypeSafe Jev (System One)?](#what-is-typesafe-jev-system-one)
 - [Jev vs Laya: which engine should I use?](#jev-vs-laya-which-engine-should-i-use)
@@ -176,6 +177,22 @@ including WSL; native Windows is not supported yet.
 
 See: [supported agents](../README.md#supported-agents-claude-code-hooks-codex-hooks-and-more),
 [docs/SETUP.md](SETUP.md).
+
+## Does Reflex work in Claude Desktop or Cursor?
+
+Yes, as advice, not as a gate. Claude Desktop and Cursor have no pre-execution hook Reflex can
+install, so Reflex runs there as an MCP server for AI agent safety: `reflex mcp` (or
+`npx -y @ursuciprian/reflex mcp` in the host's MCP config) gives the agent `reflex_check`,
+`reflex_scan`, `reflex_status`, `reflex_audit` and `reflex_explain`. The agent can ask what the gate
+decides for a command (`git push --force origin main` is `deny`, rule `force-push-main`) or screen a
+fetched page for prompt injection before it acts. These Claude Desktop guardrails depend on the model
+calling the tool and following the answer: an MCP server cannot stop a client from running a command.
+The tools are read-only, never change Reflex's configuration and redact what they return. Where the
+agent has hooks (Claude Code, Codex CLI, opencode, pi, Hermes), the hooks enforce and the MCP tools
+are an extra check.
+
+See: [GUIDE: Reflex MCP server](GUIDE.md#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork),
+[SETUP: MCP server](SETUP.md#mcp-server-claude-desktop-cursor-codex).
 
 ## Does Reflex need an API key, an account or LiteLLM?
 

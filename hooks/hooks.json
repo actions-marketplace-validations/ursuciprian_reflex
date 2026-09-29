@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude --plugin",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\" \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude --plugin",
             "timeout": 10
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude-post --plugin",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\" \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude-post --plugin",
             "timeout": 5
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/guard.mjs\" --claude --plugin",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\" \"${CLAUDE_PLUGIN_ROOT}/guard.mjs\" --claude --plugin",
             "timeout": 15
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude-post --plugin",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\" \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude-post --plugin",
             "timeout": 5
           }
         ]
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude-post --plugin",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\" \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude-post --plugin",
             "timeout": 5
           }
         ]
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude-prompted --plugin",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\" \"${CLAUDE_PLUGIN_ROOT}/gate.mjs\" --claude-prompted --plugin",
             "timeout": 5
           }
         ]
@@ -76,7 +76,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/instructions.mjs\" --claude --plugin",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\" \"${CLAUDE_PLUGIN_ROOT}/instructions.mjs\" --claude --plugin",
             "timeout": 10
           }
         ]
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/guard.mjs\" --claude-prompt --plugin",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hook.mjs\" \"${CLAUDE_PLUGIN_ROOT}/guard.mjs\" --claude-prompt --plugin",
             "timeout": 5
           }
         ]

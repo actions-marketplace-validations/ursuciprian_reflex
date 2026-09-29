@@ -170,6 +170,7 @@ reflex check "terraform apply -auto-approve" --cwd ~/infra/envs/prod   # judge o
 reflex scan page.html                                                  # check text for prompt injection
 reflex report                                                          # decisions so far
 reflex audit --since 30d --prod-only                                   # audit AI agent commands: one csv row per decision
+reflex mcp                                                             # MCP server: advisory tools for Claude Desktop, Cursor and any MCP host
 reflex replay claude --since 7d                                        # what it would have done with past sessions
 reflex suggest claude --since 30d                                      # fewer permission prompts: safe fast-lane entries from past sessions
 reflex doctor                                                          # local checks; no API calls
@@ -276,6 +277,10 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   trims large tool outputs per request.
 - `reflex report`, a Prometheus Pushgateway export and a Grafana dashboard (`dashboards/reflex.json`).
 - `reflex doctor` and `reflex status` to check that hooks are installed and firing.
+- [MCP server](docs/GUIDE.md#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork): `reflex mcp`, an MCP server
+  for AI agent safety in Claude Desktop, Cursor, Cowork and any MCP host. Read-only, advisory tools (`reflex_check`,
+  `reflex_scan`, `reflex_status`, `reflex_audit`, `reflex_explain`) let the agent ask the gate before acting; hooks
+  still enforce, and the tools never change Reflex's configuration.
 - [Team policy](docs/GUIDE.md#team-policy-share-reflex-rules-across-a-repo): team guardrails for AI coding agents in a
   committed `.reflex/policy.json` (extra rules, always-human patterns, prod markers, a mode floor), applied by every
   teammate's Reflex in Claude Code, Codex and the other agents. It only tightens; its fast lane needs `reflex trust .`.
@@ -831,7 +836,8 @@ differs:
 | Other | not covered | not covered |
 
 Coverage is agent shell tools, subagent spawns (for dedup) and the optional router's own calls.
-File-edit tools and MCP tool calls go through each agent's own permissions. Doctor cannot prove host
+File-edit tools and MCP tool calls go through each agent's own permissions. Hosts without hooks (Claude Desktop, Cursor) get
+the [MCP server](docs/GUIDE.md#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork), which advises and does not enforce. Doctor cannot prove host
 trust or verify a native approval dialog; run a harmless command in a fresh agent session and check
 `reflex status`. Plain chat confirmation does not unblock a Codex or opencode hook. See
 [docs/SETUP.md](docs/SETUP.md) for manual steps and limits.
@@ -867,7 +873,7 @@ The full list: [GUIDE: safety properties and limits](docs/GUIDE.md#safety-proper
 
 ## FAQ
 
-Short answers; the full list of 25 questions is in [docs/FAQ.md](docs/FAQ.md).
+Short answers; the full list of 28 questions is in [docs/FAQ.md](docs/FAQ.md).
 
 ### How do I stop Claude Code from running dangerous commands?
 
@@ -911,6 +917,20 @@ Yes. Add `"plugin": ["@ursuciprian/reflex"]` to `~/.config/opencode/opencode.jso
 installs it from npm at its next start, or run `reflex setup --agent opencode` to write the same
 plugin into `~/.config/opencode/plugins/reflex.js`. With both, only the setup file gates. See
 [docs/SETUP.md: opencode plugin](docs/SETUP.md#opencode-plugin).
+
+### Does Reflex work in Claude Desktop or Cursor?
+
+Yes, as advice, not as a gate. Claude Desktop and Cursor have no pre-execution hook Reflex can
+install, so Reflex runs there as an MCP server for AI agent safety: `reflex mcp` (or
+`npx -y @ursuciprian/reflex mcp` in the host's MCP config) gives the agent `reflex_check`,
+`reflex_scan`, `reflex_status`, `reflex_audit` and `reflex_explain`. The agent can ask what the gate
+decides for a command (`git push --force origin main` is `deny`, rule `force-push-main`) or screen a
+fetched page for prompt injection before it acts. These Claude Desktop guardrails depend on the model
+calling the tool and following the answer: an MCP server cannot stop a client from running a command.
+The tools are read-only, never change Reflex's configuration and redact what they return. Where the
+agent has hooks (Claude Code, Codex CLI, opencode, pi, Hermes), the hooks enforce and the MCP tools
+are an extra check.
+See [GUIDE: Reflex MCP server](docs/GUIDE.md#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork).
 
 ### Does Reflex need an API key, an account or LiteLLM?
 

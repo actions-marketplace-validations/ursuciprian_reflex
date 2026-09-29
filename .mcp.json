@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "reflex": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp.mjs"]
+    }
+  }
+}

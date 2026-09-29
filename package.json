@@ -47,7 +47,11 @@
     "infrastructure-as-code",
     "deploy-freeze",
     "change-management",
-    "audit-log"
+    "audit-log",
+    "mcp-server",
+    "model-context-protocol",
+    "claude-desktop",
+    "cursor"
   ],
   "license": "MIT",
   "author": "Ciprian Ursu",
@@ -68,6 +72,7 @@
     ".claude-plugin/",
     ".codex-plugin/",
     ".agents/",
+    ".mcp.json",
     "hooks/",
     "commands/",
     "skills/",

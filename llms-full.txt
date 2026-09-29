@@ -107,7 +107,7 @@ Every decision is logged with the policy and rule versions to `~/.local/state/re
 | Hermes | `pre_tool_call` | Hermes approval prompt |
 | Other | `bin/reflex-sh` as the shell | y/N on the terminal |
 
-Coverage is agent shell tools, subagent spawns (for dedup) and the optional tool router's own calls. File-edit tools and MCP tool calls go through each agent's own permissions. Codex hooks must be trusted in `/hooks` before they run.
+Coverage is agent shell tools, subagent spawns (for dedup) and the optional tool router's own calls. File-edit tools and MCP tool calls go through each agent's own permissions. Hosts without hooks (Claude Desktop, Cursor, Cowork, any MCP host) can run `reflex mcp`, an MCP server for AI agent safety with five read-only, advisory tools: `reflex_check {command, cwd?}` (the gate's decision, reason, rule and source, nothing runs), `reflex_scan {text, source?}` (the injection guard's verdict and cleaned text), `reflex_status`, `reflex_audit {since?, prod_only?, limit?}` and `reflex_explain {rule_id}`. Hooks enforce; an MCP server cannot stop a client from running a command. The tools redact their output and never change Reflex's configuration. Codex hooks must be trusted in `/hooks` before they run.
 
 ## Commands
 
@@ -127,6 +127,7 @@ reflex queue                                                           # what wa
 reflex envelope set "may modify this repo; nothing in prod"            # task envelope
 reflex checkpoints                                                     # recovery points before mutations
 reflex laya start|stop|status                                          # the local Laya server
+reflex mcp                                                             # MCP server: read-only, advisory tools for MCP hosts
 reflex uninstall
 ```
 
@@ -287,6 +288,19 @@ other agent can use `bin/reflex-sh` as its shell. Setup hooks every supported ag
 Hermes it prints a block to paste into `config.yaml`), or the ones you name with
 `--agents claude,codex`. Reflex needs Node.js 18+ on macOS or Linux,
 including WSL; native Windows is not supported yet.
+
+### Does Reflex work in Claude Desktop or Cursor?
+
+Yes, as advice, not as a gate. Claude Desktop and Cursor have no pre-execution hook Reflex can
+install, so Reflex runs there as an MCP server for AI agent safety: `reflex mcp` (or
+`npx -y @ursuciprian/reflex mcp` in the host's MCP config) gives the agent `reflex_check`,
+`reflex_scan`, `reflex_status`, `reflex_audit` and `reflex_explain`. The agent can ask what the gate
+decides for a command (`git push --force origin main` is `deny`, rule `force-push-main`) or screen a
+fetched page for prompt injection before it acts. These Claude Desktop guardrails depend on the model
+calling the tool and following the answer: an MCP server cannot stop a client from running a command.
+The tools are read-only, never change Reflex's configuration and redact what they return. Where the
+agent has hooks (Claude Code, Codex CLI, opencode, pi, Hermes), the hooks enforce and the MCP tools
+are an extra check.
 
 ### Does Reflex need an API key, an account or LiteLLM?
 

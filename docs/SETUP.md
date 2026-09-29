@@ -35,6 +35,7 @@ What the plugin adds:
 | `commands/` | `/reflex:status`, `/reflex:check <command>`, `/reflex:report`, `/reflex:replay`, `/reflex:queue`, `/reflex:suggest`. All read-only: Claude runs the matching `reflex` command with the Bash tool, through the gate like any other command, and never with `--write`, `approve` or `--push` |
 | `skills/reflex` | tells Claude when to use `reflex check` and `reflex replay`, and not to work around a deny |
 | `bin/` | `reflex` and `reflex-sh` are on the Bash `PATH` while the plugin is enabled |
+| `.mcp.json` | the Reflex MCP server (`node "${CLAUDE_PLUGIN_ROOT}/mcp.mjs"`): read-only, advisory tools `reflex_check`, `reflex_scan`, `reflex_status`, `reflex_audit` and `reflex_explain` ([MCP server](#mcp-server-claude-desktop-cursor-codex)) |
 
 Configuration is the same as for `reflex setup`: `~/.config/reflex/config.json`, the environment
 (`REFLEX_MODE` and the other variables under [Configuration](#configuration)) and, for Jev, the
@@ -509,6 +510,58 @@ enabling hosted calls. Inspect active paths with `reflex status`.
 
 A standalone LiteLLM process reads the same engine setting at startup. If its container cannot read
 this configuration directory, set `REFLEX_ENGINE=local` there too to disable its Jev calls.
+
+## MCP server (Claude Desktop, Cursor, Codex)
+
+`reflex mcp` runs Reflex as a stdio MCP server with five read-only, advisory tools
+(`reflex_check`, `reflex_scan`, `reflex_status`, `reflex_audit`, `reflex_explain`). They let an
+agent ask before acting; they do not enforce anything. What each tool returns and what it
+guarantees: [GUIDE: Reflex MCP server](GUIDE.md#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork).
+It reads the same `~/.config/reflex/config.json` as the hooks and writes nothing.
+
+Every host below takes the same command. `npx` fetches the package on first start; after
+`reflex setup`, `~/.local/bin/reflex mcp` starts faster and works offline. Desktop apps start with a
+minimal `PATH`, so if the host cannot find `npx` or `node`, give the absolute path
+(`command -v npx`, or `/Users/you/.local/bin/reflex` with `"args": ["mcp"]`).
+
+**Claude Desktop**: `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS
+(`%APPDATA%\Claude\claude_desktop_config.json` on Windows), then restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "reflex": {"command": "npx", "args": ["-y", "@ursuciprian/reflex", "mcp"]}
+  }
+}
+```
+
+**Cursor**: `~/.cursor/mcp.json` for every project, or `.cursor/mcp.json` in one repository:
+
+```json
+{
+  "mcpServers": {
+    "reflex": {"command": "npx", "args": ["-y", "@ursuciprian/reflex", "mcp"]}
+  }
+}
+```
+
+**Codex CLI**: `~/.codex/config.toml` (also in
+[examples/mcp/codex-config.toml](../examples/mcp/codex-config.toml)):
+
+```toml
+[mcp_servers.reflex]
+command = "npx"
+args = ["-y", "@ursuciprian/reflex", "mcp"]
+```
+
+**Claude Code**: the plugin declares the server in its `.mcp.json`, so it is there once the plugin
+is installed. Without the plugin: `claude mcp add reflex -- npx -y @ursuciprian/reflex mcp`.
+
+Check it by hand; the reply is the tool list:
+
+```sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | reflex mcp
+```
 
 ## Optional: the tool router
 

@@ -17,16 +17,19 @@
    - [Audit log for AI agent commands (SOC 2)](#audit-log-for-ai-agent-commands-soc-2)
 5. [Metrics](#metrics)
 6. [Data handling](#data-handling)
-7. [Safety properties and limits](#safety-properties-and-limits)
-8. [Injection guard](#injection-guard)
-9. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
-10. [Autonomous agents](#autonomous-agents)
-11. [Conditional instructions](#conditional-instructions)
-12. [Tool router](#tool-router)
-13. [Model routing](#model-routing)
-14. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
-15. [Laya (local System 1)](#laya-local-system-1)
-16. [Where this goes next](#where-this-goes-next)
+7. [Reliability](#reliability)
+   - [Reflex fails closed](#reflex-fails-closed)
+8. [Safety properties and limits](#safety-properties-and-limits)
+9. [Injection guard](#injection-guard)
+10. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
+11. [Reflex MCP server: ask before acting (Claude Desktop, Cursor, Cowork)](#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork)
+12. [Autonomous agents](#autonomous-agents)
+13. [Conditional instructions](#conditional-instructions)
+14. [Tool router](#tool-router)
+15. [Model routing](#model-routing)
+16. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
+17. [Laya (local System 1)](#laya-local-system-1)
+18. [Where this goes next](#where-this-goes-next)
 
 ## Local and hosted operation
 
@@ -1096,6 +1099,56 @@ configured webhook and reports the HTTP status. Doctor sends nothing without tha
 - **Locally**, logs contain the same redacted data and stay in `~/.local/state/reflex/`. Trace and
   feedback files rotate at 50 MB. Command output is never stored.
 
+## Reliability
+
+### Reflex fails closed
+
+A hook that crashes must not let a command through unchecked. Most agents treat a hook that exits
+with a plain error as "no decision" and run the command, so every hook starts through a small
+entry, `hook.mjs`, that uses only Node built-ins:
+
+```
+node hook.mjs /path/to/gate.mjs --claude --mode enforce --allow off
+```
+
+It installs handlers for uncaught exceptions and unhandled rejections, then loads the script with a
+dynamic import. So a syntax or import error, a throw while the modules load (a bad config value, a
+top-level parse), or a rejection nobody handled still gives the agent an answer in its own hook
+contract. The reason is `reflex error: <short message>; a human must review`.
+
+| Entry point | On an error, in enforce mode |
+| --- | --- |
+| Claude Code `PreToolUse` (`--claude`) | `permissionDecision: "ask"`, exit 0 (the JSON is read only on exit 0; exit 2 would block, not ask) |
+| Codex `PreToolUse` (`--codex`) | `permissionDecision: "deny"` with the reason, the reason on stderr, exit 2 (Codex does not support ask yet) |
+| Hermes `pre_tool_call` (`--hermes`) | `{"action": "approve"}`, Hermes' own prompt, with a rule key used once |
+| opencode, pi, oh-my-pi (`--decide`) | `{"effective": "ask"}`; the adapters also treat no answer, or one that is not JSON, as ask |
+| `reflex-sh` (`--sh`) | a y/N on the terminal; no terminal or no refuses with exit 126 |
+| `PostToolUse`, `UserPromptSubmit`, record hooks, the injection guard, instructions | never blocked: exit 0 with a `systemMessage` warning; after a tool result the guard also tells the model it did not check the result |
+| The decision webhook's detached child (`notify.mjs --send`) | logged only; it never touches a decision |
+
+A change freeze (`freeze.mjs`) is read while the gate loads and when it decides: an error in it
+asks like any other. `reflex audit` is a terminal command, not a hook, so an error there is a plain
+non-zero exit.
+
+- **Shadow mode** stays non-blocking: the error is logged and the command runs, with a warning in
+  Claude Code and Codex. While the gate is broken it checks nothing, deterministic rules included,
+  so `reflex status` and `reflex doctor` show it as an error.
+- **Mode off** passes at once, without loading the gate.
+- **Subagent spawns** (subgoal dedup) pass on an error, as they do for any internal error.
+- **A decision already written stands.** An error after the gate has answered is only logged.
+- **The log** is `~/.local/state/reflex/health/errors.jsonl` (time, script, flag, mode, what the
+  hook answered, and the message). Messages are cut to one line, the quoted file content of a JSON
+  parse error is dropped, and anything shaped like a key is replaced by `<redacted>`.
+- **Hooks installed before this entry** (`node gate.mjs --claude`, without `hook.mjs`) still get
+  the same answers for any error after the modules have linked, because `gate.mjs`, `guard.mjs`
+  and `instructions.mjs` load the same handlers first. A syntax or import error needs the entry:
+  `reflex status` warns about such hooks, and `reflex setup` rewrites them.
+- **Limits.** A hook that times out, or a missing `node` or checkout, is outside Reflex: Claude
+  Code and Codex let the command run. In shadow mode a team policy's enforce floor does not apply
+  to a crash, since reading that policy may be what failed. Tests can simulate a crash with
+  `REFLEX_TEST=1 REFLEX_TEST_CRASH=load` (or `reject`); a simulated crash is always strict, even in
+  shadow mode, so the switch can only make a hook stricter.
+
 ## Safety properties and limits
 
 - By default the gate never emits `allow`. The worst a wrong Jev answer can do is add a prompt, or
@@ -1429,6 +1482,65 @@ transcripts in replay); live in Codex, opencode and pi only plain repeats count.
 with Jev, a command's risk and denial reach the window from the background judge, a moment after
 the command. The loop key is the command's shape: the same test with a different file name, or with
 the output piped to a different `tail`, is a different command.
+
+## Reflex MCP server: ask before acting (Claude Desktop, Cursor, Cowork)
+
+`reflex mcp` is an MCP server for AI agent safety: it gives an agent in an MCP host (Claude
+Desktop, Cursor, Cowork, Codex, Claude Code or any client that runs a local stdio server) five
+tools to ask Reflex before it acts. It speaks the Model Context Protocol over stdio, hand-written in
+`mcp.mjs` with no SDK, so Reflex keeps zero runtime dependencies.
+
+The tools are advisory. Reflex's hooks enforce; an MCP server cannot stop a client from running a
+command, and a model can skip the tool or ignore its answer. In a host without hooks, such as Claude
+Desktop, these tools are Claude Desktop guardrails the model is asked to use, not a gate. Where the
+agent has hooks (Claude Code, Codex CLI, opencode, pi, Hermes), install them with `reflex setup` or
+the plugin, and use the MCP tools as a way for the agent to check before it tries.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `reflex_check` | `command`, `cwd?` | `decision` (`pass`, `allow`, `ask`, `deny`), `reason`, `rule` (rule or gate id), `source`, `mode`, `enforced` (whether the hooks would apply it in this mode), plan counts when a terraform or kubectl plan was read. Nothing runs. |
+| `reflex_scan` | `text`, `source?` (`web`, `mcp`, `file`, `shell`, `cli`) | The injection guard's `verdict` (`pass`, `warn`, `block`), `reason`, `gate`, `signals`, and `cleaned_text` when the verdict is block. Like `reflex scan`. |
+| `reflex_status` | `cwd?` | Profile, engine, mode (after a team policy mode floor), guard mode, allow setting, whether a change freeze is in force, the team policy's trust state and counts, and how many items wait in the approval queue. |
+| `reflex_audit` | `since?` (`7d`), `prod_only?`, `limit?` (20, at most 100) | Counts by decision, source, rule and environment tier, and the latest rows, like `reflex audit`. |
+| `reflex_explain` | `rule_id` | What a rule or policy gate matches, its outcome, when it is enforced and why it exists. |
+
+Data: `reflex_check` and `reflex_scan` send redacted text to Jev or Laya when that engine is configured, the same as the hooks; with the local engine nothing leaves the machine. `reflex_status` returns the note of an active change freeze.
+
+```text
+reflex_check {"command": "git push --force origin main"}
+  -> {"decision": "deny", "reason": "force push or delete of main/master", "rule": "force-push-main",
+      "source": "rule", "mode": "shadow", "enforced": true, ...}
+```
+
+What it guarantees:
+
+- Read-only. No tool runs the command, and none changes Reflex's configuration: there is no tool for
+  `reflex trust`, `setup`, `queue approve` or `suggest --write`. Those stay with a human at a
+  terminal. The selfcheck snapshots the config and data directories before and after every tool
+  call and requires them unchanged.
+- No config values, environment values or keys in any output. Commands, reasons and audit rows are
+  redacted with the same patterns as the trace; audit rows leave out the working directory and the
+  production marker's value (`env_tier` stays). `reflex_status` reports settings by name (engine,
+  mode), never URLs, key names, webhook targets or file paths.
+- `reflex_check` runs the same judgment as `reflex check`: the local rules, a change freeze, the
+  team policy of `cwd`, and then the engine in your config. With engine `jev` or `laya` the redacted
+  command goes to that engine, exactly as a hook would send it. Nothing is cached or logged, so a
+  check never shows up in `reflex audit`.
+- Each call runs in a short-lived child process that reads your config fresh, so a change made with
+  `reflex setup` applies to the next call without restarting the host.
+
+Protocol notes: newline-delimited JSON-RPC 2.0 on stdin and stdout, logs only on stderr. The server
+is dual-era. Clients on 2025-11-25 and earlier open with `initialize` (the server answers with the
+version they asked for, or 2025-11-25); clients on 2026-07-28 send the version and capabilities in
+each request's `_meta` and may call `server/discover`. An unknown version gets
+`UnsupportedProtocolVersion` (-32022) with the supported list; a malformed line gets -32700 or
+-32600, an unknown method -32601, an unknown tool or bad params -32602; bad tool arguments come back
+as a tool result with `isError: true` so the model can correct them. JSON-RPC batches are not
+supported. At most four tool calls run at once; the rest wait.
+
+Setup for each host is in [SETUP: MCP server](SETUP.md#mcp-server-claude-desktop-cursor-codex). The
+Claude Code plugin declares the server in its `.mcp.json`, so plugin users get the tools without
+extra configuration.
 
 ## Autonomous agents
 

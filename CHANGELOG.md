@@ -41,6 +41,23 @@ All notable changes to Reflex are documented here. The format follows
   were found.
 - Golden cases for applies without a readable plan; `infra.mjs --selfcheck` with fixture plans
   (`setup/tool-gate/plans/`), a fake `terraform` and a fake `kubectl` on `PATH`.
+
+- `reflex mcp` (and `npx @ursuciprian/reflex mcp`): an MCP server for AI agent safety, so agents in
+  Claude Desktop, Cursor, Cowork, Codex and any MCP host can ask Reflex before acting. Five
+  read-only, advisory tools: `reflex_check {command, cwd?}` (decision, reason, rule, source, mode,
+  whether the hooks would enforce it, plan counts when a plan was read; nothing runs),
+  `reflex_scan {text, source?}` (the injection guard's verdict, reason and cleaned text),
+  `reflex_status` (mode, engine, freeze, team policy, queue count), `reflex_audit {since?,
+  prod_only?, limit?}` (a summary and the latest redacted rows) and `reflex_explain {rule_id}`.
+  Hand-written stdio JSON-RPC in `mcp.mjs`, no SDK, zero dependencies; dual-era: `initialize` for
+  2025-11-25 and earlier, per-request `_meta` and `server/discover` for 2026-07-28. Output is
+  redacted and carries no config values, environment values or keys; no tool changes Reflex's
+  configuration (trust, setup, queue approve and suggest --write stay human-only). Each call runs
+  in a child process that reads the config fresh. The Claude Code plugin declares the server in
+  `.mcp.json`; `docs/SETUP.md` has snippets for Claude Desktop, Cursor and Codex
+  (`examples/mcp/codex-config.toml`). Advisory only: hooks enforce, and an MCP server cannot stop a
+  client from running a command.
+
 - Jev providers: Jev now runs through TypeSafe directly (the default when a TypeSafe key is set),
   OpenRouter's Decisions API, Cloudflare Workers AI, the Vercel AI Gateway (its TypeSafe-compatible
   API) or any compatible endpoint (a full URL and a Bearer token). The provider comes from
@@ -102,6 +119,23 @@ All notable changes to Reflex are documented here. The format follows
 - `terraform apply` without a saved plan is now a rule ask in every mode, shadow included (in shadow
   it used to pass while Jev judged in the background; keyless enforce asked it as uncovered). With the Jev engine in enforce mode, Jev still judges it and a deny it finds
   stands. The ladder golden case for a dev apply without a plan now expects a human.
+
+### Fixed
+
+- Reflex fails closed. An exception while the hook modules loaded (a bad config value, a throw at
+  top level, a syntax or import error), or an unhandled rejection, ended the hook with a generic
+  error, which Claude Code and Codex treat as no decision, so the command ran unchecked. Every hook
+  now starts through `hook.mjs`, which installs the error handlers and loads the script with a
+  dynamic import. On an error the pre-execution gate asks in each agent's contract: Claude Code
+  `ask`, Codex `deny` with exit 2, Hermes `approve`, `--decide` `ask`, and `reflex-sh` a terminal
+  confirmation or exit 126. Shadow mode logs and passes; mode off passes without loading the gate.
+  Post-execution and prompt hooks warn and never block a result. Errors, redacted, go to
+  `health/errors.jsonl`, and `reflex status` and `reflex doctor` report them.
+- `reflex setup`, the Claude Code and Codex plugin hooks, `reflex-sh`, the decision webhook's
+  detached child and the opencode and pi adapters use the new entry. `reflex status` warns about
+  hooks installed before it; re-run `reflex setup` to rewrite them.
+- The opencode and pi adapters treat a gate result that is missing, not JSON, or not a decision as
+  ask (shadow and off still pass). A malformed hook input asks instead of passing.
 
 ## [0.14.0] - 2026-09-28
 
