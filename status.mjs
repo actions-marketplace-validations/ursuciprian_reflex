@@ -6,6 +6,7 @@ import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
 import {CLAUDE_SETTINGS, CODEX_HOOKS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooks, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
+import {PROVIDERS} from "./providers.mjs";
 import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
 import {breaker, listItems, runawayTrips} from "./autonomy.mjs";
@@ -68,10 +69,13 @@ try { detectors(); sourceKind({tool: "WebFetch"}); }
 catch (e) { errors.push(`Cannot load the injection guard setup: ${e.message}`); }
 if (guardMode() !== CONFIG.mode) warnings.push(`Injection guard mode is ${guardMode()} (REFLEX_GUARD or "guard" in config.json).`);
 let key = "not required";
+// The Jev provider and the host its key goes to; never the key itself.
+const provider = CONFIG.engine === "jev" ? {name: CONFIG.provider, host: CONFIG.keyHost} : null;
 if (CONFIG.engine === "jev") {
-  key = process.env.TYPESAFE_API_KEY?.trim() ? "environment" : platform() === "darwin" &&
-    spawnSync("security", ["find-generic-password", "-s", CONFIG.keychain], {stdio: "ignore", timeout: 2000}).status === 0 ? "keychain" : "missing";
-  if (key === "missing") errors.push("Jev needs TYPESAFE_API_KEY or a Keychain item. Use reflex setup --engine local for offline operation.");
+  const p = PROVIDERS[CONFIG.provider], item = CONFIG.provider === "typesafe" ? CONFIG.keychain : p.keychain;
+  key = p.env.some(n => process.env[n]?.trim()) ? "environment" : platform() === "darwin" &&
+    spawnSync("security", ["find-generic-password", "-s", item], {stdio: "ignore", timeout: 2000}).status === 0 ? "keychain" : "missing";
+  if (key === "missing") errors.push(`Jev through ${CONFIG.provider} needs ${p.env.join(" or ")} or the Keychain item ${item}. Use reflex setup --engine local for offline operation.`);
 }
 // engine laya: the local server must answer, or System 1 falls back to the policy exactly as in a Jev outage.
 const laya = CONFIG.engine === "laya" ? await layaHealth() : null;
@@ -281,8 +285,8 @@ if (pending.length) warnings.push(`${pending.length} item${pending.length === 1 
 const trips = runawayTrips(Date.now() - 36e5);
 const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
 if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
-const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, freeze, notify, infra, agents, errors, warnings};
+const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? `Jev via ${provider.name} (${provider.host}) + policy` : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
+  policy, provider, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, freeze, notify, infra, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);

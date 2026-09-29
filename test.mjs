@@ -129,6 +129,47 @@ try {
     await new Promise(r => stub.close(r));
     assert.equal(spawnSync("python3", ["setup/laya/server.py", "--selfcheck"], {cwd: root, env, stdio: "inherit"}).status, 0, "laya server selfcheck");
   }
+  // Jev providers end to end (providers.mjs has the per-provider wire tests): the gate through a stub
+  // OpenRouter, its key sent there only, a malformed answer asking, and doctor and setup naming the host.
+  {
+    const seen = [], reply = {mode: "good"};
+    const stub = createServer(async (req, res) => {
+      let b = ""; for await (const c of req) b += c;
+      const body = JSON.parse(b);
+      seen.push({url: req.url, auth: req.headers.authorization, body});
+      const answers = Object.fromEntries(Object.entries(body.questions).map(([k, q]) => [k, q.type === "noul" ? {type: "noul", noul: reply.mode === "bad" ? 4 : 0.02}
+        : q.type === "score" ? {type: "score", score: 0, confidence: 0.9} : {type: "choice", choice: Object.keys(q.criteria)[0], confidence: 0.9}]));
+      res.end(JSON.stringify({id: "gen-1", model: body.model, answers, usage: {input_tokens: 9, output_tokens: 1}}));
+    });
+    await new Promise(r => stub.listen(0, "127.0.0.1", r));
+    const key = ["sk-or", "v1", "test", process.pid].join("-");
+    const penv = {...env, REFLEX_PROVIDER: "openrouter", OPENROUTER_API_KEY: key, REFLEX_API_URL: `http://127.0.0.1:${stub.address().port}/api/alpha/decisions`};
+    // async: the stub answers from this process
+    const out = (args, e) => new Promise(res => {
+      const p = spawn(process.execPath, args, {cwd: root, env: e}); let o = "";
+      p.stdout.on("data", d => o += d); p.on("close", () => res(o));
+    });
+    const check = async e => JSON.parse(await out(["gate.mjs", "--check", "npm install zod", "--cwd", scratch, "--intent", "add zod"], e));
+    const up = await check(penv);
+    assert.ok(up.source === "jev" && seen.length === 1 && seen[0].url === "/api/alpha/decisions" && seen[0].auth === `Bearer ${key}` &&
+      seen[0].body.model === "typesafe/jev-1.13" && seen[0].body.state.call.command === "npm install zod", `openrouter: the Jev call ${JSON.stringify(up)}`);
+    reply.mode = "bad";
+    const bad = await check(penv);
+    assert.ok(bad.source === "fallback" && bad.decision === "ask" && /jev unavailable \(Malformed/.test(bad.rule), `a malformed answer asks: ${JSON.stringify(bad)}`);
+    const n = seen.length, cross = await check({...penv,REFLEX_API_URL: "https://api.typesafe.ai/v1/systemone"});
+    assert.ok(seen.length === n && cross.decision === "ask" && /never goes to another provider/.test(cross.rule) && !JSON.stringify(cross).includes(key),
+      `the OpenRouter key never goes to TypeSafe: ${JSON.stringify(cross)}`);
+    const doctor = JSON.parse(await out(["status.mjs", "--doctor", "--json"], penv));
+    const port = `127.0.0.1:${stub.address().port}`;
+    assert.ok(doctor.provider?.name === "openrouter" && doctor.provider.host === port && doctor.api_key === "environment" &&
+      doctor.system1 === `Jev via openrouter (${port}) + policy` && !JSON.stringify(doctor).includes(key), `doctor: provider and host, no key: ${JSON.stringify(doctor.provider)}`);
+    const {REFLEX_API_URL, REFLEX_PROVIDER, ...noUrl} = penv;
+    const preview = spawnSync(process.execPath, ["bin/reflex", "setup", "--provider", "cloudflare", "--cloudflare-account", "0123456789abcdef0123456789abcdef",
+      "--agents", "claude", "--dry-run"], {cwd: root, env: {...noUrl, REFLEX_PREFIX: join(scratch, "provider-prefix")}, encoding: "utf8", timeout: 30000});
+    assert.match(preview.stdout, /Jev provider cloudflare \(api\.cloudflare\.com\)/, `setup --provider: ${preview.stdout}${preview.stderr}`);
+    assert.ok(!preview.stdout.includes(key) && !existsSync(join(scratch, "provider-prefix")), "setup preview: no key printed, nothing installed");
+    await new Promise(r => stub.close(r));
+  }
   // Start a genuinely fresh installation; the selfchecks above keep their own scratch state.
   delete env.REFLEX_ENGINE;
   env.PATH = "/usr/bin:/bin"; // avoid executing any of the developer's installed agents

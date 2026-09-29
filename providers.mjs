@@ -45,7 +45,7 @@ export const DEFAULT_HOSTS = ["typesafe", "openrouter", "vercel"].map(p => hostO
  * `reflex setup` also looks in the Keychain, in the same order, and saves what it finds.
  */
 export function resolveProvider(env, saved = {}) {
-  const chosen = String(env.REFLEX_PROVIDER ?? env.JEV_PROVIDER ?? saved.provider ?? "auto").toLowerCase();
+  const chosen = String(env.REFLEX_PROVIDER || env.JEV_PROVIDER || saved.provider || "auto").toLowerCase();
   const settings = {account: env.CLOUDFLARE_ACCOUNT_ID?.trim() || saved.cloudflare_account_id, url: env.JEV_API_BASE_URL?.trim() || saved.provider_url};
   const found = chosen === "auto" && detect(p => PROVIDERS[p].env.some(n => env[n]?.trim()) &&
     (p !== "openrouter" || /^sk-or-/.test(env.OPENROUTER_API_KEY.trim())), settings);

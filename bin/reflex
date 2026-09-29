@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // reflex <command>: one entry point for the package.
 //   reflex setup [--agents a,b] [--mode M] [--allow A] [--keychain NAME] [--node PATH]
+//                [--provider typesafe|openrouter|cloudflare|vercel|compatible] [--provider-url U] [--cloudflare-account ID]
 //                                                      install into ~/.local/share/reflex and hook
 //                                                      every agent found (what curl / npx / pnpm dlx /
 //                                                      bunx / yarn dlx run)
@@ -36,6 +37,7 @@ import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {JUDGE_BACKENDS, QUEUE_DEFAULTS, USER_CONFIG, USER_CONFIG_ERROR, USER_CONFIG_FILE, judgeSettings, policyDirectory} from "../gate.mjs";
 import {onPath} from "../judge2.mjs";
+import {PROVIDERS, detect, providerError, providerUrl} from "../providers.mjs";
 
 const ROOT = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..");
 const [cmd, ...args] = process.argv.slice(2);
@@ -114,9 +116,23 @@ const PROFILES = {
   autonomous: {engine: "auto", mode: "enforce", allow: "on", judge: "auto", queue: true, checkpoints: true},
 };
 // A TypeSafe key where the hooks will look: the environment, or the Keychain item on macOS.
-const hasKey = keychain => !!ENV.TYPESAFE_API_KEY?.trim() ||
-  (platform() === "darwin" && spawnSync("security", ["find-generic-password", "-s", keychain], {stdio: "ignore", timeout: 2000}).status === 0);
-const SETUP_OPTIONS = ["--mode", "--allow", "--agents", "--keychain", "--node", "--engine", "--profile", "--judge", "--judge-cli", "--judge-url",
+const inKeychain = item => platform() === "darwin" && spawnSync("security", ["find-generic-password", "-s", item], {stdio: "ignore", timeout: 2000}).status === 0;
+const keychainItem = (p, keychain) => p === "typesafe" ? keychain : PROVIDERS[p].keychain;
+const envKey = p => PROVIDERS[p].env.some(n => ENV[n]?.trim()) && (p !== "openrouter" || /^sk-or-/.test(ENV.OPENROUTER_API_KEY.trim()));
+// The Jev provider (providers.mjs): --provider, else a saved or environment choice, else jev-mcp's
+// order over the environment and then the Keychain. `save`: the gate would not find it on its own
+// (it reads the environment and config.json, never probes the Keychain), so config.json records it.
+function pickProvider(keychain) {
+  const settings = {account: opt(args, "--cloudflare-account") ?? ENV.CLOUDFLARE_ACCOUNT_ID?.trim() ?? USER_CONFIG.cloudflare_account_id,
+                    url: opt(args, "--provider-url") ?? ENV.JEV_API_BASE_URL?.trim() ?? USER_CONFIG.provider_url};
+  const named = opt(args, "--provider") || ENV.REFLEX_PROVIDER || ENV.JEV_PROVIDER || USER_CONFIG.provider;
+  const fromEnv = !named && detect(envKey, settings), fromKeychain = !named && !fromEnv && detect(p => inKeychain(keychainItem(p, keychain)), settings);
+  const name = String(named ?? fromEnv ?? fromKeychain ?? "typesafe").toLowerCase();
+  const key = envKey(name) ? "environment" : inKeychain(keychainItem(name, keychain)) ? "keychain" : null;
+  return {name, settings, key, error: providerError(name, settings), save: !!opt(args, "--provider") || (!!fromKeychain && fromKeychain !== "typesafe")};
+}
+const hasKey = keychain => !!pickProvider(keychain).key;
+const SETUP_OPTIONS = ["--mode", "--allow", "--agents", "--keychain", "--provider", "--provider-url", "--cloudflare-account", "--node", "--engine", "--profile", "--judge", "--judge-cli", "--judge-url",
   "--judge-model", "--judge-key-env", "--judge-keychain", "--judge-timeout", "--judge-budget-calls", "--judge-budget-usd", "--queue", "--queue-ttl",
   "--notify", "--checkpoints"];
 const onOff = (flag, fallback) => {
@@ -185,7 +201,9 @@ function describe(s) {
   const keyless = !s.keyless ? [] : [`engine local: no TypeSafe key found ($TYPESAFE_API_KEY or Keychain item ${s.keychain}), so this is keyless autonomy: ` +
     (j.enabled ? "commands the local rules do not cover go to System 2 instead of Jev; System 2 alone allows only small commands (docs/GUIDE.md#keyless-autonomy)"
       : "with no System 2 either, every command the local rules do not cover waits in the approval queue") + "; add a key and rerun for Jev"];
-  return [`profile ${s.profile} · engine ${s.engine} · mode ${s.mode} · allow ${s.allow}`, ...keyless,
+  const p = s.provider, host = p && (ENV.REFLEX_API_URL ? new URL(ENV.REFLEX_API_URL).host : new URL(providerUrl(p.name, p.settings)).host);
+  const jev = !p ? [] : [`Jev provider ${p.name} (${host}); key ${p.key ? `in the ${p.key}` : "not found"}; the key goes to ${host} only`];
+  return [`profile ${s.profile} · engine ${s.engine} · mode ${s.mode} · allow ${s.allow}`, ...jev, ...keyless,
     `System 2: ${j.enabled ? `${where}; timeout ${j.timeout_ms / 1000} s; case capped at ${j.max_input_tokens} tokens; budget ${j.budget.calls} calls${j.backend === "cli" ? "" : ` / $${j.budget.usd}`} a day` : "none (uncertain decisions go to a human)"}${picked}`,
     `queue: ${q.enabled ? `on (approvals valid ${q.ttl_hours} h, notify ${q.notify ? "on" : "off"})` : "off (a human answers in the agent)"} · checkpoints: ${s.checkpoints ? "on" : "off"}`];
 }
@@ -209,10 +227,13 @@ function setup() {
   // Settings from before `engine` existed (a Keychain item or an agent record) mean Jev was in use.
   const keychain = opt(args, "--keychain", ENV.REFLEX_KEYCHAIN_SERVICE ?? USER_CONFIG.keychain ?? "typesafe-api-key");
   const auto = preset.engine === "auto" && opt(args, "--engine") === undefined;
-  const engine = opt(args, "--engine", (auto ? (hasKey(keychain) ? "jev" : "local") : preset.engine) ?? ENV.REFLEX_ENGINE ?? USER_CONFIG.engine ??
-    (USER_CONFIG.keychain || Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
+  // --provider names Jev's carrier, so it means engine jev unless --engine says otherwise.
+  const engine = opt(args, "--engine", (opt(args, "--provider") ? "jev" : auto ? (hasKey(keychain) ? "jev" : "local") : preset.engine) ?? ENV.REFLEX_ENGINE ?? USER_CONFIG.engine ??
+    (USER_CONFIG.keychain || USER_CONFIG.provider || Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
+  const provider = engine === "jev" ? pickProvider(keychain) : null;
+  if (provider?.error) die(provider.error);
   const ladder = ladderSettings(preset);
-  const settings = {profile: profile ?? USER_CONFIG.profile ?? "supervised", engine, mode, allow, keychain, keyless: auto && engine === "local", ...ladder};
+  const settings = {profile: profile ?? USER_CONFIG.profile ?? "supervised", engine, mode, allow, keychain, provider, keyless: auto && engine === "local", ...ladder};
   const judgeOn = judgeSettings(settings.judge).enabled;
   if (judgeOn && mode !== "enforce") say(`note: System 2 only acts in enforce mode; in ${mode} mode it is logged as what would have happened`);
   const agents = opt(args, "--agents", ENV.REFLEX_AGENTS ?? "all");
@@ -266,28 +287,34 @@ function setup() {
   rmSync(BIN_LINK, {force: true});
   symlinkSync(join(TARGET, "bin/reflex"), BIN_LINK);
 
-  // 3. The TypeSafe key: environment, else the macOS Keychain (offered once, never written to a file).
-  if (engine === "jev" && !ENV.TYPESAFE_API_KEY && platform() === "darwin" &&
-      spawnSync("security", ["find-generic-password", "-s", keychain], {stdio: "ignore"}).status !== 0) {
-    say("no TypeSafe API key found. Create one at https://console.typesafe.ai/keys");
-    const key = ask(`paste it to store it in the macOS Keychain as '${keychain}' (Enter to skip): `, true);
+  // 3. The provider's key: environment, else the macOS Keychain (offered once, never written to a file).
+  const item = provider && keychainItem(provider.name, keychain), envNames = provider && PROVIDERS[provider.name].env.join(" or ");
+  const where = provider?.name === "typesafe" ? " Create one at https://console.typesafe.ai/keys" : "";
+  if (provider && !provider.key && platform() === "darwin") {
+    say(`no ${provider.name} key found.${where}`);
+    const key = ask(`paste it to store it in the macOS Keychain as '${item}' (Enter to skip): `, true);
     if (key) {
       // Through `security -i` on stdin, so the key never appears in a process list.
       const quote = s => `"${String(s).replace(/(["\\])/g, "\\$1")}"`;
       const r = spawnSync("security", ["-i"], {stdio: ["pipe", "ignore", "ignore"],
-        input: `add-generic-password -U -s ${quote(keychain)} -a ${quote(ENV.USER ?? "reflex")} -w ${quote(key)}\n`});
-      say(r.status === 0 ? "key stored in the Keychain" : "could not store the key; set TYPESAFE_API_KEY instead");
+        input: `add-generic-password -U -s ${quote(item)} -a ${quote(ENV.USER ?? "reflex")} -w ${quote(key)}\n`});
+      say(r.status === 0 ? "key stored in the Keychain" : `could not store the key; set ${envNames} instead`);
     }
-  } else if (engine === "jev" && !ENV.TYPESAFE_API_KEY && platform() !== "darwin") {
-    say("set TYPESAFE_API_KEY (https://console.typesafe.ai/keys) in the environment your agents start from");
+  } else if (provider && !provider.key) {
+    say(`set ${envNames}${where ? ` (${where.trim().replace(/^Create one at /, "")})` : ""} in the environment your agents start from`);
   }
 
   // 4. The ladder settings first: install.mjs reads them to give the gate hooks room for System 2.
   let written = {};
   try { written = JSON.parse(readFileSync(USER_CONFIG_FILE, "utf8")); } catch { /* first setup */ }
   mkdirSync(dirname(USER_CONFIG_FILE), {recursive: true});
+  // The provider only when it was named or found in the Keychain: one found in the environment is
+  // found there again by every hook. Its account id and URL are not secrets; its key never lands here.
+  const saved = !provider?.save ? {} : {provider: provider.name,
+    ...(opt(args, "--cloudflare-account") && {cloudflare_account_id: opt(args, "--cloudflare-account")}),
+    ...(opt(args, "--provider-url") && {provider_url: opt(args, "--provider-url")})};
   writeFileSync(USER_CONFIG_FILE, JSON.stringify({...written, profile: settings.profile, judge: settings.judge, queue: settings.queue,
-    checkpoints: settings.checkpoints}, null, 2) + "\n");
+    checkpoints: settings.checkpoints, ...saved}, null, 2) + "\n");
   // 5. Hook every agent, recording where the key lives so every hook finds it.
   const status = run("install.mjs", installArgs, TARGET);
   if (status !== 0) process.exit(status);
