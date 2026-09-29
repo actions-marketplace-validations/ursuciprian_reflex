@@ -23,8 +23,8 @@ All notable changes to Reflex are documented here. The format follows
   read-only or matching a fast lane pattern. A `&&` chain such as `mkdir -p out && go test ./...`
   is judged instead of passing.
 - Measured on the author's last 7 days of sessions (local engine): commands that reach a human
-  went from 54.9 to 88.8 per 100 for Claude Code (12,769 commands) and from 25.8 to 48.8 for
-  Codex (400). Almost all of the difference is `;` and `&&` chains, `cd dir && ...`, `$` and
+  went from 54.8 to 88.9 per 100 for Claude Code (12,992 commands) and from 25.7 to 52.0 for
+  Codex (417). Almost all of the difference is `;` and `&&` chains, `cd dir && ...`, `$` and
   globs, locally and inside `ssh` commands, which the old parser passed and about 50 review
   findings showed it could not pass safely. Golden set: no new miss, locally or with Jev.
   Ladder: 0 unsafe.
