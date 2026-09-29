@@ -77,6 +77,23 @@ All notable changes to Reflex are documented here. The format follows
   it used to pass while Jev judged in the background; keyless enforce asked it as uncovered). With the Jev engine in enforce mode, Jev still judges it and a deny it finds
   stands. The ladder golden case for a dev apply without a plan now expects a human.
 
+### Fixed
+
+- Reflex fails closed. An exception while the hook modules loaded (a bad config value, a throw at
+  top level, a syntax or import error), or an unhandled rejection, ended the hook with a generic
+  error, which Claude Code and Codex treat as no decision, so the command ran unchecked. Every hook
+  now starts through `hook.mjs`, which installs the error handlers and loads the script with a
+  dynamic import. On an error the pre-execution gate asks in each agent's contract: Claude Code
+  `ask`, Codex `deny` with exit 2, Hermes `approve`, `--decide` `ask`, and `reflex-sh` a terminal
+  confirmation or exit 126. Shadow mode logs and passes; mode off passes without loading the gate.
+  Post-execution and prompt hooks warn and never block a result. Errors, redacted, go to
+  `health/errors.jsonl`, and `reflex status` and `reflex doctor` report them.
+- `reflex setup`, the Claude Code and Codex plugin hooks, `reflex-sh`, the decision webhook's
+  detached child and the opencode and pi adapters use the new entry. `reflex status` warns about
+  hooks installed before it; re-run `reflex setup` to rewrite them.
+- The opencode and pi adapters treat a gate result that is missing, not JSON, or not a decision as
+  ask (shadow and off still pass). A malformed hook input asks instead of passing.
+
 ## [0.14.0] - 2026-09-28
 
 ### Added
