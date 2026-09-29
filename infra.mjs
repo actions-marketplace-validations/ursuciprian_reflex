@@ -128,19 +128,32 @@ function staleBy(dir, planMtime) {
 // file there may be newer than the plan. A regular file or directory of binaries in .terraform, a
 // terraform.d in the working directory, dev_overrides or a reattach variable: not run. null when safe,
 // else the reason. ponytail: the cache is trusted as the user's own, and an agent that can write the
-// home directory outside the gate can also write the cache; the check keeps the working tree out.
+// home directory outside the gate can also write the cache; the check keeps the working tree (and the
+// repository around it) out. It is a check before the spawn: a process the agent left running could
+// swap a link in between, the same window as for the plan file.
 const insideOf = (p, root) => p === root || p.startsWith(root.endsWith("/") ? root : root + "/");
 const realOr = p => { try { return realpathSync(p); } catch { return null; } };
 export function providersSafe(dir, cwd, planMtime, env = process.env) {
   const home = realOr(env.HOME || homedir());
   if (!home) return "no home directory";
+  // the tree: where the command runs and started, and the repository roots around them (an agent in
+  // infra/ can write the whole repository)
   const tree = [dir, cwd].filter(Boolean).map(realOr).filter(Boolean);
+  for (const t of [...tree]) for (let d = t; d !== dirname(d); d = dirname(d)) if (realOr(join(d, ".git")) && d !== home) { tree.push(d); break; }
   if (Object.keys(env).some(k => /^TF_REATTACH_PROVIDERS$/.test(k))) return "TF_REATTACH_PROVIDERS is set";
-  const cliFile = env.TF_CLI_CONFIG_FILE || join(home, ".terraformrc");
+  // the CLI config Terraform loads: TF_CLI_CONFIG_FILE (absolute, outside the tree), else ~/.terraformrc
+  // and every ~/.terraform.d/*.tfrc(.json)
+  const cfg = env.TF_CLI_CONFIG_FILE;
+  if (cfg && (!isAbsolute(cfg) || tree.some(t => insideOf(realOr(cfg) ?? cfg, t)))) return "TF_CLI_CONFIG_FILE is relative or inside the working tree";
+  let tfrcs = [];
+  try { tfrcs = readdirSync(join(home, ".terraform.d")).filter(n => /\.tfrc(\.json)?$/.test(n)).map(n => join(home, ".terraform.d", n)); } catch { /* none */ }
   let cli = "";
-  try { cli = readFileSync(cliFile, "utf8").slice(0, 256 * 1024); } catch { /* none */ }
+  for (const f of cfg ? [cfg] : [join(home, ".terraformrc"), ...tfrcs]) try { cli += readFileSync(f, "utf8").slice(0, 256 * 1024) + "\n"; } catch { /* none */ }
   if (/\bdev_overrides\b/.test(cli)) return "dev_overrides in the Terraform CLI config";
+  // a relative plugin_cache_dir (../cache) could name the repository: not a cache then
   const configured = cli.match(/^\s*plugin_cache_dir\s*=\s*"([^"]+)"/m)?.[1]?.replace(/^(\$HOME|\$\{HOME\}|~)(?=\/|$)/, home);
+  if (configured && !isAbsolute(configured)) return "a relative plugin_cache_dir";
+  if (env.TF_PLUGIN_CACHE_DIR && !isAbsolute(env.TF_PLUGIN_CACHE_DIR)) return "a relative TF_PLUGIN_CACHE_DIR";
   const caches = [env.TF_PLUGIN_CACHE_DIR, configured, join(home, ".terraform.d/plugin-cache")].filter(Boolean).map(c => realOr(resolve(dir, c))).filter(Boolean)
     .filter(c => insideOf(c, home) && c !== home && !tree.some(t => insideOf(c, t) || insideOf(t, c)));
   if (!caches.length) return "no plugin cache outside the working tree";
@@ -151,8 +164,10 @@ export function providersSafe(dir, cwd, planMtime, env = process.env) {
   const newer = (p, depth = 0) => {   // a file in the cache newer than the plan
     let st; try { st = statSync(p); } catch { return "unreadable"; }
     if (st.isFile()) return st.mtimeMs > planMtime ? p : null;
-    if (!st.isDirectory() || depth > 4) return null;
-    for (const n of readdirSync(p)) { if (++seen > 500) return "too many files"; const r = newer(join(p, n), depth + 1); if (r) return r; }
+    if (!st.isDirectory()) return null;
+    if (depth > 8) return "a cache nested too deep to check";
+    let names; try { names = readdirSync(p); } catch { return "unreadable"; }
+    for (const n of names) { if (++seen > 500) return "too many files"; const r = newer(join(p, n), depth + 1); if (r) return r; }
     return null;
   };
   const walk = (p, depth) => {
@@ -167,7 +182,8 @@ export function providersSafe(dir, cwd, planMtime, env = process.env) {
     if (st.isFile()) return `a provider binary inside the working tree (${basename(p)})`;
     if (!st.isDirectory()) return `an unexpected provider entry (${basename(p)})`;
     if (depth > 6) return "providers nested too deep";
-    for (const n of readdirSync(p)) { if (++seen > 500) return "too many provider entries"; const r = walk(join(p, n), depth + 1); if (r) return r; }
+    let names; try { names = readdirSync(p); } catch { return "unreadable provider directory"; }
+    for (const n of names) { if (++seen > 500) return "too many provider entries"; const r = walk(join(p, n), depth + 1); if (r) return r; }
     return null;
   };
   return walk(root, 0);
@@ -191,7 +207,8 @@ export function readPlan(dir, file, {deadline, env = process.env, cwd = dir} = {
   if (stale) return {why: `stale: ${stale} changed after ${file} was written`};
   const bin = which("terraform", env.PATH);
   if (!bin) return {why: "terraform not found on PATH"};
-  const unsafe = providersSafe(dir, cwd, st.mtimeMs, env);
+  let unsafe;
+  try { unsafe = providersSafe(dir, cwd, st.mtimeMs, env); } catch (e) { unsafe = `could not check the providers (${e.code ?? e.message})`; }
   if (unsafe) return {why: `terraform show not run: ${unsafe}`};
   const left = deadline - Date.now();
   if (left < 50) return {why: "out of time"};
@@ -597,6 +614,19 @@ async function selfcheck() {
     rmSync(join(home, ".terraformrc"));
     assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, TF_REATTACH_PROVIDERS: "{}"}).rule, /TF_REATTACH_PROVIDERS/);
     assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, HOME: pv}).rule, /no plugin cache outside the working tree|holds the home/, "cwd is the home directory");
+    assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, TF_CLI_CONFIG_FILE: "rc"}).rule, /TF_CLI_CONFIG_FILE is relative/);
+    writeFileSync(join(pv, "in.tfrc"), "");
+    assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, TF_CLI_CONFIG_FILE: join(pv, "in.tfrc")}).rule, /inside the working tree/);
+    mkdirSync(join(home, ".terraform.d"), {recursive: true});
+    writeFileSync(join(home, ".terraform.d/extra.tfrc"), 'provider_installation { dev_overrides { "a/b" = "/x" } }');
+    assert.match(gate("terraform apply tfplan", pv).rule, /dev_overrides/, "a ~/.terraform.d/*.tfrc counts");
+    rmSync(join(home, ".terraform.d/extra.tfrc"));
+    writeFileSync(join(home, ".terraformrc"), 'plugin_cache_dir = "../cache"\n');
+    assert.match(gate("terraform apply tfplan", pv).rule, /a relative plugin_cache_dir/);
+    rmSync(join(home, ".terraformrc"));
+    mkdirSync(join(pv, ".git"));
+    assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, TF_PLUGIN_CACHE_DIR: join(pv, "sub")}).rule, /./, "a cache inside the repository");
+    rmSync(join(pv, ".git"), {recursive: true});
     assert.equal(gate("terraform apply tfplan", pv).outcome, "pass", "and back to safe");
     // unknown directory, hidden text, no binary
     assert.equal(gate("terraform apply tfplan", undefined).id, "plan-unreadable");

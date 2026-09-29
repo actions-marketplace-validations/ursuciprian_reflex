@@ -686,7 +686,8 @@ run code the agent put there, before any approval. So `infra.terraform_show` is 
 a `terraform apply <planfile>` is judged as before (the rules, then Jev or, keyless, a human), and an
 apply without a plan file still asks with the fix. For the same reason `terraform plan`, `show`,
 `validate`, `state show`, `providers`, `graph` and `init` are no longer on the read-only list or the
-fast lane; `fmt`, `output`, `state list` and `version` still are.
+fast lane, nor `output` and `state list`, which start the backend saved in `.terraform`; `fmt -check`
+and `version` still are.
 
 **The plugin cache requirement.** Turn it on with `"infra": {"terraform_show": true}` only with a
 [provider plugin cache](https://developer.hashicorp.com/terraform/cli/config/config-file#provider-plugin-cache):

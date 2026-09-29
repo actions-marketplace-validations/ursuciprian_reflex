@@ -258,9 +258,9 @@ const IP_NEIGH = "n|ne|nei|neig|neigh|neighb|neighbo|neighbor|neighbou|neighbour
 const READ_ONLY_SUB = {
   git: /^(-C\s+\S+\s+)?((status|log|diff|show|blame|ls-files|ls-remote|rev-parse|describe|shortlog|fetch)\b|branch(\s+(-a|-r|-v|-vv|--list|--show-current|--contains\s+\S+|--merged|--no-merged))*\s*$|remote(\s+(-v|show\s+\S+|get-url\s+\S+))?\s*$|reflog(\s+show)?\b(?!.*\b(expire|delete)\b)|config\s+--get|stash\s+(list|show)|worktree\s+list|tag\s+-l)/,
   kubectl: /^(get|describe|logs|top|explain|version|api-resources|config (view|current-context|get-contexts))\b/,
-  // not plan, show, validate, state show, providers or graph: they start the provider binaries in
-  // .terraform, which an agent's file tools can write without passing the gate
-  terraform: /^(-chdir=\S+\s+)?(fmt -check|output|state list|version)\b/,
+  // not plan, show, validate, state, providers or graph: they start the provider binaries in .terraform,
+  // or (output, state list) the backend saved there, which an agent's file tools can write outside the gate
+  terraform: /^(-chdir=\S+\s+)?(fmt -check|version)\b/,
   aws: /^(--\S+\s+\S+\s+)*(\S+ (describe|list|head)-\S+|(?!s3api\s+get-object)\S+ get-\S+|sts get-caller-identity|configure list|s3 ls)\b/,
   helm: /^(list|ls|status|get|lint|show|history|search|version)\b/,
   // gh api is a GET unless a method, field or input says otherwise, in any spelling
@@ -1757,7 +1757,9 @@ export function infraJudge(command, cwd, env, quick) {
   // the team policy of the directory each part runs in counts too (a cd or -chdir into another repository)
   const settingsAt = dir => { const a = infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), b = infraSettings(USER_CONFIG.infra, teamPolicy(dir)?.infra);
     return {...a, destroy: a.destroy === "deny" || b.destroy === "deny" ? "deny" : "ask", require_plan_in_prod: a.require_plan_in_prod || b.require_plan_in_prod}; };
-  const g = planGate({command, cwd, settings: infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), settingsAt, prod, pipelines, shellWords});
+  let g;
+  try { g = planGate({command, cwd, settings: infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), settingsAt, prod, pipelines, shellWords}); }
+  catch (e) { g = {outcome: "ask", id: "infra-error", rule: `the plan gate failed (${String(e.message).slice(0, 80)})`}; }   // closed, in shadow too
   if (!g) return {quick, plan: null};
   const plan = g.plan ?? null, version = teamRules(load("rules.json"), cwd).version, withPlan = q => q && plan ? {...q, plan} : q;
   if (g.outcome === "ask" || g.outcome === "deny") {
@@ -2216,9 +2218,10 @@ async function selfcheck() {
   ok(!readOnly("terraform apply -auto-approve"), "apply");
   // what starts provider binaries from .terraform (agent-writable through file tools) is never read-only nor fast lane
   for (const c of ["terraform plan -out=tfplan", "terraform show -json tfplan", "terraform validate", "terraform -chdir=x validate",
-                   "terraform state show aws_instance.a", "terraform providers schema -json", "terraform graph", "terraform init"])
+                   "terraform state show aws_instance.a", "terraform providers schema -json", "terraform graph", "terraform init",
+                   "terraform output -json", "terraform state list"])
     ok(!readOnly(c) && !fastPass(c, load("rules.json")), `provider-executing, judged: ${c}`);
-  ok(readOnly("terraform fmt -check") && readOnly("terraform output -json") && fastPass("terraform fmt", load("rules.json")), "fmt and output stay fast");
+  ok(readOnly("terraform fmt -check") && readOnly("terraform version") && fastPass("terraform fmt", load("rules.json")), "fmt and version stay fast");
   ok(!readOnly("find . -name '*.tmp' -delete"), "find -delete");
   ok(!readOnly("cat $(rm -rf ~)"), "subshell");
   ok(!readOnly("ls; rm -rf build"), "second segment writes");
