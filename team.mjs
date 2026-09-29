@@ -87,16 +87,33 @@ function ruleError(r, human) {
   return null;
 }
 
-const KEYS = new Set(["version", "note", "rules", "always_human", "prod", "mode", "freeze", "fastlane", "notify", "infra"]);
+const KEYS = new Set(["version", "note", "rules", "always_human", "prod", "mode", "freeze", "fastlane", "notify", "infra", "mcp", "protected"]);
+// An MCP rule (setup/tool-gate/mcp.json shape): ask or deny when its server, tool and args patterns all match.
+const MCP_KEYS = new Set(["id", "outcome", "rule", "server", "tool", "args", "note"]);
+function mcpError(r) {
+  if (!r || typeof r !== "object" || Array.isArray(r)) return "not an object";
+  const extra = Object.keys(r).find(k => !MCP_KEYS.has(k));
+  if (extra) return `unknown field "${extra}"`;
+  if (typeof r.id !== "string" || !/^[\w.-]{1,64}$/.test(r.id)) return "id must be 1 to 64 letters, digits, dots, dashes or underscores";
+  if (!["ask", "deny"].includes(r.outcome)) return 'outcome must be "ask" or "deny"';
+  if (typeof r.rule !== "string" || !r.rule.trim() || r.rule.length > 200) return "rule must be a description of at most 200 characters";
+  const ps = ["server", "tool", "args"].filter(k => r[k] !== undefined);
+  if (!ps.length) return "needs at least one of server, tool, args";
+  for (const k of ps) { const e = regexError(r[k]); if (e) return `${k} pattern ${e}`; }
+  return null;
+}
+// A protected path glob (setup/tool-gate/protected.json shape): a write there asks.
+const globError = g => typeof g !== "string" || !g.trim() || g.length > 200 ? "must be a glob of 1 to 200 characters"
+  : /[\0\n]/.test(g) ? "must be one line" : null;
 /** The file, validated part by part: every valid stricter entry is kept, every problem is an error. */
 export function parseTeam(text) {
-  const out = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, infra: null, errors: []};
+  const out = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, infra: null, mcp: [], protected: [], errors: []};
   let doc;
   try { doc = JSON.parse(text); } catch (e) { out.errors.push(`not JSON (${e.message})`); return out; }
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) { out.errors.push("must be a JSON object"); return out; }
   if (doc.version !== 1) out.errors.push('needs "version": 1');
   for (const k of Object.keys(doc)) if (!KEYS.has(k))
-    out.errors.push(`unknown key "${k}": a team policy can add rules, always_human patterns, prod markers, a mode floor, change freezes, a trusted fastlane and a trusted notify webhook, nothing else`);
+    out.errors.push(`unknown key "${k}": a team policy can add rules, always_human patterns, prod markers, MCP rules, protected paths, a mode floor, change freezes, a trusted fastlane and a trusted notify webhook, nothing else`);
   let budget = MAX_PATTERNS;
   const list = (k, max) => {
     if (doc[k] === undefined) return [];
@@ -121,6 +138,22 @@ export function parseTeam(text) {
     const why = regexError(m);
     if (why) out.errors.push(`prod ${i + 1}: pattern ${why}`);
     else if (spend(1, `prod ${i + 1}`)) out.rules.push(linear({id: "team:prod", outcome: "ask", shell: true, rule: "production, by a marker in the team policy", all: [m]}));
+  }
+  // MCP rules and protected paths (tools.mjs): stricter only, so they apply untrusted.
+  for (const [i, r] of list("mcp", 50).entries()) {
+    const why = mcpError(r), ps = ["server", "tool", "args"].filter(k => r?.[k] !== undefined);
+    if (why) out.errors.push(`mcp ${i + 1}: ${why}`);
+    else if (spend(ps.length, `mcp ${i + 1}`)) {
+      const re = Object.fromEntries(ps.map(k => [k, compileTeam(r[k])]));
+      out.mcp.push({id: `team:${r.id}`, outcome: r.outcome, rule: `${r.rule} (team policy)`,
+        test: (t, text, words) => (!re.server || re.server.test(String(t.server ?? t.name).toLowerCase())) &&
+          (!re.tool || re.tool.test(words(t.tool))) && (!re.args || re.args.test(text.toLowerCase()))});
+    }
+  }
+  for (const [i, g] of list("protected", 50).entries()) {
+    const why = globError(g);
+    if (why) out.errors.push(`protected ${i + 1}: ${why}`);
+    else out.protected.push({glob: g.trim(), why: "protected by the team policy"});
   }
   // The plan-aware infra gate (infra.mjs), stricter only: deny a plan that destroys, require a saved plan in production.
   if (doc.infra !== undefined) {
@@ -165,7 +198,7 @@ export function readTrust(file = TRUST_FILE) {
 }
 
 // One root's file: null when there is none, else what it adds and its problems.
-const parsed = new Map(), empty = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, infra: null};
+const parsed = new Map(), empty = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, infra: null, mcp: [], protected: []};
 function readOne(root) {
   const file = join(root, ".reflex/policy.json");
   let text;
@@ -199,6 +232,7 @@ export function teamPolicy(cwd) {
       inherited: found.slice(1).map(f => f.file), tag: (found.length > 1 ? sha256(found.map(f => f.sha256).join()) : t.sha256 ?? "unreadable").slice(0, 8),
       errors: found.flatMap((f, i) => f.errors.map(e => i ? `${f.file}: ${e}` : e)),
       rules: found.flatMap(f => f.rules), always_human: found.flatMap(f => f.always_human), freeze: found.flatMap(f => f.freeze),
+      mcp: found.flatMap(f => f.mcp), protected: found.flatMap(f => f.protected),
       notify: active ? t.notify : null, notify_target: t.notify,
       mode: found.some(f => f.mode === "enforce") ? "enforce" : found.find(f => f.mode)?.mode ?? null,
       infra: found.some(f => f.infra) ? Object.assign({}, ...found.map(f => f.infra ?? {})) : null,
@@ -262,7 +296,7 @@ const die = (s, code = 1) => { console.error(`reflex: ${s}`); process.exit(code)
 function describe(t) {
   return [`team policy: ${t.file}`, `sha256: ${t.sha256 ?? "unreadable"}`, `trust: ${t.trust}${t.trust === "changed" ? " (the file changed since you trusted it; its fast lane is off)" : ""}`,
     `adds: rules ${t.rules.filter(r => r.id !== "team:prod").length}, always-human ${t.always_human.length}, prod markers ${t.rules.filter(r => r.id === "team:prod").length}` +
-    `, mode floor ${t.mode ?? "none"}, change freezes ${t.freeze.length}`,
+    `, MCP rules ${t.mcp?.length ?? 0}, protected paths ${t.protected?.length ?? 0}, mode floor ${t.mode ?? "none"}, change freezes ${t.freeze.length}`,
     ...(t.notify_target ? [`notify webhook: ${targetLabel(t.notify_target)}, ${t.notify ? "active" : "inactive until you trust this file"}`] : []),
     `fast lane: ${t.fastlane_count ?? 0} entr${t.fastlane_count === 1 ? "y" : "ies"}, ${t.active_fastlane ? "active" : "inactive"}`,
     ...t.inherited.map(f => `also applies (stricter parts): ${f}`), ...t.errors.map(e => `invalid: ${e}`)];
@@ -305,7 +339,7 @@ function main(argv) {
   const t = teamPolicy(root);
   if (cmd === "policy") {
     if (!t) return say(`no team policy in ${root} (reflex policy init writes a starter)`);
-    return argv.includes("--json") ? console.log(JSON.stringify({...t, fastlane: undefined, rules: t.rules.map(r => r.id), always_human: t.always_human.map(r => r.id), notify: t.notify && targetLabel(t.notify), notify_target: t.notify_target && targetLabel(t.notify_target)}, null, 1)) : describe(t).forEach(l => say(l));
+    return argv.includes("--json") ? console.log(JSON.stringify({...t, fastlane: undefined, rules: t.rules.map(r => r.id), always_human: t.always_human.map(r => r.id), mcp: t.mcp.map(r => r.id), notify: t.notify && targetLabel(t.notify), notify_target: t.notify_target && targetLabel(t.notify_target)}, null, 1)) : describe(t).forEach(l => say(l));
   }
   if (cmd === "trust" && rest.includes("--revoke")) { trustRepo(root, null); return say(`${root}: trust removed; its team fast lane is off`); }
   if (cmd !== "trust") die("usage: reflex trust [dir] | reflex trust --revoke [dir] | reflex policy [dir] [--json] | reflex policy init [dir] [--pack aws|eks|terraform|startup-default]");

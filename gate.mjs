@@ -35,7 +35,8 @@ import {fileURLToPath} from "node:url";
 import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
-import {globsReflex, teamMode, teamPolicy, teamRules} from "./team.mjs";
+import {globsReflex, repoRoot, teamMode, teamPolicy, teamRules} from "./team.mjs";
+import {argStrings, mcpCommand, mcpJudge, protectedPath, toolOf} from "./tools.mjs";
 import {infraError, infraSettings, planGate} from "./infra.mjs";
 import {activeFreeze, inWindow, parseFreeze} from "./freeze.mjs";
 import {notifyLater, notifyTarget} from "./notify.mjs";
@@ -168,6 +169,9 @@ export const CONFIG = {
   // change freezes (freeze.mjs) and the decision webhook (notify.mjs), both from config.json only
   freeze: parseFreeze(USER_CONFIG.freeze, "config.json freeze"),
   notify: notifyTarget(USER_CONFIG.notify, "config.json notify"),
+  // MCP tool calls the rules do not cover (tools.mjs): "shadow" logs them (Jev judges them when
+  // enforcing with a key), "ask" asks in every mode. config.json only.
+  mcp: {unknown: USER_CONFIG.mcp?.unknown ?? "shadow"},
 };
 // The one host the provider's key may go to (authorization()): where its endpoint was configured.
 CONFIG.keyHost = hostOf(CONFIG.api);
@@ -195,7 +199,16 @@ export function configurationError() {
     : CONFIG.engine === "jev" && PROVIDER.error ? PROVIDER.error
     : !["off", "shadow", "enforce"].includes(CONFIG.mode) ? "mode must be off, shadow or enforce"
     : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on"
-    : ![undefined, "simple", "legacy"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? "readonly must be simple or legacy" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra));
+    : ![undefined, "simple", "legacy"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? "readonly must be simple or legacy" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra) ?? toolError());
+}
+// Invalid tool gate settings ask, like any invalid configuration.
+function toolError() {
+  const m = USER_CONFIG.mcp, p = USER_CONFIG.protected;
+  if (m !== undefined && (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).some(k => k !== "unknown") || !["shadow", "ask", undefined].includes(m.unknown)))
+    return 'mcp takes only "unknown": "shadow" or "ask"';
+  if (p !== undefined && (!Array.isArray(p) || p.some(g => typeof g !== "string" || !g.trim() || g.length > 200)))
+    return "protected must be a list of globs";
+  return null;
 }
 // engine laya promises that nothing leaves the machine: a loopback URL, a known checkpoint, a sane port.
 function layaError() {
@@ -1888,16 +1901,53 @@ export function prodTier(command, cwd, env) {
   if (c.length > COMMAND_BYTES) return {prod: true, by: "command", why: "command too large to check"};
   if (onlyNotes(pipelines(c))) return {prod: false};
   env = withAwsProfile(c, env);
-  const marker = load("rules.json").rules.find(r => r.id === "prod-destroy")?.all[0];
-  const team = teamPolicy(cwd)?.rules.filter(r => r.id === "team:prod") ?? [];
   const parts = [[`cwd`, `cwd=${cwd ?? ""}`], ...Object.entries(env).map(([k, v]) => [k, `${k}=${v}`]), ["command", stripDataHeredocs(c, true)]];
-  const hit = text => (marker && rx(marker).exec(text)?.[0]) ?? (team.find(r => r.test(text)) && "a team prod marker");
+  const hit = prodMarker(cwd);
   if (!hit(parts.map(p => p[1]).join(" "))) return {prod: false};
   for (const [by, text] of parts) {
     const m = hit(text);
     if (m) return {prod: true, by, why: redact(by === "command" ? `command: ${m}` : text).slice(0, 160)};
   }
   return {prod: true, by: "context", why: "the command with its context"};
+}
+// The production test prodTier reads: the prod-destroy rule's first pattern and the team policy's
+// prod list, as text => the matched marker (a team one is named, never shown) or a falsy value.
+function prodMarker(cwd) {
+  const marker = load("rules.json").rules.find(r => r.id === "prod-destroy")?.all[0];
+  const team = teamPolicy(cwd)?.rules.filter(r => r.id === "team:prod") ?? [];
+  return text => (marker && rx(marker).exec(text)?.[0]) ?? (team.find(r => r.test(text)) && "a team prod marker");
+}
+// The production tier of an MCP call: the server name, each argument as key=value, and the context
+// that server kind reads (an AWS server the AWS profile and region, a Kubernetes one the kube context,
+// a Terraform one the workspace). Not the cwd or the branch: an MCP server does not act on them.
+const SERVER_ENV = [[/^aws_/, /aws|amazon|\biam\b|s3|ec2|eks|ecs|rds|lambda|cloudformation|cdk/], [/^kube_context$/, /k8s|kube|eks|helm|argo|openshift/],
+  [/^tf_workspace$/, /terraform|\btfe?\b|opentofu|\btofu\b/]];
+export function mcpTier(t, cwd, env = {}) {
+  const hit = prodMarker(cwd), kind = `${t.server ?? ""} ${t.name}`.toLowerCase();
+  const parts = [["server", `server=${t.server ?? t.name}`],
+    ...Object.entries(env).filter(([k]) => SERVER_ENV.some(([key, server]) => key.test(k) && server.test(kind))).map(([k, v]) => [k, `${k}=${v}`]),
+    ...argStrings(t.args ?? {}).map(([k, v]) => ["arguments", `${k}=${v}`])];
+  for (const [by, text] of parts) {
+    const m = hit(text);
+    if (m) return {prod: true, by, why: redact(by === "arguments" ? `argument: ${m}` : text).slice(0, 160)};
+  }
+  return {prod: false};
+}
+// The protected path a file tool writes, if any (tools.mjs, setup/tool-gate/protected.json): the
+// bundled or user copy, the Reflex checkout (not a checkout nested in it, as for tamper), its logs
+// and settings, config.json "protected" and the team policy's globs. Production is the prod markers
+// on the path within its repository.
+export function protectedWrite(paths, cwd) {
+  const spec = load("protected.json"), root = cwd && repoRoot(cwd), hit = prodMarker(cwd);
+  const own = [{glob: `${HERE}/**`, why: "the Reflex gate and its setup", unless: p => nestedCheckout(dirname(p))},
+    {glob: `${CONFIG.data}/**`, why: "the Reflex logs"}, {glob: `${dirname(USER_CONFIG_FILE)}/**`, why: "the Reflex settings"}];
+  const user = (Array.isArray(USER_CONFIG.protected) ? USER_CONFIG.protected : []).map(glob => ({glob, why: "protected in config.json"}));
+  const entries = [...own, ...spec.paths, ...user, ...(teamPolicy(cwd)?.protected ?? [])];
+  const prodPath = p => !!hit(root && p.startsWith(root + "/") ? p.slice(root.length + 1) : p);
+  const h = protectedPath(paths, {cwd, entries, prodPath});
+  // the path as the reason shows it: relative inside the working directory
+  if (h && cwd && h.abs.startsWith(resolve(cwd) + "/")) h.path = h.abs.slice(resolve(cwd).length + 1);
+  return h && {...h, outcome: ["ask", "deny"].includes(spec.outcome) ? spec.outcome : "ask", version: spec.version};
 }
 // A change freeze (freeze.mjs) in force now, from config.json and the team policy, as a rule decision:
 // it asks or denies in every mode, and a rule's deny or an equal rule outcome keeps its own reason.
@@ -2183,11 +2233,12 @@ export const broadCwd = cwd => [homedir(), "/", dirname(homedir())].includes(res
 /** Jev's judgment + the policy -> {outcome, rule, source, state, answers, ...}. */
 // `asker` stands in for the API in the self-check. `tainted`: the session read a suspected prompt
 // injection (guard.mjs), so the policy's taint gates apply and nothing is allowed.
-export async function jevJudge({command, cwd, env, session = {}, useCache = true, asker = ask, tainted = false}) {
+export async function jevJudge({command, cwd, env, session = {}, useCache = true, asker = ask, tainted = false, tool = false}) {
   const spec = load("questions.json");
   const policy = compile(load("policy.json"));
   // The scripts it runs, as one {path, excerpt}; several are joined, still within the size cap.
-  const scripts = localScripts(command, cwd), seen = scripts.filter(s => s.excerpt);
+  // An MCP call (`tool`) runs no local script: its text is a tool name and arguments.
+  const scripts = tool ? [] : localScripts(command, cwd), seen = scripts.filter(s => s.excerpt);
   const script = seen.length ? {path: seen.map(s => s.path).join(", "),
     excerpt: seen.map(s => seen.length > 1 ? `# --- ${s.path}\n${s.excerpt}` : s.excerpt).join("\n").slice(0, SCRIPT_BYTES)} : undefined;
   const state = {[spec.item_key]: {title: redact(command).slice(0, 160), command: redact(command), cwd, env, ...(script && {script}), ...session},
@@ -2290,7 +2341,8 @@ const localJudgment = () => ({outcome: "ask", source: "local", rule: "not covere
 // earlier work also gets `drop`, the indexes to leave out. A command is always judged as a command.
 export async function decide(call, {background = false, asker, judger} = {}) {
   const subgoals = call.command ? [] : [call.subgoals ?? call.subgoal].flat().filter(s => typeof s === "string" && s.trim());
-  if (CONFIG.mode === "off" || !(call.command || subgoals.length)) return {effective: "pass", decision: "pass", reason: "reflex off", source: "off"};
+  if (CONFIG.mode === "off" || !(call.command || subgoals.length || call.tool)) return {effective: "pass", decision: "pass", reason: "reflex off", source: "off"};
+  if (!call.command && call.tool) return toolDecide(call, {background, asker, judger});
   if (subgoals.length) {
     if (CONFIG.engine === "local") return view({outcome: "pass", source: "local", rule: "subgoal classification is disabled"}, "pass");
     if (CONFIG.mode !== "enforce" && !background) return inBackground(call);
@@ -2360,6 +2412,62 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   const j = askFloor(allowSetting(holdAllow(await jevJudge({command: call.command, cwd: call.cwd, env, session: callSession(call), asker, tainted: !!t}), call)), floor);
   const effective = CONFIG.mode === "enforce" && j.outcome !== "would_allow" ? j.outcome : "pass";
   return finish(j, call, effective, {env, judger, background, tainted: !!t});
+}
+// MCP tool calls and file writes (tools.mjs), on the same ladder as a command: a rule's ask or deny
+// holds in every mode, a change freeze tightens, the queue and the runaway guard apply, and the trace,
+// the audit and the webhook see them as `mcp <server>/<tool> {arguments}` or `<tool> <path>`, with a
+// hash of the whole input so a queue approval covers that exact call. An unknown MCP tool goes to the
+// engine. Never allow: a pass leaves the agent's own permissions in charge. A read-like MCP tool and a
+// write outside the protected paths pass at once, unlogged, as a read-only command does.
+async function toolDecide(call, {background = false, asker, judger} = {}) {
+  const t = toolOf(call.tool, call.input, call.mcp === true);
+  const quiet = rule => ({effective: "pass", decision: "pass", reason: `reflex: ${rule}`, source: "tool"});
+  if (!t) return quiet("not a gated tool");
+  const env = envContext(call.cwd), digest = sha(call.input ?? {}).slice(0, 8);
+  let quick;
+  if (t.kind === "write") {
+    const hit = protectedWrite(t.paths, call.cwd);
+    if (!hit) return quiet("not a protected path");
+    call = {...call, command: `${t.name} ${hit.path} (input ${digest})`, tier: hit.prod ? {prod: true, by: "path", why: redact(hit.path).slice(0, 160)} : {prod: false}};
+    quick = {outcome: hit.outcome, rule: `writes a protected path (${hit.path}): ${hit.why}`, id: "protected-path", source: "rule", policy_version: hit.version};
+  } else {
+    const tier = mcpTier(t, call.cwd, env);
+    quick = mcpJudge(t, {spec: load("mcp.json"), team: teamPolicy(call.cwd)?.mcp ?? [], tier, precheck: c => precheck(c, call.cwd, env)});
+    if (quick?.source === "read-only") return view(quick, "pass");
+    call = {...call, command: `${mcpCommand(t, redact)} (input ${digest})`, tier,
+            mcp: {server: t.server, tool: t.tool, arguments: redact(JSON.stringify(t.args ?? {})).slice(0, 2000), prod: tier.prod}};
+  }
+  const pass = d => d.effective === "allow" ? {...d, effective: "pass"} : d;
+  if (!background) quick = frozen(quick, call.cwd, call.tier);
+  let resumed = false;
+  if (CONFIG.mode === "enforce" && !background && CONFIG.queue.enabled && !(quick?.source === "rule" && quick.outcome === "deny")) {
+    let q = queueAnswer(call);
+    if (q && q.outcome !== "deny" && quick?.id === "freeze" && !freezeApproved(quick.window, q)) q = null;
+    if (q) return pass(await finish(q, call, q.outcome === "deny" ? "deny" : "pass", {env}));
+    const r = queueAnswer(runawayCall(call));
+    if (r?.resume) resumed = true;
+    else if (r) return finish(r, call, "deny", {env});
+  }
+  const stop = background ? null : runaway(call, quick, {resumed});
+  if (stop && !stop.dry && !(quick?.source === "rule" && quick.outcome === "deny")) {
+    const j = {outcome: "deny", source: "runaway", id: `runaway-${stop.signal}`, rule: `stopped: ${stop.reason}`, runaway: {signal: stop.signal}};
+    if (CONFIG.queue.enabled && stop.fresh) j.rule += `. Parked for the user as ${park(runawayCall(call), j, {id: "runaway"}).item.id}`;
+    trace(j, call, "deny");
+    return view(j, "deny");
+  }
+  if (stop) call = {...call, runaway: {signal: stop.signal, ...(stop.dry ? {dry: true} : {superseded: "rule deny"})}};
+  if (quick) return pass(await finish(quick, call, quick.source === "rule" ? quick.outcome : "pass", {env, judger}));
+  // an unknown MCP tool
+  const version = load("mcp.json").version;
+  if (CONFIG.mcp.unknown === "ask")
+    return finish({outcome: "ask", source: "rule", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules (mcp.unknown: ask)`, policy_version: version}, call, "ask", {env, judger});
+  if (CONFIG.engine === "local")
+    return pass(await finish({outcome: "pass", source: "local", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules: logged (keyless)`, policy_version: version},
+                             call, "pass", {env, judger, background}));
+  if (CONFIG.mode !== "enforce" && !background) return inBackground(call);
+  const t0 = tainted(call.session_id);
+  const j = await jevJudge({command: call.command, cwd: call.cwd, env, session: {...callSession(call), mcp: call.mcp}, asker, tainted: !!t0, tool: true});
+  return pass(await finish(j, call, CONFIG.mode === "enforce" && j.outcome !== "would_allow" ? j.outcome : "pass", {env, judger, background, tainted: !!t0}));
 }
 // Every judged command ends here: the escalation ladder when the autonomous profile has it on
 // (System 2, the always-human class, the queue, checkpoints), then the trace and the agent's view.
@@ -2590,8 +2698,14 @@ function trace(j, call, effective) {
 // ---------------------------------------------------------------------------------------------
 // Claude Code adapter: PreToolUse / PostToolUse hook JSON <-> the contract above.
 // https://docs.claude.com/en/docs/claude-code/hooks
+// An MCP tool (mcp__<server>__<tool>) or a file tool (Edit, Write, MultiEdit, NotebookEdit, Codex
+// apply_patch) as a tool call for decide(): the tool gate (tools.mjs) judges it. null for any other tool.
+const gatedTool = (name, input) => { const t = toolOf(name, input); return t && (t.kind === "mcp" || t.paths.length) ? t : null; };
 function claudeCall(input) {
   const t = input.tool_input ?? {};
+  if (gatedTool(input.tool_name, t))
+    return {agent: "claude-code", tool: input.tool_name, input: t, cwd: input.cwd, session_id: input.session_id, call_id: input.tool_use_id,
+            prompt_id: input.prompt_id, transcript_path: input.transcript_path, permission_mode: input.permission_mode, ...(input.agent_id && {agent_id: input.agent_id})};
   // Agent (formerly Task) spawns a subagent: its type, description and prompt are the subgoal.
   // A resume continues earlier work on purpose, so it is not checked.
   const subgoal = ["Task", "Agent"].includes(input.tool_name) && t.prompt && !t.resume
@@ -2612,7 +2726,7 @@ export const promptKey = text => sha(redact(text).slice(0, 2000));
 // report.mjs tells a human approval from an allowlist, and subgoal dedup a rejected spawn.
 function claudePrompted(input) {
   const call = claudeCall(input);
-  if (!call) return;
+  if (!call || call.tool) return;
   record({agent: "claude-code", event: "prompted", session_id: call.session_id, prompt_id: input.prompt_id,
           key: promptKey(call.command ?? call.subgoal)});
 }
@@ -2651,6 +2765,7 @@ function claudePost(input) {
 function codexCall(input) {
   const t = input.tool_input ?? {};
   if (input.tool_name === "Bash") return {agent: "codex", command: t.command, cwd: input.cwd, session_id: input.session_id, call_id: input.tool_use_id};
+  if (gatedTool(input.tool_name, t)) return {agent: "codex", tool: input.tool_name, input: t, cwd: input.cwd, session_id: input.session_id, call_id: input.tool_use_id};
   if (input.tool_name !== "spawn_agent") return null;
   const text = typeof t.message === "string" && t.message.trim() ? t.message
     : (Array.isArray(t.items) ? t.items : []).map(i => typeof i?.text === "string" ? i.text : "").filter(Boolean).join("\n");
@@ -2697,6 +2812,12 @@ async function hermesPre(input) {
     if (!subgoals.length) return process.stdout.write("{}");
     const d = await decideSafe({agent: "hermes", subgoals, whole: true, cwd: input.cwd, session_id: input.session_id, call_id: input.extra?.tool_call_id});
     return process.stdout.write(JSON.stringify(d.effective === "deny" ? {action: "block", message: d.reason} : {}));
+  }
+  // MCP tools (mcp_<server>_<tool>) and the file tools (write_file, patch): the tool gate
+  if (input.tool_name !== "terminal" && gatedTool(input.tool_name, input.tool_input)) {
+    const d = await decideSafe({agent: "hermes", tool: input.tool_name, input: input.tool_input ?? {}, cwd: input.cwd,
+                                session_id: input.session_id, call_id: input.extra?.tool_call_id});
+    return process.stdout.write(JSON.stringify(hermesOut(d, `${input.tool_name} ${JSON.stringify(input.tool_input ?? {})}`)));
   }
   if (input.tool_name !== "terminal") return process.stdout.write("{}");
   const command = input.tool_input?.command;
