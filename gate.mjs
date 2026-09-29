@@ -182,7 +182,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
       reflexChanges(command) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
       (inRepo && /\bCDPATH=/.test(command)) ||
-      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra|plugin|failsafe|hook|guard|providers)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bscripts\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
+      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra|plugin|failsafe|hook|guard|providers|config|shell|scripts|readonly|rules|tamper|jev|selfcheck)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bscripts\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // A repo's team policy (.reflex/) and the user's trust in it (team.mjs): a human's call.
   // A glob that expands to .reflex counts, and so does naming policy.json where a team policy applies.

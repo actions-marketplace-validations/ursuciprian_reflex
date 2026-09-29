@@ -507,6 +507,8 @@ export async function selfcheck() {
     writeFileSync(join(nested, ".git"), "gitdir: /nowhere\n");
     ok(pw("git add gate.mjs setup/tool-gate/rules.json && git commit -m 'fix: x'", HERE) !== "tamper" && pw("sed -i '' s/a/b/ gate.mjs", HERE) === "tamper",
        "checkout: git add and commit are not tamper, an edit is");
+    for (const m of ["config", "shell", "scripts", "readonly", "rules", "tamper", "jev", "selfcheck"])
+      ok(pw(`sed -i '' s/a/b/ ${m}.mjs`, HERE) === "tamper" && pw(`echo x > ${m}.mjs`, HERE) === "tamper", `checkout: the gate module ${m}.mjs is protected like gate.mjs`);
     ok(pw("sed -i '' s/a/b/ gate.mjs", nested) !== "tamper" && pw("sed -i '' s/a/b/ ../gate.mjs", nested) === "tamper" &&
        pw(`sed -i '' s/a/b/ ${join(HERE, "gate.mjs")}`, nested) === "tamper", "checkout: a nested worktree is not the gate, unless the command reaches out");
     // review of #35: a cd the tracker cannot resolve inside the nested checkout restores the checkout view
