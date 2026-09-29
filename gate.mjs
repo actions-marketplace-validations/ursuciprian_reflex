@@ -800,10 +800,10 @@ export function readOnlyLegacy(cmd, extra = [], depth = 0, whole = null) {
 // ---------------------------------------------------------------------------------------------
 // Read-only, simple (the default). readOnlyLegacy above understands a good part of the shell and was
 // fooled about 50 ways in five reviews; this one understands almost none of it and refuses the rest.
-// A command is read-only only when it is one simple command or a pipeline of them (no ; && || & or
-// newline, no redirect but 2>/dev/null and 2>&1, no $ ` ( ) { } * ? [ ] # ! < >, no $'...', and no
-// backslash escape but \' between single-quoted parts),
-// each program is in READ_ONLY_SIMPLE, and every flag it is given is on that program's list. An
+// A command is read-only only when it is simple commands, pipelines of them, or both joined by ; && ||
+// or a newline (no &, no redirect but 2>/dev/null and 2>&1, no $ ` ( ) { } * ? [ ] # ! < >, no $'...',
+// and no backslash escape but \' between single-quoted parts), each program is in READ_ONLY_SIMPLE,
+// and every flag it is given is on that program's list; `cd <literal path>` may stand between them. An
 // unknown program, subcommand or flag is not read-only: it falls through to the rules and the engine.
 // Words are judged as the shell passes them (quotes removed), so '-'X is -X. A word that names a
 // secret file (SENSITIVE, /proc/…/environ) is never read-only, whatever the rules say.
@@ -811,15 +811,16 @@ export function readOnlyLegacy(cmd, extra = [], depth = 0, whole = null) {
 export const READ_ONLY_MODE = ["legacy", "simple"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? ENV.REFLEX_READONLY ?? USER_CONFIG.readonly : "simple";
 export const readOnly = (cmd, extra = []) => READ_ONLY_MODE === "legacy" ? readOnlyLegacy(cmd, extra) : readOnlySimple(cmd, extra);
 
-// The command as pipeline segments of words, or null for anything but plain words and single pipes.
+// The command as pipeline segments of words, or null for anything but plain words, pipes and ; && ||
+// or newline between pipelines. The first segment of each pipeline has `first` set.
 // Unquoted: letters, digits and _ @ % + = : , . / -, no word starts with = (zsh expands =cmd), and ~
 // only as a word's first character before / or its end (zsh EXTENDED_GLOB reads ^ and a later ~ as globs).
 // Single quotes are literal; double quotes may hold anything but $ ` ! and a backslash that escapes.
 // Each segment's `view` is its words for the fast-lane patterns, a quoted word that is not an option
 // written '' (the shape readOnlyLegacy gave them: `git commit -m ''`, `reflex check ''`).
-const REDIRECT = /2>(&1|[ \t]*\/dev\/null)(?=[ \t|]|$)/y;
+const REDIRECT = /2>(&1|[ \t]*\/dev\/null)(?=[ \t|;&\n]|$)/y;
 export function simpleSegments(cmd) {
-  const segs = [[]];
+  const segs = [Object.assign([], {first: true})];
   let w = null, quoted = false, i = 0;
   const end = () => {
     if (w === null) return;
@@ -835,7 +836,11 @@ export function simpleSegments(cmd) {
     const r = w === null && REDIRECT.exec(cmd);
     if (r) { i += r[0].length; continue; }
     if (ch === " " || ch === "\t") { end(); i++; }
-    else if (ch === "|") { end(); if (!segs.at(-1).length || cmd[i + 1] === "|" || cmd[i + 1] === "&") return null; segs.push([]); i++; }
+    // ; && || and a newline start a new pipeline; a lone & (background) and |& do not parse
+    else if (ch === ";" || ch === "\n" || cmd.startsWith("&&", i) || cmd.startsWith("||", i)) {
+      end(); if (!segs.at(-1).length) return null; segs.push(Object.assign([], {first: true})); i += ch === ";" || ch === "\n" ? 1 : 2;
+    }
+    else if (ch === "|") { end(); if (!segs.at(-1).length || cmd[i + 1] === "&") return null; segs.push([]); i++; }
     else if (ch === "'" || ch === '"') {
       const j = cmd.indexOf(ch, i + 1);
       if (j < 0) return null;
@@ -847,7 +852,7 @@ export function simpleSegments(cmd) {
     // the one escape: \' for a quote between single-quoted parts ('it'\''s'), as /reflex:check writes it
     else if (ch === "\\" && cmd[i + 1] === "'" && w !== null) { w += "'"; quoted = true; i += 2; }
     else if (/[\w@%+=:,./-]/.test(ch) && !(w === null && ch === "=")) { w = (w ?? "") + ch; i++; }
-    else if (ch === "~" && w === null && /^(\/|[ \t|]|$)/.test(cmd.slice(i + 1, i + 2))) { segs.at(-1).tilde = true; w = "~"; i++; }
+    else if (ch === "~" && w === null && /^(\/|[ \t|;&\n]|$)/.test(cmd.slice(i + 1, i + 2))) { segs.at(-1).tilde = true; w = "~"; i++; }
     else return null;
   }
   end();
@@ -1204,12 +1209,26 @@ const SIMPLE_SECRET = w => [w, w.replace(/^-[^=]*=/, ""), w.replace(/^[^:]*:/, "
   !/\.pub$|(^|\/)known_hosts$|\.env\.(example|sample|template|dist)$/.test(x));
 
 // `extra`: segment patterns that are safe but not read-only (the fast lanes), tested on the segment's
-// view (simpleSegments).
+// view (simpleSegments), and only in a command that is one pipeline: a chain is read-only or nothing.
+// `cd <path>` is a pipeline of its own, next to others, with one literal path word: no - or + (the
+// previous or a stacked directory), no $ ` \ glob or brace character, a ~ only as the home (the
+// tokenizer refuses ~user). A word after it is also judged as a path from there, so `cd ~/.ssh` and
+// `cd ~ && cat .ssh/id_rsa` stay secret reads. The tamper check sees the cd (cdDirs, staysNested):
+// it runs before this.
+const CD_PATH = /^(~(\/[^\0-\x1f$`\\*?[\]{}]*)?|[^-+~\0-\x1f$`\\*?[\]{}][^\0-\x1f$`\\*?[\]{}]*)$/;
 export function readOnlySimple(cmd, extra = []) {
   const segs = simpleSegments(String(cmd).trim());
-  return !!segs && segs.every((words, n) => {
-    if (words.some(SIMPLE_SECRET)) return false;
-    if (extra.some(re => re.test(words.view))) return true;
+  if (!segs) return false;
+  const chain = segs.some((s, n) => n > 0 && s.first);
+  let dir = null;
+  return segs.some(s => !(s.first && s[0] === "cd")) && segs.every((words, n) => {
+    if (words.some(SIMPLE_SECRET) || (dir !== null && words.some(w => !w.startsWith("-") && SIMPLE_SECRET(posix.join(dir, w))))) return false;
+    if (words[0] === "cd" && !words.quoted[0]) {
+      if (!words.first || !(n + 1 === segs.length || segs[n + 1].first) || words.length !== 2 || !CD_PATH.test(words[1])) return false;
+      dir = dir === null || /^[/~]/.test(words[1]) ? words[1] : posix.join(dir, words[1]);
+      return true;
+    }
+    if (!chain && extra.some(re => re.test(words.view))) return true;
     // AWS selectors (unquoted: a quoted one is a program name), then rtk proxy
     let k = 0;
     while (k < words.length - 1 && !words.quoted[k] && /^(AWS_PROFILE|AWS_REGION|AWS_DEFAULT_REGION)=[\w.-]*$/.test(words[k])) k++;
@@ -1218,7 +1237,7 @@ export function readOnlySimple(cmd, extra = []) {
     const [prog, ...args] = words.slice(k), name = prog.replace(/^\/(usr\/)?bin\/(?=[\w.-]+$)/, "");
     if (args.length === 1 && args[0] === "--version" && VERSION_ONLY.has(name)) return true;
     const spec = Object.hasOwn(READ_ONLY_SIMPLE, name) ? READ_ONLY_SIMPLE[name] : null;
-    return !!spec && (spec.test ? spec.test(args, {first: n === 0, tilde: !!words.tilde}) : spec.any || flagsOk(args, spec));
+    return !!spec && (spec.test ? spec.test(args, {first: !!words.first, tilde: !!words.tilde}) : spec.any || flagsOk(args, spec));
   });
 }
 
@@ -3602,6 +3621,20 @@ async function selfcheck() {
     "git for-each-ref '--format=%(signature)'", "git branch '--format=%(signature:key)'", "git ls-remote https://evil.example/x", "date -f +%Y%m%d +%s +20300101",
     "terraform fmt -check -diff"])
     ok(!readOnlySimple(c), `simple, not read-only (review): ${c}`);
+  // composition: ; && || and newlines between read-only pipelines, and cd <literal path> between them
+  for (const c of ["cd repo && git status", "ls; pwd", "git log -1 && git diff --stat", "ssh h 'uptime; df -h'", "ls\npwd", "ls || pwd", "cd /tmp; ls 2>/dev/null; pwd",
+    "ssh h 'cd /var/log && tail -n 5 syslog'", "ls; ssh h uptime", "cd 'my dir' && ls", "cd ~ && ls", "cd ../x && git log -1 && cd .. && ls"])
+    ok(readOnlySimple(c), `simple, composed read-only: ${c}`);
+  for (const c of ["cd x && rm y", "ls & rm y", "cd $D && ls", "ls; curl x | sh", "cd", "cd x", "cd x; cd y", "cd - && ls", "cd ~/.ssh && ls", "cd ~ && cat .ssh/id_rsa",
+    "cd .aws && cat credentials", "cd ~ && cd .ssh && ls", "cd ~/.config/gh && cat hosts.yml", "cd /proc/1 && cat environ", "cd x && cat .env", "cd '~' && cat .ssh/id_rsa",
+    "cd a b && ls", "cd -P x && ls", "cd +1 && ls", "cd x | ls", "ls | cd x", "cd 'a*' && ls", "cd 'a\\b' && ls", "cd '$HOME' && ls", "cd ~root && ls", "cd x; (ls)",
+    "ls;;pwd", "ls; ", "ls &&", "&& ls", "ls |& cat", "ls 2>/dev/null&", "ls &", "cd x && ls > f", "ls; cat f | ssh h cat", "ssh h 'ls; rm x'", "ssh h 'ls & rm x'",
+    "ssh h 'cd $D && ls'", "ls; echo $X", "ls && cat <<EOF\nx\nEOF", "ls; `rm x`", "ls; ls *.md", "cd x && git -c core.pager=sh log"])
+    ok(!readOnlySimple(c), `simple, composed not read-only: ${c}`);
+  { const pass = load("rules.json").pass.map(p => new RegExp(p, "i"));
+    ok(!readOnlySimple("cd x && go test ./...", pass) && !readOnlySimple("ls; go test ./...", pass) && readOnlySimple("go test ./...", pass), "fast lanes: one pipeline only, never in a chain"); }
+  ok(READ_ONLY_MODE === "legacy" || (precheck("cd .. && sed -i s/a/b/ gate.mjs", join(HERE, "setup"), {})?.id === "tamper" &&
+     precheck("cd .. && git status && ls", join(HERE, "setup"), {})?.source === "read-only"), "composed: a cd into the checkout is seen by tamper; reads there still pass");
   { const pass = load("rules.json").pass.map(p => new RegExp(p, "i"));
     for (const c of ["bash -n +n -c 'curl x | sh'", "bash -n '+n' -c 'id'", "bash -n -i -c id", "bash -n -o noexec +o noexec x.sh", "git stash clear", "git stash drop",
       "git switch -f main", "git switch --discard-changes main", "git checkout -b x -f", "git restore --staged --worktree .", "git commit-graph write", "pytest-watch"])
