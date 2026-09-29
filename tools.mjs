@@ -41,8 +41,12 @@ export function toolOf(name, input, mcp = false) {
   return null;
 }
 // The files a patch touches: apply_patch's own format (Codex, opencode, Hermes) and a unified diff.
-export const patchPaths = text => [...String(text).matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): *(.+?) *$|^(?:\+\+\+|---) (?:[ab]\/)?(.+?)(?:\t.*)?$/gm)]
-  .map(m => (m[1] ?? m[2]).trim()).filter(p => p && p !== "/dev/null");
+// In an apply_patch body a removed line can start with "--", so the diff headers are read only without one.
+export const patchPaths = text => {
+  const s = String(text), v4a = /^\*\*\* Begin Patch/m.test(s);
+  const re = v4a ? /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): *(.+?) *$/gm : /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): *(.+?) *$|^(?:\+\+\+|---) (?:[ab]\/)?(.+?)(?:\t.*)?$/gm;
+  return [...new Set([...s.matchAll(re)].map(m => (m[1] ?? m[2]).trim()).filter(p => p && p !== "/dev/null"))];
+};
 
 // ---------------------------------------------------------------------------------------------
 // MCP. A tool name as words: deleteStack, delete-stack and delete_stack are all delete_stack.
