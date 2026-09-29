@@ -728,7 +728,7 @@ trusted team fast lane entry for one repository.
 
 ### Read-only allowlist
 
-The read-only pass (`readOnlySimple()` in `gate.mjs`) answers one question: does this command
+The read-only pass (`readOnlySimple()` in `readonly.mjs`) answers one question: does this command
 only read? It answers yes only when it can see the whole command, and no otherwise. There is no
 shell parser to fool: a command it does not fully recognise is judged by the rules and the engine
 like any other, which costs a prompt or a Jev call, never safety.

@@ -28,6 +28,15 @@ All notable changes to Reflex are documented here. The format follows
   after, because the commands that ask there are interpreters, `sed -i`, `curl`, `gh` and `git`.
   A learned entry is pinned to the sha256 of the scripts it runs; an edited script stops passing.
 
+### Changed
+
+- gate.mjs split into modules; no behaviour change. `config.mjs` (settings, validation, redaction),
+  `shell.mjs` (words, heredocs, rule spellings), `scripts.mjs` (local scripts), `readonly.mjs`
+  (read-only detection, pipelines), `rules.mjs` (checkRules, the large-command deny rules),
+  `tamper.mjs`, `jev.mjs` (context, key, provider call, cache, jevJudge) and `selfcheck.mjs`.
+  gate.mjs keeps the CLI, precheck, decide and the hook adapters and re-exports every name that
+  moved. The new modules are in the plugin bundle and on the tamper list like gate.mjs.
+
 ### Security
 
 - User fast lane: a script body with inline interpreter code (`node -e`, `python -c`, `sh -c`,
