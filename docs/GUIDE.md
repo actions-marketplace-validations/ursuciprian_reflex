@@ -11,6 +11,7 @@
    - [Suggest: fewer permission prompts](#suggest-fewer-permission-prompts)
    - [Calibrated allow](#calibrated-allow)
 4. [Changing behaviour](#changing-behaviour)
+   - [Read-only allowlist](#read-only-allowlist)
    - [Team policy: share Reflex rules across a repo](#team-policy-share-reflex-rules-across-a-repo)
    - [Plan-aware terraform gate: stop AI agents from destroying infrastructure](#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure)
    - [Change freeze for AI coding agents](#change-freeze-for-ai-coding-agents)
@@ -126,41 +127,21 @@ hook (see the table in the README). Each adapter turns the agent's event into th
 `{agent, command, cwd, session_id, call_id, intent}`, and gets back
 `{effective, decision, reason, source}`. The first step that reaches a decision wins:
 
-1. **Read-only**: `readOnly()` recognises commands that only read: `ls`, `grep`, `git status`,
-   `kubectl get`, `terraform plan`, `aws … describe-*`, `gh pr view`, `ssh host '<read-only>'`,
-   `$(<read-only>)`, loops of reads, output to `/dev/null`, quoted heredocs fed to `cat`. Quoted
-   text is treated as data (`jq '.a | .b'`, `grep -E 'x|y'`), except `$(…)` and backticks inside
-   double quotes, which still run. It is conservative: anything it does not recognise goes on to
-   the next step. → **pass**, not logged.
-   An `ssh` call counts only as a read of its remote command, which must be read-only by the same
-   rules (the fast lane is for local work): `ssh [options] host '<read-only>'`, with the quoted
-   command last (words after it are appended on the remote side), or `ssh [options] host cmd args`
-   with no quotes at all (plain words only: no `$`, glob or `~`, the first not an option; ssh in
-   command position, not an argument like `grep ssh f`). Options come from an allowlist
-   (`-4 -6 -C -T -a -k -n -q -t -v -x`, `-p -l -i -J -b -c -m`, and `-o` with `ConnectTimeout`,
-   `BatchMode`, `StrictHostKeyChecking`, `UserKnownHostsFile=/dev/null`, `ServerAlive*`, `Port`,
-   `User`, `IdentityFile`, `ProxyJump` and other connection settings), with values that are neither options
-   (`-J -oProxyCommand=…`) nor globs: nothing that runs a local command or loads local code
-   (`ProxyCommand`, `LocalCommand`, `KnownHostsCommand`, `-F` config, `-I`, `PKCS11Provider`),
-   forwards (`-L -R -D -W -w`, `-A`, `-X -Y`), backgrounds (`-f -N`), writes a local file (`-E`, a
-   known-hosts file other than `/dev/null`) or sends the local environment (`SendEnv`). Each `-J` /
-   `ProxyJump` hop is a plain `[ssh://][user@]host[:port]` (ssh pastes hops into a shell command
-   line). The host is literal text, plain variables (`web-$i`, `ops@${h}.lan`) or both, each variable
-   set only by a `for h in <literal words>; do` loop the call is inside (no `IFS`, `read`, `${h:=…}`, `unset` or other assignment of it). Nothing may feed ssh's
-   stdin: no redirect or heredoc into it, and no pipe that reaches it (into it, through a wrapper,
-   or into a loop, group or substitution around it). A double-quoted remote command must have
-   nothing the local shell expands (`$VAR`, `$(…)`, backticks would send local data).
-   Also read-only for remote checks: `free`, `nproc`, `lscpu`, `seq`, `systemctl [--failed]
-   [status|is-active|show|cat|list-*|get-default]` (before the verb only value-less options or
-   `--opt=value`: `-p status restart x` restarts x), `journalctl` (no long option that is a prefix
-   of `--vacuum*`, `--rotate`, `--flush`, `--cursor-file`, …: getopt expands `--rot`),
-   `ip [-br|-4|-6|-s|-d|-j|-p|-o|-c] addr|link|route|neigh|rule [show]` (ip expands verb prefixes,
-   so only spellings that are show for that object: `ip a s`, `ip l sh`, never `ip l s`, link set), and `docker exec [-t] [-u …]
-   [-w …] <container> <read-only>` with a literal container name (no `-i`: nothing goes to its stdin).
-   The shell's own quoting is followed where it changes what runs: a backslash-newline joins the two
-   lines (`-de\⏎lete` is `-delete`), `$'…'` is quoted text, and a word starting with `#` comments out
-   the rest of its line.
-   In a session that read a suspected prompt injection a read-only `ssh` is still egress and asks.
+1. **Read-only**: a command that only reads passes. By default (`"readonly": "simple"`) this is
+   a small allowlist, not a shell parser: one simple command or a pipeline of them, each program
+   and each flag on an explicit list (`ls`, `cat`, `grep`, `git status`, `git log`, `kubectl get`,
+   `aws … describe-*`, `jq`, `gh pr view`, `ssh host '<read-only>'`, see
+   [Read-only allowlist](#read-only-allowlist)). Anything else is not read-only and goes on to the
+   next steps: a `;` or `&&` chain, a redirect other than `2>/dev/null` and `2>&1`, `$`, globs,
+   braces, subshells, an unknown program, subcommand or flag. The simple check runs **after** the
+   rules, the tamper check and the local scripts below, just before the fast lane, so no rule is
+   ever skipped because a command looked like a read. → **pass**, not logged.
+   `"readonly": "legacy"` in `config.json` (or `REFLEX_READONLY=legacy`) brings back the old
+   `readOnlyLegacy()` parser for one release: it passes chains, loops, `$(…)` and many more
+   spellings, and runs before the rules except `secret-read`, `secret-file-read` and
+   `ssh-local-command`. Five security reviews found about 50 ways to fool it, which is why it is
+   no longer the default. In a session that read a suspected prompt injection a read-only `ssh`
+   is still egress and asks.
 2. **Rules** (`rules.json`): regular expressions over the command plus its context
    (`cwd=`, `aws_profile=`, `kube_context=`, `tf_workspace=`, `git_branch=`). A rule fires when all
    of its patterns match. Rules are **enforced in shadow and enforce modes**, with off disabling the entire gate.
@@ -640,8 +621,72 @@ production to your naming. See TypeSafe's guidance on
 [state](https://docs.typesafe.ai/concepts/state), [primitives](https://docs.typesafe.ai/primitives)
 and [confidence](https://docs.typesafe.ai/confidence).
 
-**Is the read-only list missing a command your team runs constantly?** Add it to `READ_ONLY` or
-`READ_ONLY_SUB` in `gate.mjs`, with a self-check assertion for a harmless and a harmful variant.
+**Is the read-only list missing a command your team runs constantly?** See
+[Read-only allowlist](#read-only-allowlist): an entry in `READ_ONLY_SIMPLE` for everyone, or a
+trusted team fast lane entry for one repository.
+
+### Read-only allowlist
+
+The read-only pass (`readOnlySimple()` in `gate.mjs`) answers one question: does this command
+only read? It answers yes only when it can see the whole command, and no otherwise. There is no
+shell parser to fool: a command it does not fully recognise is judged by the rules and the engine
+like any other, which costs a prompt or a Jev call, never safety.
+
+**The shape.** One simple command, or a pipeline of them joined by `|`. Words are letters, digits
+and `_ @ % + = : , . / ~ ^ -`, single-quoted text, or double-quoted text without `$`, backticks,
+`!` or an escaping backslash. The only redirects are `2>/dev/null` and `2>&1`. Not read-only:
+`;`, `&&`, `||`, `&`, a newline, any other redirect, `$` in any form (variables, `$(…)`, `$'…'`),
+backticks, `( ) { }`, unquoted globs (`* ? [ ]`), heredocs, `#` and backslash escapes (the one
+exception is `\'` between single-quoted parts, which `/reflex:check` writes). A word is judged as
+the shell passes it, quotes removed, so `'-'X` is the flag `-X`. A word naming a secret file (a
+private key, `~/.aws/credentials`, `.env`, `/proc/…/environ`) is never read-only, even before the
+`secret-file-read` rule sees it. Before the program, only `AWS_PROFILE=`, `AWS_REGION=` and
+`AWS_DEFAULT_REGION=` with a plain value are allowed, and `rtk` or `rtk proxy` is transparent.
+
+**The programs.** Each has its own flag list; a flag not on it means not read-only. Flags are
+allowlisted, never denylisted, and the list leaves out every flag that writes, runs a program or
+reads a secret.
+
+| Program | Allowed | Left out on purpose |
+|---|---|---|
+| `ls`, `pwd`, `whoami`, `uname`, `id`, `hostname`, `uptime`, `nproc`, `sw_vers`, `which`, `type`, `sleep` | their listing flags | `hostname NAME` (sets it) |
+| `cat`, `head`, `tail`, `wc`, `nl`, `fold`, `rev`, `tac`, `od`, `strings`, `cut`, `tr`, `paste`, `column`, `comm`, `cmp`, `diff`, `basename`, `dirname`, `realpath`, `readlink`, `stat`, `du`, `df`, `shasum`, `sha256sum`, `md5`, `md5sum`, `echo`, `printf` | display and selection flags, paths | `printf -v` |
+| `date` | display flags, `+FORMAT` | `-s`, `--set`, an operand without `+` (sets the clock) |
+| `grep`, `egrep`, `fgrep`, `rg` | search and output flags, `-f -` | `-f FILE`, `rg --pre`, `--pre-glob`, `--hostname-bin`, `-z` (runs a program) |
+| `sort`, `uniq`, `tree`, `file` | ordering and display flags | `sort -o`, `-T`, `--compress-program`; `uniq IN OUT`; `tree -o`, `-R`, `-H`; `file -C`, `-m`, `-z` |
+| `sed` | `-n` with line-number `p` commands (`10,20p`), `Nq` | every other program (`w`, `e`, `s///w`, `-i`) |
+| `find` | tests (`-name`, `-type`, `-mtime`, …) and `-print`, `-print0`, `-printf`, `-ls`, `-prune` | `-exec`, `-execdir`, `-ok`, `-delete`, `-fprint*`, `-fls` |
+| `ps`, `pgrep`, `nvidia-smi` | listing and query flags | `ps -E` and BSD `e` (other processes' environment), `pkill`, `nvidia-smi` setters and `-f` |
+| `git` | `status`, `log`, `show`, `diff`, `shortlog`, `rev-list`, `branch` (list forms), `tag -l`, `rev-parse`, `ls-files`, `ls-tree`, `blame`, `describe`, `merge-base`, `show-ref`, `for-each-ref`, `remote [-v]`, `remote get-url`, `stash list/show`, `worktree list`, `ls-remote`; `-C DIR`, `--no-pager` | `-c`, `--output`, `--ext-diff`, `--textconv`, `--show-signature`, `--upload-pack`, a branch or tag name that creates one |
+| `kubectl` | `get`, `describe` with namespace, context, selector and `-o` format flags | `--kubeconfig`, `--token`, `--server`, `--as`, `--raw`, any Secret |
+| `aws` | `<service> describe-*`, `list-*`, `get-*`; `s3 ls`; `configure list`; CLI options `--profile`, `--region`, `--output`, `--query`, `--no-cli-pager` and similar | `--endpoint-url`, `--cli-input-*`, `--debug`, `file://` values, `--with-decryption`, `--include-value(s)`, operations that return a secret, token, password or credential, streaming operations that write a file (`s3api get-object`, `get-export`, …), `s3 cp` |
+| `jq` | output flags, `--arg`, `--argjson` | `-f`, `--from-file`, `--rawfile`, `--slurpfile`, `-L`, a filter that reads `$ENV` or `env` or imports a module |
+| `terraform` | `version`, `fmt -check` or `fmt -write=false` | everything that starts a provider binary (`plan`, `show`, `validate`, `state`, `output`, …), `fmt` that writes |
+| `docker` | `ps`, `images`, `logs` | `--config`, `inspect` (prints environment variables), `exec` |
+| `gh` | `pr`, `issue`, `run`, `repo`, `release` view and list forms, `auth status`, `api ENDPOINT` as a GET | `--web`, `api -X`, `-f`, `-F`, `--input`, `-H`, `graphql`, `auth token`, `--show-token` |
+| `ssh` | `ssh [-nTqt46C] [-p N] [-o ConnectTimeout=…, BatchMode=…, StrictHostKeyChecking=…, ServerAlive*=…] [user@]host <read-only>` as the first command of its pipeline | `-J`, `-F`, `-i`, `ProxyCommand` and every other option, a pipe into ssh, a login, an unquoted `~` |
+| `node`, `npm`, `python3`, `git`, `docker`, `aws`, `terraform`, `kubectl`, `helm`, `jq`, `rg`, `gh`, `uv`, `brew`, `make` | `--version` alone | `go`, `cargo`, `pnpm`, `yarn` (may fetch and run a toolchain the project names) |
+
+The remote command of `ssh` is the words after the host joined by spaces, which is what the remote
+shell reads, and it must be read-only by these same rules.
+
+A repository's own configuration still applies to what runs: a `diff.external` or `core.fsmonitor`
+set in `.git/config` runs for `git diff` and `git status` as it would for any git command, and
+`kubectl` and `aws` use your kubeconfig and profiles as configured. Keep those files under review.
+
+**Extending it.** Pick the narrowest place:
+
+- **For everyone:** add an entry to `READ_ONLY_SIMPLE` in `gate.mjs` (a flag spec built with
+  `F(short, shortWithValue, long, longWithValue)`, or a `test` function), and add the command and a
+  harmful variant to the selfcheck lists (`simple, read-only` and `simple, not read-only`). Only
+  add a program whose allowed flags cannot write, run code or read a secret; list its flags, do
+  not try to list the dangerous ones. Measure with
+  `REFLEX_READONLY=legacy node bin/reflex replay claude --since 7d` against the default.
+- **For one repository:** a `fastlane` entry in the team policy (`.reflex/policy.json`). It applies
+  only for a teammate who trusted that exact file with `reflex trust .`, and a change to the file
+  drops the trust. In the simple mode each fast lane entry is one more allowed segment of the same
+  shape: it can never add `;`, `&&`, a redirect or `$`, and it still runs after every rule.
+- **For yourself:** the same entry in `~/.config/reflex/fastlane.json`, or `reflex suggest`.
 
 ### Team policy: share Reflex rules across a repo
 
@@ -1185,8 +1230,8 @@ non-zero exit.
   hook can pin the file it approved, so treat allow for scripts as "Jev read this version", and
   keep `REFLEX_ALLOW` off where scripts can change under you. Symlinks are followed to their
   target; a FIFO or device is never opened.
-- Rules and the read-only list are pattern matching, not a shell parser. They are designed to
-  fail towards "ask Jev", not towards "pass", and the self-checks pin the known bypasses, but
+- Rules are pattern matching, not a shell parser, and the read-only list is an allowlist of
+  programs and flags over plain words. They are designed to fail towards "ask Jev", not towards "pass", and the self-checks pin the known bypasses, but
   treat them as a strong filter, not a sandbox. Keep IAM, network controls, and least-privilege
   credentials: Reflex supplements them.
 - Claude Code does not report a Bash exit code to hooks; Reflex records `ran` (exit 0) or

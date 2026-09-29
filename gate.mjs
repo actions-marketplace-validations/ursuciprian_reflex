@@ -191,7 +191,8 @@ export function configurationError() {
   return USER_CONFIG_ERROR ?? (!ENGINES.includes(CONFIG.engine) ? "engine must be local, jev or laya"
     : CONFIG.engine === "jev" && PROVIDER.error ? PROVIDER.error
     : !["off", "shadow", "enforce"].includes(CONFIG.mode) ? "mode must be off, shadow or enforce"
-    : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra));
+    : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on"
+    : ![undefined, "simple", "legacy"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? "readonly must be simple or legacy" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra));
 }
 // engine laya promises that nothing leaves the machine: a loopback URL, a known checkpoint, a sane port.
 function layaError() {
