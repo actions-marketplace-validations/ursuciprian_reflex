@@ -45,7 +45,8 @@ export function humanAnswers({since = 0, now = Date.now()} = {}) {
   const seen = new Set();
   for (const r of logs("trace")) {
     const command = r.state?.call?.command, ts = Date.parse(r.ts), id = r.call_id;
-    if (!(ts >= since) || typeof command !== "string" || !id || seen.has(id) || (r.tag ?? "tool-gate") !== "tool-gate") continue;
+    // shell commands only: never a subgoal or an MCP tool call
+    if (!(ts >= since) || typeof command !== "string" || !id || seen.has(id) || (r.tag ?? "tool-gate") !== "tool-gate" || r.state.call.tool || /^mcp__/.test(command)) continue;
     // Not a human's answer: an allow (System 1 or 2), a deny, a queue approval (counted above), a System 2 verdict.
     if (["allow", "deny"].includes(r.emitted) || r.source === "queue" || ["approve", "deny"].includes(r.ladder?.judge?.verdict)) continue;
     // Shown to a human: a Reflex ask, or a pass that met Claude Code's own dialog (report.mjs's join).
