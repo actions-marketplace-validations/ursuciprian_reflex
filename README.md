@@ -211,10 +211,11 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   never auto-approved.
 - Asks before reading SSH private keys, `~/.aws/credentials`, `.netrc`, `.pgpass`, `.env` files or
   Kubernetes secrets.
-- Judges `terraform apply` by what the saved plan will change: it reads the plan with
-  `terraform show -json` (never `plan` or `apply`), denies a plan that deletes or replaces anything,
-  names stateful resources such as `aws_db_instance` first, and asks for `terraform plan -out=tfplan`
-  when there is no plan. Optional `kubectl diff` and server dry runs flag deletes of namespaces,
+- Asks for `terraform plan -out=tfplan` when an agent runs `terraform apply` without a plan file. With
+  `infra.terraform_show` on and a provider plugin cache, it judges the apply by what the saved plan
+  will change: it reads the plan with `terraform show -json` (never `plan` or `apply`), denies a plan
+  that deletes or replaces anything and names stateful resources such as `aws_db_instance` first. Off
+  by default, because `terraform show` starts provider binaries an agent could have written. Optional `kubectl diff` and server dry runs flag deletes of namespaces,
   PVCs, statefulsets and CRDs ([plan-aware terraform gate](docs/GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure)).
 - Only adds friction by default: it emits `ask` or `deny` and leaves `pass` to the agent's own
   permission settings. Opt-in [calibrated allow](docs/GUIDE.md#calibrated-allow) lets it approve
@@ -378,7 +379,7 @@ file, the plan gate reads it and decides by what it changes.
 }
 ```
 
-`reflex check "terraform apply tfplan"` on a plan that deletes an instance:
+With `infra.terraform_show` on, `reflex check "terraform apply tfplan"` on a plan that deletes an instance:
 
 ```json
 {
@@ -874,10 +875,12 @@ judgments in front of the agent. See the [real-world scenarios](#real-world-scen
 
 ### Can Reflex stop a Claude Code or Codex agent from running terraform destroy or a destructive terraform apply?
 
-Yes. `terraform destroy` is a rule (ask, deny in production). For `terraform apply`, Reflex reads the
-saved plan with `terraform show -json` and denies a plan that deletes or replaces resources, naming
-stateful ones like databases and buckets first. An apply without a plan file asks the agent to run
-`terraform plan -out=tfplan` and apply that file. The hook never runs `plan` or `apply` itself. See
+Yes. `terraform destroy` is a rule (ask, deny in production), and an apply without a plan file asks
+the agent to run `terraform plan -out=tfplan` and apply that file. With `infra.terraform_show` on and
+a provider plugin cache, Reflex also reads the saved plan with `terraform show -json` and denies a
+plan that deletes or replaces resources, naming stateful ones like databases and buckets first. It is
+off by default because `terraform show` starts provider binaries from `.terraform`, which an agent
+can write. The hook never runs `plan` or `apply` itself. See
 [GUIDE: plan-aware terraform gate](docs/GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure).
 
 ### How is Reflex different from Claude Code permission prompts and allowlists?

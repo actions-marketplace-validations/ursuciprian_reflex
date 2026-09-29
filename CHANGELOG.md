@@ -8,7 +8,12 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Added
 
-- Plan-aware infra gate (`infra.mjs`): `terraform apply <planfile>` is judged by what the saved plan
+- Plan-aware infra gate (`infra.mjs`), plan reading opt-in with `infra.terraform_show` (off by
+  default: `terraform show` starts the provider binaries in `.terraform`, which an agent's file tools
+  can write outside the gate). On, it runs only when every provider under `.terraform/providers` is a
+  symlink into a plugin cache under the home directory, outside the working tree and not newer than
+  the plan, with no `terraform.d`, `dev_overrides` or `TF_REATTACH_PROVIDERS`; otherwise it asks.
+  With it on, `terraform apply <planfile>` is judged by what the saved plan
   will change. The hook reads the plan with `terraform show -json` in the command's directory
   (`-chdir=` and a leading `cd` are followed), with a 3 s timeout (4 s at most), a sanitized environment (no cloud
   credentials, `TF_VAR_*` or tokens) and `CHECKPOINT_DISABLE=1`; it never runs `terraform plan` or
@@ -63,6 +68,11 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Changed
 
+- `terraform plan`, `show`, `validate`, `state show`, `providers` and `graph` are no longer on the
+  read-only list, and `terraform init` and `validate` are no longer in the fast lane (rules-v20): they
+  start or install provider binaries from `.terraform`, which an agent can write outside the gate.
+  They now go to the usual judgment (keyless: ask in enforce mode). `fmt`, `output`, `state list` and
+  `version` stay.
 - `terraform apply` without a saved plan is now a rule ask in every mode, shadow included (in shadow
   it used to pass while Jev judged in the background; keyless enforce asked it as uncovered). With the Jev engine in enforce mode, Jev still judges it and a deny it finds
   stands. The ladder golden case for a dev apply without a plan now expects a human.

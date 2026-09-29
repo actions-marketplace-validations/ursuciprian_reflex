@@ -3,11 +3,13 @@
 // will change, not only by the command text. gate.mjs calls planGate() after the rules.
 //
 // terraform: the hook never runs `terraform plan` or `terraform apply`. Plan executes providers with
-// the user's credentials, runs `data "external"` programs and is slow. The hook only reads a saved
-// plan the agent produced, with `terraform show -json <planfile>`: local, no provider API calls (it
-// starts the provider binaries in .terraform only to read their schemas, as `terraform validate`
-// does, which the fast lane already passes). A strict timeout, a sanitized environment without cloud
-// credentials, CHECKPOINT_DISABLE so Terraform does not call HashiCorp's version service.
+// the user's credentials, runs `data "external"` programs and is slow. With infra.terraform_show on
+// (off by default), the hook reads a saved plan the agent produced, with `terraform show -json
+// <planfile>`: local, no provider API calls, but it starts the provider binaries to read their
+// schemas, so it runs only when those are symlinks into a plugin cache outside the working tree
+// (providersSafe). A strict timeout, a sanitized environment without cloud credentials,
+// CHECKPOINT_DISABLE so Terraform does not call HashiCorp's version service. Off: no plan is read,
+// an apply with a plan file is judged as before, and one without still asks with the fix.
 //   0 deletes and 0 replaces: allow-eligible (the usual policy decides), ask in production
 //   any delete or replace:    deny (infra.destroy: "ask" softens it), stateful types named first
 //   no plan file:             ask (deny in production with infra.require_plan_in_prod)

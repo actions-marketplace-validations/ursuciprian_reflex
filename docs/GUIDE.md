@@ -673,11 +673,40 @@ hidden inside an apply.
 
 **What the hook runs, and what it never runs.** The hook never runs `terraform plan` or
 `terraform apply`. A plan executes providers with your credentials, runs `data "external"`
-programs and can take minutes. The hook only reads a saved plan the agent already made, with
-`terraform show -json <planfile>` in the directory the command runs in (`-chdir=` and a leading
-`cd dir &&` are followed). `terraform show` reads the plan file locally: it starts the provider
-binaries in `.terraform` only to read their schemas (as `terraform validate` does, which the fast
-lane already passes) and configures no provider, so it makes no provider API calls. It runs with a
+programs and can take minutes. With `infra.terraform_show` on, the hook reads a saved plan the agent
+already made, with `terraform show -json <planfile>` in the directory the command runs in (`-chdir=`
+and a leading `cd dir &&` are followed). `terraform show` reads the plan file locally and configures
+no provider, so it makes no provider API calls, but it does start the provider binaries to read their
+schemas.
+
+**Why plan reading is off by default.** Those provider binaries live in `.terraform/providers`,
+and an agent can write that directory, and `.terraform.lock.hcl`, with its file tools (Write, Edit,
+apply_patch), which the command gate does not see. Reading the plan would then make the hook itself
+run code the agent put there, before any approval. So `infra.terraform_show` is `false` by default:
+a `terraform apply <planfile>` is judged as before (the rules, then Jev or, keyless, a human), and an
+apply without a plan file still asks with the fix. For the same reason `terraform plan`, `show`,
+`validate`, `state show`, `providers`, `graph` and `init` are no longer on the read-only list or the
+fast lane; `fmt`, `output`, `state list` and `version` still are.
+
+**The plugin cache requirement.** Turn it on with `"infra": {"terraform_show": true}` only with a
+[provider plugin cache](https://developer.hashicorp.com/terraform/cli/config/config-file#provider-plugin-cache):
+`TF_PLUGIN_CACHE_DIR`, `plugin_cache_dir` in `~/.terraformrc`, or `~/.terraform.d/plugin-cache`. With
+a cache, `terraform init` puts symbolic links into `.terraform/providers` instead of copies ("when
+possible", in HashiCorp's words). The hook runs `terraform show` only when:
+
+- every entry under `.terraform/providers` (or `$TF_DATA_DIR/providers`) is a symlink whose real
+  path is inside that cache;
+- the cache is under your home directory and outside both the directory the apply runs in and the
+  one the command started in (a working directory that is your home never qualifies);
+- no file in the cache that is linked is newer than the plan file;
+- there is no `terraform.d` in the working directory, no `dev_overrides` in the CLI config and no
+  `TF_REATTACH_PROVIDERS`.
+
+Anything else (a copied provider, a regular file in `.terraform`, a link back into the tree, a
+packed filesystem mirror that Terraform had to extract) asks: "no readable saved plan (terraform
+show not run: ...)". The cache itself is trusted as yours: an agent that can write your home
+directory outside the gate can also write it. The check keeps the working tree out, which is where
+an agent's file tools usually write. It runs with a
 strict timeout (`infra.timeout_ms`, 3 s by default and 4 s at most, so the whole hook stays inside its 10 s), a
 sanitized environment (no `AWS_*`, `GOOGLE_*`, `ARM_*`, `TF_VAR_*` or tokens; only `PATH`, `HOME`,
 the locale and Terraform's data and plugin directories) and `CHECKPOINT_DISABLE=1`, so Terraform
@@ -688,10 +717,11 @@ does not call HashiCorp's version service either. The `terraform` binary comes f
 
 | The command | Outcome |
 |---|---|
+| `terraform apply tfplan` with `infra.terraform_show` off (the default) | judged as before: the rules, then Jev or, keyless, a human |
 | `terraform apply tfplan`, the plan has 0 deletes and 0 replaces | allow-eligible: the usual policy decides, with the counts in Jev's state (keyless: pass). In production it asks, and the reason shows the counts |
 | the plan deletes or replaces anything | deny (`infra.destroy: "ask"` softens it), for example `plan destroys 3: aws_db_instance.main, aws_s3_bucket.logs, aws_iam_role.ci (1 replace); stateful: aws_db_instance.main, aws_s3_bucket.logs` |
 | `terraform apply` or `terraform apply -auto-approve`, no plan file | ask: "terraform apply without a saved plan: run `terraform plan -out=tfplan` and apply the plan file". Deny in production with `infra.require_plan_in_prod` |
-| the plan file is missing, not a plan (a state file shows as JSON too), stale, or `terraform show` failed or timed out | ask: "no readable saved plan (...)" with the same fix |
+| the plan file is missing, not a plan (a state file shows as JSON too), stale, the providers are not all linked from the plugin cache, or `terraform show` failed or timed out | ask: "no readable saved plan (...)" with the same fix |
 | `terraform destroy`, `apply -destroy`, `apply -replace=` | unchanged: the destroy rules ask, and deny in production |
 
 A replace is a delete plus a create (`["delete","create"]` or `["create","delete"]` in the JSON
@@ -739,7 +769,7 @@ approval of one plan is never reused for a different plan under the same command
 **The workflow it asks agents for.** Plan, read, apply the file:
 
 ```bash
-terraform plan -out=tfplan        # read-only for Reflex; the agent runs it, not the hook
+terraform plan -out=tfplan        # judged like any command that runs providers; the agent runs it, not the hook
 terraform show -json tfplan | jq '.resource_changes[] | select(.change.actions != ["no-op"]) | .address'
 terraform apply tfplan            # judged by what tfplan will change
 ```
@@ -762,7 +792,7 @@ destructive ones.
 **Configuration.** In `~/.config/reflex/config.json`:
 
 ```json
-{"infra": {"enabled": true, "destroy": "deny", "require_plan_in_prod": false, "kubectl_diff": false, "timeout_ms": 3000}}
+{"infra": {"enabled": true, "destroy": "deny", "require_plan_in_prod": false, "terraform_show": false, "kubectl_diff": false, "timeout_ms": 3000}}
 ```
 
 A team policy can only make it stricter (`.reflex/policy.json`):
