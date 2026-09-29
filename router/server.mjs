@@ -21,6 +21,7 @@ import {dirname, join, resolve} from "node:path";
 import {fileURLToPath, pathToFileURL} from "node:url";
 import {ask as jevAsk, CONFIG, decideSafe, redact} from "../gate.mjs";
 import {connect, lines, PROBE_MS, reconnecting, VERSIONS} from "./mcp.mjs";
+import {PROVIDERS} from "../providers.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env;
@@ -81,8 +82,9 @@ const catalog = async () => {
   const ds = await (downP ??= downstream().catch(e => { downP = null; throw e; }));   // a broken config file is retried on the next call
   return [...shellTools, ...ds.flatMap(d => toolsOf(d.server, d.spec, d.c))];
 };
-// Children (shell tools, downstream servers) never see the TypeSafe key.
-const childEnv = () => Object.fromEntries(Object.entries(ENV).filter(([k]) => k !== "TYPESAFE_API_KEY"));
+// Children (shell tools, downstream servers) never see a Jev provider key.
+const KEY_VARS = new Set(Object.values(PROVIDERS).flatMap(p => p.env));
+const childEnv = () => Object.fromEntries(Object.entries(ENV).filter(([k]) => !KEY_VARS.has(k)));
 const regex = p => { try { return new RegExp(p, "u"); } catch { try { return new RegExp(p); } catch { return null; } } };
 
 // ---------------------------------------------------------------------------------------------

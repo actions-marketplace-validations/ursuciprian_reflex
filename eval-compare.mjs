@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Every live golden set, for several System 1 engines, same run, one table (docs/GUIDE.md#laya).
-//   node eval-compare.mjs [--engines jev,laya:english,laya:typed-decisions] [--runs 2] [--suites gate,guard,...]
-// jev needs a TypeSafe key (TYPESAFE_API_KEY or REFLEX_KEYCHAIN_SERVICE); laya:<checkpoint> needs
+//   node eval-compare.mjs [--engines jev,jev@openrouter,laya:english,laya:typed-decisions] [--runs 2] [--suites gate,guard,...]
+// jev needs a TypeSafe key (TYPESAFE_API_KEY or REFLEX_KEYCHAIN_SERVICE); jev@<provider> runs Jev through
+// that provider (typesafe, openrouter, cloudflare, vercel, compatible) with its key; laya:<checkpoint> needs
 // `reflex laya start` with that checkpoint resident (REFLEX_LAYA_URL to point elsewhere on 127.0.0.1).
 // Each suite runs as its own process with a scratch REFLEX_DATA_DIR; nothing is cached.
 import {spawnSync} from "node:child_process";
@@ -31,8 +32,8 @@ const SUITES = {
 const suites = arg("--suites", Object.keys(SUITES).join(",")).split(",");
 
 function env(engine, data) {
-  const [kind, model] = engine.split(":");
-  const e = {...process.env, REFLEX_DATA_DIR: data, REFLEX_ENGINE: kind, REFLEX_TIMEOUT_MS: process.env.REFLEX_TIMEOUT_MS ?? "30000",
+  const [spec, model] = engine.split(":"), [kind, provider] = spec.split("@");
+  const e = {...process.env, REFLEX_DATA_DIR: data, REFLEX_ENGINE: kind, ...(provider && {REFLEX_PROVIDER: provider}), REFLEX_TIMEOUT_MS: process.env.REFLEX_TIMEOUT_MS ?? "30000",
              REFLEX_GUARD_TIMEOUT_MS: process.env.REFLEX_GUARD_TIMEOUT_MS ?? "60000"};
   if (kind === "laya") Object.assign(e, {REFLEX_MODEL: model ?? "typed-decisions", ...(process.env.REFLEX_LAYA_URL && {REFLEX_API_URL: process.env.REFLEX_LAYA_URL})});
   return e;
