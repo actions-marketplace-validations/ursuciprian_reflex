@@ -18,13 +18,14 @@
 7. [Safety properties and limits](#safety-properties-and-limits)
 8. [Injection guard](#injection-guard)
 9. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
-10. [Autonomous agents](#autonomous-agents)
-11. [Conditional instructions](#conditional-instructions)
-12. [Tool router](#tool-router)
-13. [Model routing](#model-routing)
-14. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
-15. [Laya (local System 1)](#laya-local-system-1)
-16. [Where this goes next](#where-this-goes-next)
+10. [Reflex MCP server: ask before acting (Claude Desktop, Cursor, Cowork)](#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork)
+11. [Autonomous agents](#autonomous-agents)
+12. [Conditional instructions](#conditional-instructions)
+13. [Tool router](#tool-router)
+14. [Model routing](#model-routing)
+15. [Context layer (pi and oh-my-pi)](#context-layer-pi-and-oh-my-pi)
+16. [Laya (local System 1)](#laya-local-system-1)
+17. [Where this goes next](#where-this-goes-next)
 
 ## Local and hosted operation
 
@@ -1209,6 +1210,63 @@ transcripts in replay); live in Codex, opencode and pi only plain repeats count.
 with Jev, a command's risk and denial reach the window from the background judge, a moment after
 the command. The loop key is the command's shape: the same test with a different file name, or with
 the output piped to a different `tail`, is a different command.
+
+## Reflex MCP server: ask before acting (Claude Desktop, Cursor, Cowork)
+
+`reflex mcp` is an MCP server for AI agent safety: it gives an agent in an MCP host (Claude
+Desktop, Cursor, Cowork, Codex, Claude Code or any client that runs a local stdio server) five
+tools to ask Reflex before it acts. It speaks the Model Context Protocol over stdio, hand-written in
+`mcp.mjs` with no SDK, so Reflex keeps zero runtime dependencies.
+
+The tools are advisory. Reflex's hooks enforce; an MCP server cannot stop a client from running a
+command, and a model can skip the tool or ignore its answer. In a host without hooks, such as Claude
+Desktop, these tools are Claude Desktop guardrails the model is asked to use, not a gate. Where the
+agent has hooks (Claude Code, Codex CLI, opencode, pi, Hermes), install them with `reflex setup` or
+the plugin, and use the MCP tools as a way for the agent to check before it tries.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `reflex_check` | `command`, `cwd?` | `decision` (`pass`, `allow`, `ask`, `deny`), `reason`, `rule` (rule or gate id), `source`, `mode`, `enforced` (whether the hooks would apply it in this mode), plan counts when a terraform or kubectl plan was read. Nothing runs. |
+| `reflex_scan` | `text`, `source?` (`web`, `mcp`, `file`, `shell`, `cli`) | The injection guard's `verdict` (`pass`, `warn`, `block`), `reason`, `gate`, `signals`, and `cleaned_text` when the verdict is block. Like `reflex scan`. |
+| `reflex_status` | `cwd?` | Profile, engine, mode (after a team policy mode floor), guard mode, allow setting, whether a change freeze is in force, the team policy's trust state and counts, and how many items wait in the approval queue. |
+| `reflex_audit` | `since?` (`7d`), `prod_only?`, `limit?` (20, at most 100) | Counts by decision, source, rule and environment tier, and the latest rows, like `reflex audit`. |
+| `reflex_explain` | `rule_id` | What a rule or policy gate matches, its outcome, when it is enforced and why it exists. |
+
+```text
+reflex_check {"command": "git push --force origin main"}
+  -> {"decision": "deny", "reason": "force push or delete of main/master", "rule": "force-push-main",
+      "source": "rule", "mode": "shadow", "enforced": true, ...}
+```
+
+What it guarantees:
+
+- Read-only. No tool runs the command, and none changes Reflex's configuration: there is no tool for
+  `reflex trust`, `setup`, `queue approve` or `suggest --write`. Those stay with a human at a
+  terminal. The selfcheck snapshots the config and data directories before and after every tool
+  call and requires them unchanged.
+- No config values, environment values or keys in any output. Commands, reasons and audit rows are
+  redacted with the same patterns as the trace; audit rows leave out the working directory and the
+  production marker's value (`env_tier` stays). `reflex_status` reports settings by name (engine,
+  mode), never URLs, key names, webhook targets or file paths.
+- `reflex_check` runs the same judgment as `reflex check`: the local rules, a change freeze, the
+  team policy of `cwd`, and then the engine in your config. With engine `jev` or `laya` the redacted
+  command goes to that engine, exactly as a hook would send it. Nothing is cached or logged, so a
+  check never shows up in `reflex audit`.
+- Each call runs in a short-lived child process that reads your config fresh, so a change made with
+  `reflex setup` applies to the next call without restarting the host.
+
+Protocol notes: newline-delimited JSON-RPC 2.0 on stdin and stdout, logs only on stderr. The server
+is dual-era. Clients on 2025-11-25 and earlier open with `initialize` (the server answers with the
+version they asked for, or 2025-11-25); clients on 2026-07-28 send the version and capabilities in
+each request's `_meta` and may call `server/discover`. An unknown version gets
+`UnsupportedProtocolVersion` (-32022) with the supported list; a malformed line gets -32700 or
+-32600, an unknown method -32601, an unknown tool or bad params -32602; bad tool arguments come back
+as a tool result with `isError: true` so the model can correct them. JSON-RPC batches are not
+supported. At most four tool calls run at once; the rest wait.
+
+Setup for each host is in [SETUP: MCP server](SETUP.md#mcp-server-claude-desktop-cursor-codex). The
+Claude Code plugin declares the server in its `.mcp.json`, so plugin users get the tools without
+extra configuration.
 
 ## Autonomous agents
 
