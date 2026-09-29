@@ -1,0 +1,6 @@
+# Reflex MCP server for Codex CLI: add to ~/.codex/config.toml.
+# Advisory tools (reflex_check, reflex_scan, reflex_status, reflex_audit, reflex_explain);
+# the hooks from `reflex setup` still do the enforcing.
+[mcp_servers.reflex]
+command = "npx"
+args = ["-y", "@ursuciprian/reflex", "mcp"]

@@ -41,6 +41,22 @@ All notable changes to Reflex are documented here. The format follows
   were found.
 - Golden cases for applies without a readable plan; `infra.mjs --selfcheck` with fixture plans
   (`setup/tool-gate/plans/`), a fake `terraform` and a fake `kubectl` on `PATH`.
+
+- `reflex mcp` (and `npx @ursuciprian/reflex mcp`): an MCP server for AI agent safety, so agents in
+  Claude Desktop, Cursor, Cowork, Codex and any MCP host can ask Reflex before acting. Five
+  read-only, advisory tools: `reflex_check {command, cwd?}` (decision, reason, rule, source, mode,
+  whether the hooks would enforce it, plan counts when a plan was read; nothing runs),
+  `reflex_scan {text, source?}` (the injection guard's verdict, reason and cleaned text),
+  `reflex_status` (mode, engine, freeze, team policy, queue count), `reflex_audit {since?,
+  prod_only?, limit?}` (a summary and the latest redacted rows) and `reflex_explain {rule_id}`.
+  Hand-written stdio JSON-RPC in `mcp.mjs`, no SDK, zero dependencies; dual-era: `initialize` for
+  2025-11-25 and earlier, per-request `_meta` and `server/discover` for 2026-07-28. Output is
+  redacted and carries no config values, environment values or keys; no tool changes Reflex's
+  configuration (trust, setup, queue approve and suggest --write stay human-only). Each call runs
+  in a child process that reads the config fresh. The Claude Code plugin declares the server in
+  `.mcp.json`; `docs/SETUP.md` has snippets for Claude Desktop, Cursor and Codex
+  (`examples/mcp/codex-config.toml`). Advisory only: hooks enforce, and an MCP server cannot stop a
+  client from running a command.
 - Change freezes: a `freeze` list in `config.json` or a team policy. Each window has `days`,
   `after` / `before` (local `HH:MM`), `from` / `to` (inclusive dates), a `tz` read with `Intl`
   (default UTC), `applies_to` (`prod` or `all`) and `outcome` (`ask` or `deny`). During a window, a
