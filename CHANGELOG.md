@@ -6,6 +6,12 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-29
+
+### Changed
+
+- The read-only default stays the existing parser (`readonly: "legacy"`). The allowlist (`readonly: "simple"`) is opt-in for now: on a week of real Claude Code history it sent 88.9 of 100 commands to a human against 54.8, mostly because it refuses `;`, `&&` and `cd dir && ...`. It becomes the default once composition of allowlisted commands lands.
+
 ### Fixed
 
 - `action.yml` description is under 125 characters, as the GitHub Marketplace requires, and a test keeps it there.
@@ -955,7 +961,8 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/ursuciprian/reflex/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/ursuciprian/reflex/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/ursuciprian/reflex/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/ursuciprian/reflex/compare/v0.12.0...v0.13.0
