@@ -6,7 +6,7 @@ import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
 import {CLAUDE_SETTINGS, CODEX_HOOKS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooks, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
-import {PROVIDERS} from "./providers.mjs";
+import {PROVIDERS, keyRouteError} from "./providers.mjs";
 import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
 import {breaker, listItems, runawayTrips} from "./autonomy.mjs";
@@ -70,7 +70,9 @@ catch (e) { errors.push(`Cannot load the injection guard setup: ${e.message}`); 
 if (guardMode() !== CONFIG.mode) warnings.push(`Injection guard mode is ${guardMode()} (REFLEX_GUARD or "guard" in config.json).`);
 let key = "not required";
 // The Jev provider and the host its key goes to; never the key itself.
-const provider = CONFIG.engine === "jev" ? {name: CONFIG.provider, host: CONFIG.keyHost} : null;
+const provider = CONFIG.engine === "jev" ? {name: CONFIG.provider, host: PROVIDERS[CONFIG.provider]?.pinned ?? CONFIG.keyHost} : null;
+const route = provider && PROVIDERS[CONFIG.provider] && keyRouteError(CONFIG.provider, CONFIG.api, CONFIG.keyHost, USER_CONFIG.laya?.port ?? 8421);
+if (route) errors.push(`Jev: ${route}, so every Jev call is refused (check REFLEX_API_URL).`);
 if (CONFIG.engine === "jev") {
   const p = PROVIDERS[CONFIG.provider], item = CONFIG.provider === "typesafe" ? CONFIG.keychain : p.keychain;
   key = p.env.some(n => process.env[n]?.trim()) ? "environment" : platform() === "darwin" &&

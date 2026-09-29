@@ -39,7 +39,7 @@ import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {JUDGE_BACKENDS, QUEUE_DEFAULTS, USER_CONFIG, USER_CONFIG_ERROR, USER_CONFIG_FILE, judgeSettings, policyDirectory} from "../gate.mjs";
 import {onPath} from "../judge2.mjs";
-import {PROVIDERS, detect, providerError, providerUrl} from "../providers.mjs";
+import {PROVIDERS, detect, envKey, hostOf, providerError, providerUrl} from "../providers.mjs";
 
 const ROOT = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..");
 const [cmd, ...args] = process.argv.slice(2);
@@ -120,17 +120,20 @@ const PROFILES = {
 // A TypeSafe key where the hooks will look: the environment, or the Keychain item on macOS.
 const inKeychain = item => platform() === "darwin" && spawnSync("security", ["find-generic-password", "-s", item], {stdio: "ignore", timeout: 2000}).status === 0;
 const keychainItem = (p, keychain) => p === "typesafe" ? keychain : PROVIDERS[p].keychain;
-const envKey = p => PROVIDERS[p].env.some(n => ENV[n]?.trim()) && (p !== "openrouter" || /^sk-or-/.test(ENV.OPENROUTER_API_KEY.trim()));
-// The Jev provider (providers.mjs): --provider, else a saved or environment choice, else jev-mcp's
-// order over the environment and then the Keychain. `save`: the gate would not find it on its own
-// (it reads the environment and config.json, never probes the Keychain), so config.json records it.
+// Only the opt-in variables choose a provider (PROVIDERS[p].detect), as in the gate.
+const chooses = p => { const k = envKey(ENV, p, true); return !!k && (p !== "openrouter" || /^sk-or-/.test(k)); };
+// The Jev provider (providers.mjs): --provider, else a saved or environment choice, else TypeSafe
+// when config.json names its Keychain item, else jev-mcp's order over the opt-in variables and then
+// the Keychain. `save`: the gate would not find it on its own (it reads the environment and
+// config.json, never probes the Keychain), so config.json records it.
 function pickProvider(keychain) {
   const settings = {account: opt(args, "--cloudflare-account") ?? ENV.CLOUDFLARE_ACCOUNT_ID?.trim() ?? USER_CONFIG.cloudflare_account_id,
                     url: opt(args, "--provider-url") ?? ENV.JEV_API_BASE_URL?.trim() ?? USER_CONFIG.provider_url};
-  const named = opt(args, "--provider") || ENV.REFLEX_PROVIDER || ENV.JEV_PROVIDER || USER_CONFIG.provider;
-  const fromEnv = !named && detect(envKey, settings), fromKeychain = !named && !fromEnv && detect(p => inKeychain(keychainItem(p, keychain)), settings);
-  const name = String(named ?? fromEnv ?? fromKeychain ?? "typesafe").toLowerCase();
-  const key = envKey(name) ? "environment" : inKeychain(keychainItem(name, keychain)) ? "keychain" : null;
+  const named = opt(args, "--provider") || ENV.REFLEX_PROVIDER || ENV.JEV_PROVIDER || USER_CONFIG.provider || (USER_CONFIG.keychain && "typesafe") || null;
+  const fromEnv = !named && detect(chooses, settings), fromKeychain = !named && !fromEnv && detect(p => inKeychain(keychainItem(p, keychain)), settings);
+  const name = String(named || fromEnv || fromKeychain || "typesafe").toLowerCase();
+  if (!PROVIDERS[name]) die(providerError(name, settings));
+  const key = envKey(ENV, name) ? "environment" : inKeychain(keychainItem(name, keychain)) ? "keychain" : null;
   return {name, settings, key, error: providerError(name, settings), save: !!opt(args, "--provider") || (!!fromKeychain && fromKeychain !== "typesafe")};
 }
 const hasKey = keychain => !!pickProvider(keychain).key;
@@ -203,7 +206,7 @@ function describe(s) {
   const keyless = !s.keyless ? [] : [`engine local: no TypeSafe key found ($TYPESAFE_API_KEY or Keychain item ${s.keychain}), so this is keyless autonomy: ` +
     (j.enabled ? "commands the local rules do not cover go to System 2 instead of Jev; System 2 alone allows only small commands (docs/GUIDE.md#keyless-autonomy)"
       : "with no System 2 either, every command the local rules do not cover waits in the approval queue") + "; add a key and rerun for Jev"];
-  const p = s.provider, host = p && (ENV.REFLEX_API_URL ? new URL(ENV.REFLEX_API_URL).host : new URL(providerUrl(p.name, p.settings)).host);
+  const p = s.provider, host = p && (PROVIDERS[p.name].pinned ?? hostOf(ENV.REFLEX_API_URL || providerUrl(p.name, p.settings)));
   const jev = !p ? [] : [`Jev provider ${p.name} (${host}); key ${p.key ? `in the ${p.key}` : "not found"}; the key goes to ${host} only`];
   return [`profile ${s.profile} · engine ${s.engine} · mode ${s.mode} · allow ${s.allow}`, ...jev, ...keyless,
     `System 2: ${j.enabled ? `${where}; timeout ${j.timeout_ms / 1000} s; case capped at ${j.max_input_tokens} tokens; budget ${j.budget.calls} calls${j.backend === "cli" ? "" : ` / $${j.budget.usd}`} a day` : "none (uncertain decisions go to a human)"}${picked}`,

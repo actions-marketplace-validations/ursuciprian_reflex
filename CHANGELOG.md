@@ -61,8 +61,11 @@ All notable changes to Reflex are documented here. The format follows
 - Jev providers: Jev now runs through TypeSafe directly (the default when a TypeSafe key is set),
   OpenRouter's Decisions API, Cloudflare Workers AI, the Vercel AI Gateway (its TypeSafe-compatible
   API) or any compatible endpoint (a full URL and a Bearer token). The provider comes from
-  `REFLEX_PROVIDER` (or `JEV_PROVIDER`), `provider` in `config.json`, or the first key in the
-  environment in jev-mcp's order; `reflex setup --provider x` (with `--cloudflare-account` or
+  `REFLEX_PROVIDER` (or `JEV_PROVIDER`), `provider` in `config.json`; else TypeSafe when its key is
+  set or `config.json` names its Keychain item; else, in jev-mcp's order, an opt-in variable
+  (`JEV_OPENROUTER_API_KEY`, `JEV_CLOUDFLARE_API_TOKEN`, `JEV_AI_GATEWAY_API_KEY`, `JEV_API_KEY`).
+  `OPENROUTER_API_KEY`, `CLOUDFLARE_API_TOKEN` and `AI_GATEWAY_API_KEY` are read once a provider is
+  named but never choose one, since other tools set them. `reflex setup --provider x` (with `--cloudflare-account` or
   `--provider-url` where needed) also looks in the Keychain. The TypeSafe Keychain flow
   (`typesafe-api-key`, `REFLEX_KEYCHAIN_SERVICE`) is unchanged, and so is the laya engine.
   `reflex doctor` shows the provider and the host its key goes to, never the key. The LiteLLM
@@ -72,9 +75,15 @@ All notable changes to Reflex are documented here. The format follows
   `src/provider.ts` and `src/lib.ts`): the provider list and detection order, the model slugs, the
   Cloudflare envelope and the retry rules. Request and response formats were checked against
   OpenRouter's, Cloudflare's and Vercel's documentation.
-- Each provider's key goes only to the host that provider was configured with, checked on every
-  call: never to another provider's host, never to Laya, never over plain http off the machine.
-  The MCP tool router strips every provider key from the servers it starts.
+- Each provider's key goes only to its own host, checked on every call. OpenRouter's, Cloudflare's
+  and Vercel's are pinned to their host over https, whatever `REFLEX_API_URL` says. TypeSafe's and
+  a compatible endpoint's go to their configured host: never another provider's, never the Laya
+  port, never plain http off the machine. Hosts are compared lowercased, without a trailing dot or
+  a default port. Redirects are refused (and the LiteLLM router ignores `HTTP(S)_PROXY` for these
+  calls). The MCP tool router strips every provider key from the servers it starts.
+- Probabilities in an answer must name the question's own options (a choice's criteria, a score's
+  levels); anything else is malformed. The model router's tier choice goes to the top tier, never
+  to an error that keeps the requested model, if such keys ever reach it.
 - Every provider's answers are checked against the questions and read into one typed shape. A
   probability outside [0, 1], a choice outside its criteria, a score off its scale, an invalid
   confidence, a reply that is not JSON or a Cloudflare run that did not complete is Jev
@@ -110,7 +119,8 @@ All notable changes to Reflex are documented here. The format follows
 - One deadline per Jev call: the hook's budget (`REFLEX_TIMEOUT_MS`) covers every attempt and the
   body read. Retries happen on 408, 409, 429 and 5xx only (before: 429 and 529, once), at most three
   attempts with jittered exponential backoff, and only when the wait ends before the deadline. A
-  network error is not retried. HTTP errors no longer quote the key if an endpoint echoes it.
+  network error is not retried. The LiteLLM router reads the reply in chunks against the same
+  deadline. HTTP errors are logged as their status only, never the body.
 - `terraform plan`, `show`, `validate`, `state show`, `providers` and `graph` are no longer on the
   read-only list, and `terraform init` and `validate` are no longer in the fast lane (rules-v20): they
   start or install provider binaries from `.terraform`, which an agent can write outside the gate.

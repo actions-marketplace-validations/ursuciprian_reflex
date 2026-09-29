@@ -947,7 +947,7 @@ work too, with the same questions, the same policy and the same fail-closed hand
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...     # or CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, or AI_GATEWAY_API_KEY
-reflex setup --provider openrouter
+reflex setup --provider openrouter      # named once: a key set for another tool never picks a provider on its own
 reflex doctor                           # System 1: Jev via openrouter (openrouter.ai) + policy
 ```
 

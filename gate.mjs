@@ -37,7 +37,7 @@ import {globsReflex, teamMode, teamPolicy, teamRules} from "./team.mjs";
 import {infraError, infraSettings, planGate} from "./infra.mjs";
 import {activeFreeze, inWindow, parseFreeze} from "./freeze.mjs";
 import {notifyLater, notifyTarget} from "./notify.mjs";
-import {PROVIDERS, call as callProvider, keyRouteError, providerUrl, resolveProvider} from "./providers.mjs";
+import {PROVIDERS, call as callProvider, hostOf, keyRouteError, providerUrl, resolveProvider} from "./providers.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV = process.env;
@@ -167,7 +167,7 @@ export const CONFIG = {
   notify: notifyTarget(USER_CONFIG.notify, "config.json notify"),
 };
 // The one host the provider's key may go to (authorization()): where its endpoint was configured.
-CONFIG.keyHost = (() => { try { return new URL(CONFIG.api).host; } catch { return null; } })();
+CONFIG.keyHost = hostOf(CONFIG.api);
 /** Saved judge settings with the backend's (and, keyless, the engine's) defaults filled in; `enabled` unless the backend is none or REFLEX_JUDGE=off. */
 export function judgeSettings(saved = {}, env, engine = "jev") {
   const backend = saved?.backend ?? JUDGE_DEFAULTS.backend, s = saved ?? {}, k = engine === "local" ? KEYLESS_JUDGE_DEFAULTS : {};
@@ -1617,28 +1617,30 @@ function precheckAs(command, cwd, env, run, alt = false) {
 // ---------------------------------------------------------------------------------------------
 // Jev. The active provider's key: its environment variables, else its macOS Keychain item (TypeSafe's
 // is REFLEX_KEYCHAIN_SERVICE or "keychain" in config.json, as before). Read once per process, never logged.
-let KEY;
+const KEYS = {};   // per provider, so a key read for one is never sent as another's
 function apiKey() {
-  if (KEY) return KEY;
+  if (KEYS[CONFIG.provider]) return KEYS[CONFIG.provider];
   const p = PROVIDERS[CONFIG.provider], env = p.env.map(n => ENV[n]?.trim()).find(Boolean);
-  if (env) return (KEY = env);
+  if (env) return (KEYS[CONFIG.provider] = env);
   const item = CONFIG.provider === "typesafe" ? CONFIG.keychain : p.keychain;
   if (platform() === "darwin") {
     try {
       const k = execFileSync("security", ["find-generic-password", "-s", item, "-w"],
                              {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1500}).trim();
-      if (k) return (KEY = k);
+      if (k) return (KEYS[CONFIG.provider] = k);
     } catch { /* fall through */ }
   }
   throw new Error(`no API key for ${CONFIG.provider}: set ${p.env.join(" or ")} or keychain item "${item}"`);
 }
 
-// Each provider's key goes to that provider's host only (CONFIG.keyHost, the host its endpoint was
-// configured with, checked on every call), never to another provider's host, never over http off
-// this machine, and never to the Laya URL whatever the engine is switched to at run time.
+// Each provider's key goes to that provider's host only, checked on every call (keyRouteError):
+// OpenRouter's, Cloudflare's and Vercel's to their own host; TypeSafe's and a compatible endpoint's
+// to CONFIG.keyHost, the host their endpoint was configured with. Never to another provider's host,
+// never over http off this machine, never to the Laya server whatever the engine is switched to.
 function authorization(url = CONFIG.api) {
+  if (!PROVIDERS[CONFIG.provider]) throw new Error(`unknown provider ${CONFIG.provider}`);
   if (CONFIG.engine !== "laya" && ENGINE !== "laya") {
-    const refused = keyRouteError(CONFIG.provider, url, CONFIG.keyHost);
+    const refused = keyRouteError(CONFIG.provider, url, CONFIG.keyHost, LAYA.port);
     if (refused) throw new Error(refused);
     return {key: apiKey()};
   }

@@ -19,6 +19,7 @@ import asyncio
 import functools
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -54,19 +55,36 @@ CONFIG = {
 # engine laya: the local Laya server (setup/laya/server.py), same request shape, no key, nothing leaves the machine.
 LAYA = {"port": 8421, "model": "typed-decisions", **(USER_CONFIG.get("laya") if isinstance(USER_CONFIG.get("laya"), dict) else {})}
 # Jev providers, as in providers.mjs (adapted from jev-mcp by Joey Kudish, MIT, github.com/jkudish/jev-mcp
-# at a34db93): name -> (default URL, key variables in order, Keychain item, model slug, request body).
+# at a34db93): name -> (default URL, key variables in order, Keychain item, model slug, request body,
+# the opt-in variables that choose it unnamed, the only host its key goes to).
 PROVIDERS = {
-    "typesafe": ("https://api.typesafe.ai/v1/systemone", ["TYPESAFE_API_KEY"], None, lambda m: m, None),
-    "openrouter": ("https://openrouter.ai/api/alpha/decisions", ["OPENROUTER_API_KEY"], "openrouter-api-key",
-                   lambda m: m if m.startswith("typesafe/") else "typesafe/" + re.sub(r"^(jev-\d+\.\d+)\.\d+$", r"\1", m), None),
+    "typesafe": ("https://api.typesafe.ai/v1/systemone", ["TYPESAFE_API_KEY"], None, lambda m: m, None, ["TYPESAFE_API_KEY"], None),
+    "openrouter": ("https://openrouter.ai/api/alpha/decisions", ["JEV_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"], "openrouter-api-key",
+                   lambda m: m if m.startswith("typesafe/") else "typesafe/" + re.sub(r"^(jev-\d+\.\d+)\.\d+$", r"\1", m), None,
+                   ["JEV_OPENROUTER_API_KEY"], "openrouter.ai"),
     "cloudflare": ("https://api.cloudflare.com/client/v4/accounts/{account}/ai/run", ["JEV_CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN"],
                    "cloudflare-api-token", lambda m: m if m.startswith("typesafe/") else "typesafe/jev",
-                   lambda state, questions, model: {"model": model, "input": {"state": state, "questions": questions}}),
-    "vercel": ("https://ai-gateway.vercel.sh/typesafe/v1/systemone", ["AI_GATEWAY_API_KEY"], "ai-gateway-api-key",
-               lambda m: m if m.startswith("typesafe-ai/") else "typesafe-ai/jev", None),
-    "compatible": ("{url}", ["JEV_API_KEY"], "jev-api-key", lambda m: m, None),
+                   lambda state, questions, model: {"model": model, "input": {"state": state, "questions": questions}},
+                   ["JEV_CLOUDFLARE_API_TOKEN"], "api.cloudflare.com"),
+    "vercel": ("https://ai-gateway.vercel.sh/typesafe/v1/systemone", ["JEV_AI_GATEWAY_API_KEY", "AI_GATEWAY_API_KEY"], "ai-gateway-api-key",
+               lambda m: m if m.startswith("typesafe-ai/") else "typesafe-ai/jev", None, ["JEV_AI_GATEWAY_API_KEY"], "ai-gateway.vercel.sh"),
+    "compatible": ("{url}", ["JEV_API_KEY"], "jev-api-key", lambda m: m, None, ["JEV_API_KEY"], None),
 }
 DEFAULT_HOSTS = {"api.typesafe.ai", "openrouter.ai", "api.cloudflare.com", "ai-gateway.vercel.sh"}
+LOOPBACK = ("127.0.0.1", "::1", "localhost")
+
+
+def host_of(url):
+    """host[:port] as providers.mjs hostOf: lowercased, no trailing dot, no userinfo, no default port; None when not a URL."""
+    try:
+        u = urllib.parse.urlsplit(url)
+        host, port = (u.hostname or "").rstrip("."), u.port
+    except ValueError:
+        return None
+    if not host or u.scheme not in ("http", "https"):
+        return None
+    host = f"[{host}]" if ":" in host else host
+    return host if port is None or port == {"http": 80, "https": 443}[u.scheme] else f"{host}:{port}"
 PROVIDER_SETTINGS = {"account": (ENV.get("CLOUDFLARE_ACCOUNT_ID") or "").strip() or USER_CONFIG.get("cloudflare_account_id") or "",
                      "url": (ENV.get("JEV_API_BASE_URL") or "").strip() or USER_CONFIG.get("provider_url") or ""}
 
@@ -82,12 +100,15 @@ def provider_error(name, s=PROVIDER_SETTINGS):
 
 
 def resolve_provider(env=ENV, saved=USER_CONFIG):
-    """REFLEX_PROVIDER, JEV_PROVIDER or config.json "provider"; else jev-mcp's order over the environment; else typesafe."""
+    """As providers.mjs resolveProvider: a named provider; else typesafe with a TypeSafe Keychain item in
+    config.json; else jev-mcp's order over the opt-in variables only; else typesafe."""
     chosen = str(env.get("REFLEX_PROVIDER") or env.get("JEV_PROVIDER") or saved.get("provider") or "auto").lower()
     if chosen != "auto":
         return chosen
-    has = lambda p: any((env.get(n) or "").strip() for n in PROVIDERS[p][1]) and \
-        (p != "openrouter" or env["OPENROUTER_API_KEY"].strip().startswith("sk-or-"))
+    if saved.get("keychain"):
+        return "typesafe"
+    key = lambda p: next(((env.get(n) or "").strip() for n in PROVIDERS[p][5] if (env.get(n) or "").strip()), "")
+    has = lambda p: bool(key(p)) and (p != "openrouter" or key(p).startswith("sk-or-"))
     return next((p for p in PROVIDERS if has(p) and not provider_error(p)), "typesafe")
 
 
@@ -105,7 +126,7 @@ CONFIG = {
     "data": ENV.get("REFLEX_DATA_DIR", str(Path(ENV.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "reflex")),
     "keychain": ENV.get("REFLEX_KEYCHAIN_SERVICE", USER_CONFIG.get("keychain", "typesafe-api-key")),
 }
-CONFIG["key_host"] = urllib.parse.urlsplit(CONFIG["api"]).netloc
+CONFIG["key_host"] = host_of(CONFIG["api"])
 # The request types that carry a conversation. Embeddings, images, files etc. are never routed.
 ROUTED = {"completion", "acompletion", "text_completion", "atext_completion",
           "anthropic_messages", "aanthropic_messages", "responses", "aresponses"}
@@ -258,8 +279,7 @@ def jev_state(f, spec, policy):
 # ---------------------------------------------------------------------------------------------
 # Jev. Same key lookup as gate.mjs: the provider's variables, else its macOS Keychain item.
 def api_key():
-    _, names, item, _, _ = PROVIDERS[CONFIG["provider"]]
-    item = item or CONFIG["keychain"]
+    names, item = PROVIDERS[CONFIG["provider"]][1], PROVIDERS[CONFIG["provider"]][2] or CONFIG["keychain"]
     for n in names:
         if (ENV.get(n) or "").strip():
             return ENV[n].strip()
@@ -271,16 +291,27 @@ def api_key():
     raise RuntimeError(f'no API key for {CONFIG["provider"]}: set {" or ".join(names)} or keychain item "{item}"')
 
 
-def key_route_error(provider, url, key_host):
-    """The provider's key goes only to the host it was configured with, never to another provider's, never over http off this machine."""
+def key_route_error(provider, url, key_host, laya_port=LAYA["port"]):
+    """As providers.mjs keyRouteError: OpenRouter's, Cloudflare's and Vercel's keys to their own host over
+    https only; TypeSafe's and compatible's to the configured host, never another provider's, never over
+    http off this machine, never the Laya port."""
+    if provider not in PROVIDERS:
+        return f"unknown provider {provider}"
+    host, pinned = host_of(url), PROVIDERS[provider][6]
+    if not host:
+        return f"the {provider} key goes only to its own host, not to an invalid URL"
     u = urllib.parse.urlsplit(url)
-    if not u.netloc or u.netloc != key_host:
-        return f"the {provider} key goes only to {key_host}, not to {u.netloc or 'an invalid URL'}"
-    own = urllib.parse.urlsplit(PROVIDERS[provider][0]).netloc if provider in PROVIDERS else None
-    if u.netloc in DEFAULT_HOSTS and u.netloc != own:
-        return f"the {provider} key never goes to another provider ({u.netloc})"
-    if u.scheme != "https" and u.hostname not in ("127.0.0.1", "::1", "localhost"):
+    if pinned:
+        return None if host == pinned and u.scheme == "https" else f"the {provider} key goes only to https://{pinned}, not to {host}"
+    if host != key_host:
+        return f"the {provider} key goes only to {key_host}, not to {host}"
+    if host in DEFAULT_HOSTS and not (provider == "typesafe" and host == "api.typesafe.ai"):
+        return f"the {provider} key never goes to another provider ({host})"
+    loopback = (u.hostname or "").rstrip(".") in LOOPBACK
+    if u.scheme != "https" and not loopback:
         return f"the {provider} key is sent over https only"
+    if loopback and (u.port or {"http": 80, "https": 443}[u.scheme]) == int(laya_port):
+        return f"the {provider} key never goes to the Laya server"
     return None
 
 
@@ -291,6 +322,7 @@ class Malformed(Exception):
 def normalize(provider, p, questions):
     """Every provider's reply -> (answers, usage) in one typed shape; anything else raises Malformed (the caller falls back)."""
     unit = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1
+    finite = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
     if provider == "cloudflare":
         if not isinstance(p, dict) or p.get("success") is False:
             raise Malformed("cloudflare: success false")
@@ -313,11 +345,17 @@ def normalize(provider, p, questions):
                 "probabilities" in extra and not (isinstance(extra["probabilities"], dict) and all(map(unit, extra["probabilities"].values()))):
             raise Malformed(f"{provider}: answer {qid} has invalid confidence or probabilities")
         crit = q.get("criteria")
+        # Probability keys name options: a choice's criteria, a score's level indices; tier_of and ranking read them.
+        option = (lambda k: not isinstance(crit, dict) or k in crit) if q["type"] == "choice" else \
+            (lambda k: re.fullmatch(r"0|[1-9]\d*", k) is not None and (not isinstance(crit, list) or int(k) < len(crit))) if q["type"] == "score" else \
+            (lambda k: True)
+        if "probabilities" in extra and not all(option(k) for k in extra["probabilities"]):
+            raise Malformed(f"{provider}: answer {qid} has probabilities for options it was not asked about")
         if q["type"] == "noul" and unit(a.get("noul")):
             answers[qid] = {"type": "noul", "noul": a["noul"]}
         elif q["type"] == "choice" and isinstance(a.get("choice"), str) and (not isinstance(crit, dict) or a["choice"] in crit):
             answers[qid] = {"type": "choice", "choice": a["choice"], **extra}
-        elif q["type"] == "score" and isinstance(a.get("score"), (int, float)) and not isinstance(a["score"], bool) and \
+        elif q["type"] == "score" and finite(a.get("score")) and \
                 0 <= a["score"] <= (len(crit) - 1 if isinstance(crit, list) else float("inf")):
             answers[qid] = {"type": "score", "score": a["score"], **extra}
         else:
@@ -328,6 +366,32 @@ def normalize(provider, p, questions):
 
 
 RETRY = {"attempts": 3, "base_s": 0.15, "max_s": 1.0}
+MAX_REPLY = 1_000_000
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is an HTTPError: following it would carry the key (urllib keeps Authorization) to another host."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+# No proxy from HTTP(S)_PROXY either: a proxy would receive the key over loopback http.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=TLS), NoRedirect)
+
+
+def read_until(r, deadline):
+    """The reply body, read in chunks against the call's one deadline (urllib's timeout is per socket read)."""
+    chunks, size = [], 0
+    while True:
+        if time.monotonic() > deadline:
+            raise TimeoutError("the Jev reply did not finish before the deadline")
+        chunk = r.read1(65536)
+        if not chunk:
+            return b"".join(chunks)
+        size += len(chunk)
+        if size > MAX_REPLY:
+            raise Malformed("the reply is too large")
+        chunks.append(chunk)
 
 
 def retryable(status):
@@ -351,22 +415,27 @@ def ask(state, questions, timeout_s):
         raise RuntimeError("engine laya: the server URL must be on 127.0.0.1")
     deadline = time.monotonic() + timeout_s
     provider = "typesafe" if CONFIG["engine"] == "laya" else CONFIG["provider"]
-    _, _, _, slug, shape = PROVIDERS[provider]
+    refused = provider_error(provider)
+    if refused:
+        raise RuntimeError(refused)
+    slug, shape = PROVIDERS[provider][3], PROVIDERS[provider][4]
     if CONFIG["engine"] == "laya":
         auth = laya_auth()
     else:
-        refused = provider_error(provider) or key_route_error(provider, CONFIG["api"], CONFIG["key_host"])
+        refused = key_route_error(provider, CONFIG["api"], CONFIG["key_host"])
         if refused:
             raise RuntimeError(refused)
         auth = {"Authorization": f"Bearer {api_key()}"}
     body = json.dumps((shape or (lambda s, q, m: {"state": s, "model": m, "questions": q}))(state, questions, slug(CONFIG["model"]))).encode()
-    # One deadline for every attempt; only 408, 409, 429 and 5xx retry, with jittered backoff that ends before it.
+    # One deadline for every attempt and every read; only 408, 409, 429 and 5xx retry, with jittered
+    # backoff that ends before it. No redirects and no proxy: the key goes to the checked host or nowhere.
     for attempt in range(RETRY["attempts"]):
         req = urllib.request.Request(CONFIG["api"], body, {**auth, "Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=max(0.05, deadline - time.monotonic()), context=TLS) as r:
-                text = r.read()
+            with OPENER.open(req, timeout=max(0.05, deadline - time.monotonic())) as r:
+                text = read_until(r, deadline)
         except urllib.error.HTTPError as e:
+            e.close()
             wait = min(RETRY["base_s"] * 2 ** attempt, RETRY["max_s"]) * (0.5 + random.random() * 0.5)
             if retryable(e.code) and attempt + 1 < RETRY["attempts"] and time.monotonic() + wait < deadline - 0.05:
                 time.sleep(wait)
@@ -420,6 +489,10 @@ def tier_of(d, t):
     costs more than over-tiering, so a hesitant answer routes up. Without probabilities (the fallback
     answer) or up_at, the expected score against from_score."""
     order, p, up = t["order"], d.get("probabilities"), t.get("up_at")
+    # Keys that are not level indices (normalize refuses them; this is the second line): the top tier,
+    # the side the policy prefers when unsure, never an error that keeps the requested model.
+    if p and not all(isinstance(k, str) and re.fullmatch(r"0|[1-9]\d*", k) or isinstance(k, int) and not isinstance(k, bool) and k >= 0 for k in p):
+        return order[-1]
     if p and up:
         mass = lambda i: sum(v for k, v in p.items() if int(k) >= i)
         return max((name for i, name in enumerate(order) if i == 0 or mass(i) >= up[name]), key=order.index)
@@ -735,8 +808,32 @@ def providers_selfcheck(ok):
     seen, replies = [], []
 
     class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):   # where a followed redirect would land
+            seen.append((self.path, self.headers.get("Authorization"), None))
+            self.send_response(200)
+            self.end_headers()
+
         def do_POST(self):
             seen.append((self.path, self.headers.get("Authorization"), json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", f"http://localhost:{srv.server_address[1]}/steal")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if self.path == "/trickle":   # one byte every 100 ms: each socket read is quick, the reply is not
+                data = json.dumps({"answers": good}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                try:
+                    for b in data:
+                        self.wfile.write(bytes([b]))
+                        self.wfile.flush()
+                        time.sleep(0.1)
+                except OSError:
+                    pass
+                return
             status, out = replies.pop(0) if replies else (200, {"answers": good})
             data = (out if isinstance(out, str) else json.dumps(out)).encode()
             self.send_response(status)
@@ -750,7 +847,10 @@ def providers_selfcheck(ok):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base, saved = f"http://127.0.0.1:{srv.server_address[1]}", dict(CONFIG)
     names = {p: PROVIDERS[p][1][0] for p in PROVIDERS}
+    route = key_route_error
     try:
+        # The wire formats against loopback mocks: the pinned providers' route check is lifted for this loop only.
+        globals()["key_route_error"] = lambda *a, **k: None
         for p, path, check in [("typesafe", "/v1/systemone", lambda b: b["model"] == "jev-1.13.0" and b["state"] and b["questions"]),
                                ("openrouter", "/api/alpha/decisions", lambda b: b["model"] == "typesafe/jev-1.13"),
                                ("cloudflare", "/client/v4/accounts/x/ai/run", lambda b: b["model"] == "typesafe/jev" and b["input"]["questions"]),
@@ -766,7 +866,10 @@ def providers_selfcheck(ok):
             ok(len(seen) == 1 and seen[0][0] == path and seen[0][1] == f"Bearer key-{p}" and check(seen[0][2]), f"router {p}: request {seen[:1]}")
             ok(a["sensitivity"]["choice"] == "public" and a["difficulty"]["score"] == 1.2 and a["needs_tools"]["noul"] == 0.3, f"router {p}: answers")
             for bad in ["nope", {"answers": {**good, "needs_tools": {"noul": 3}}}, {"answers": {**good, "sensitivity": {"choice": "moon"}}},
-                        {"answers": {**good, "difficulty": {"score": 9}}}, {"answers": []}]:
+                        {"answers": {**good, "difficulty": {"score": 9}}}, {"answers": []},
+                        {"answers": {**good, "sensitivity": {"choice": "public", "probabilities": {"public": 0.5, "secret_tier": 0.9}}}},
+                        {"answers": {**good, "difficulty": {"score": 1, "probabilities": {"0": 0.1, "x": 0.9}}}},
+                        {"answers": {**good, "difficulty": {"score": 1, "probabilities": {"0": 0.1, "5": 0.9}}}}]:
                 replies.append((200, {"success": True, "result": bad} if p == "cloudflare" and isinstance(bad, dict) else bad))
                 try:
                     ask({"message": "hi"}, Q, 2)
@@ -774,9 +877,10 @@ def providers_selfcheck(ok):
                 except Malformed:
                     pass
             del ENV[names[p]]
+        globals()["key_route_error"] = route
         # retries on 429 / 503, not on 401; not past the deadline
-        CONFIG.update(provider="openrouter", api=base + "/api/alpha/decisions")
-        ENV["OPENROUTER_API_KEY"] = "sk-or-test"
+        CONFIG.update(provider="typesafe", api=base + "/v1/systemone")
+        ENV["TYPESAFE_API_KEY"] = "sk-or-test"
         seen.clear()
         replies[:] = [(429, "{}"), (503, "{}")]
         ok(ask({}, Q, 2)[0]["needs_tools"]["noul"] == 0.3 and len(seen) == 3, f"router: retries 429 and 503 ({len(seen)})")
@@ -795,21 +899,61 @@ def providers_selfcheck(ok):
             pass
         ok(len(seen) <= 1, f"router: no retry past the deadline ({len(seen)})")
         replies.clear()
-        # key routing: never to another provider's host, never over http off the machine
-        CONFIG.update(api="https://api.typesafe.ai/v1/systemone", key_host="api.typesafe.ai")
+        # a redirect is an error, never followed: urllib would carry the Authorization header to its target
+        seen.clear()
+        CONFIG.update(api=base + "/redirect")
+        try:
+            ask({}, Q, 2)
+            ok(False, "router: redirect followed")
+        except RuntimeError as e:
+            ok([s[0] for s in seen] == ["/redirect"] and "HTTP 302" in str(e), f"router: a redirect is refused ({e}, {seen})")
+        # one deadline for the whole reply, however quick each socket read is
+        CONFIG.update(api=base + "/trickle")
+        t0 = time.monotonic()
+        try:
+            ask({}, Q, 0.5)
+            ok(False, "router: trickled reply accepted")
+        except (TimeoutError, OSError):
+            pass
+        ok(time.monotonic() - t0 < 1.5, f"router: the deadline covers the body ({time.monotonic() - t0:.2f} s)")
+        # key routing: the proxies pinned to their own host; TypeSafe and compatible to the configured
+        # one, never another provider's, never over http off the machine, never the Laya port
+        CONFIG.update(provider="openrouter", api=base + "/api/alpha/decisions")
+        ENV["OPENROUTER_API_KEY"] = "sk-or-test"
         seen.clear()
         try:
             ask({}, Q, 1)
-            ok(False, "router: the OpenRouter key went to TypeSafe")
+            ok(False, "router: the OpenRouter key went to a loopback override")
         except RuntimeError as e:
-            ok(not seen and "another provider" in str(e), f"router: key routing ({e})")
+            ok(not seen and "only to https://openrouter.ai" in str(e), f"router: openrouter pinned ({e})")
+        del ENV["OPENROUTER_API_KEY"]
+        for p in ("openrouter", "cloudflare", "vercel"):
+            ok(key_route_error(p, "https://proxy.example/x", "proxy.example"), f"router: {p} pinned")
+        ok(not key_route_error("openrouter", "https://OpenRouter.AI.:443/x", "x"), "router: host normalised")
+        for u in ("https://API.TYPESAFE.AI/x", "https://api.typesafe.ai./x", "https://api.typesafe.ai:443/x", "https://user@openrouter.ai/x"):
+            ok(key_route_error("compatible", u, host_of(u)), f"router: compatible never to another provider ({u})")
         ok(key_route_error("compatible", "http://jev.example/v1", "jev.example") and not key_route_error("compatible", "https://jev.example/v1", "jev.example"),
            "router: https only off the machine")
-        del ENV["OPENROUTER_API_KEY"]
-        ok(resolve_provider({"OPENROUTER_API_KEY": "sk-or-x", "TYPESAFE_API_KEY": "t"}, {}) == "typesafe" and
-           resolve_provider({"OPENROUTER_API_KEY": "sk-or-x"}, {}) == "openrouter" and resolve_provider({}, {"provider": "vercel"}) == "vercel",
-           "router: jev-mcp's detection order")
+        ok(key_route_error("typesafe", "http://127.0.0.1:8421/v1", "127.0.0.1:8421", 8421) and not key_route_error("typesafe", "http://127.0.0.1:9/v1", "127.0.0.1:9", 8421),
+           "router: never the Laya port")
+        ok(key_route_error("wat", "https://x.example", "x.example"), "router: unknown provider")
+        CONFIG.update(provider="wat")
+        try:
+            ask({}, Q, 1)
+            ok(False, "router: unknown provider")
+        except RuntimeError as e:
+            ok("provider must be" in str(e), f"router: unknown provider is a clear error ({e})")
+        ambient = {"CLOUDFLARE_API_TOKEN": "c", "CLOUDFLARE_ACCOUNT_ID": "0" * 32, "OPENROUTER_API_KEY": "sk-or-x", "AI_GATEWAY_API_KEY": "v"}
+        ok(resolve_provider({"JEV_OPENROUTER_API_KEY": "sk-or-x", "TYPESAFE_API_KEY": "t"}, {}) == "typesafe" and
+           resolve_provider({"JEV_OPENROUTER_API_KEY": "sk-or-x"}, {}) == "openrouter" and resolve_provider({}, {"provider": "vercel"}) == "vercel" and
+           resolve_provider(ambient, {}) == "typesafe" and resolve_provider({"JEV_OPENROUTER_API_KEY": "sk-or-x"}, {"keychain": "k"}) == "typesafe",
+           "router: detection only from opt-in variables, TypeSafe kept with a Keychain item")
+        tiers = {"order": ["small", "medium", "large"], "up_at": {"medium": 0.5, "large": 0.5}, "from_score": {"small": 0, "medium": 1, "large": 2}}
+        ok(tier_of({"score": 0, "probabilities": {"0": 1.0, "rm": 0.0}}, tiers) == "large" and tier_of({"score": 0, "probabilities": {"0": 1.0}}, tiers) == "small",
+           "router: tier_of fails closed (top tier) on keys that are not levels")
     finally:
+        globals()["key_route_error"] = route
+        ENV.pop("TYPESAFE_API_KEY", None)
         CONFIG.clear()
         CONFIG.update(saved)
         srv.shutdown()

@@ -63,9 +63,9 @@ the policy sees them:
 | Provider | Key (environment, else macOS Keychain item) | Endpoint | Model sent |
 |---|---|---|---|
 | `typesafe` (default) | `TYPESAFE_API_KEY`, Keychain `typesafe-api-key` (or `REFLEX_KEYCHAIN_SERVICE`) | `https://api.typesafe.ai/v1/systemone` | `jev-1.13.0` |
-| `openrouter` | `OPENROUTER_API_KEY` (an `sk-or-` key), Keychain `openrouter-api-key` | `https://openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` |
+| `openrouter` | `JEV_OPENROUTER_API_KEY` or `OPENROUTER_API_KEY` (an `sk-or-` key), Keychain `openrouter-api-key` | `https://openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` |
 | `cloudflare` | `JEV_CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_API_TOKEN`, Keychain `cloudflare-api-token`, plus `CLOUDFLARE_ACCOUNT_ID` | `https://api.cloudflare.com/client/v4/accounts/<id>/ai/run` | `typesafe/jev` |
-| `vercel` | `AI_GATEWAY_API_KEY`, Keychain `ai-gateway-api-key` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` |
+| `vercel` | `JEV_AI_GATEWAY_API_KEY` or `AI_GATEWAY_API_KEY`, Keychain `ai-gateway-api-key` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` |
 | `compatible` | `JEV_API_KEY`, Keychain `jev-api-key`, plus `JEV_API_BASE_URL` (the full URL) | your URL | `jev-1.13.0` |
 
 ```bash
@@ -77,22 +77,33 @@ reflex doctor                                           # System 1: Jev via open
 ```
 
 Which provider is used: `REFLEX_PROVIDER` (or `JEV_PROVIDER`, as in jev-mcp), else `provider` in
-`~/.config/reflex/config.json`, else the first of TypeSafe, OpenRouter, Cloudflare, Vercel and
-compatible whose key is in the environment (jev-mcp's order), else TypeSafe with its Keychain item,
-as before. `reflex setup` without `--provider` looks in the environment and then in the Keychain,
+`~/.config/reflex/config.json`. Without either, TypeSafe when `TYPESAFE_API_KEY` is set or
+`config.json` names a TypeSafe Keychain item (`keychain`). Otherwise the first of OpenRouter,
+Cloudflare, Vercel and compatible (jev-mcp's order) whose opt-in variable is set:
+`JEV_OPENROUTER_API_KEY`, `JEV_CLOUDFLARE_API_TOKEN` (with `CLOUDFLARE_ACCOUNT_ID`),
+`JEV_AI_GATEWAY_API_KEY`, `JEV_API_KEY` (with `JEV_API_BASE_URL`); else TypeSafe with its Keychain
+item, as before. `OPENROUTER_API_KEY`, `CLOUDFLARE_API_TOKEN` and `AI_GATEWAY_API_KEY` never choose a
+provider on their own, since they are often set for other tools (wrangler, for one); they are read
+once the provider is named. `reflex setup` without `--provider` looks in the environment and then in the Keychain,
 in the same order, and saves the provider it found only in the Keychain, since the hooks read the
 environment and `config.json` but never search the Keychain. `cloudflare_account_id` and
 `provider_url` can also be saved in `config.json`; neither is a secret.
 
-- **Keys.** Each provider's key goes to that provider's host only: the host its endpoint was
-  configured with, checked on every call. It never goes to another provider's host, never to the
-  Laya server, and never over plain http off this machine. Keys are never written to a file,
+- **Keys.** Each provider's key goes to that provider's host only, checked on every call.
+  OpenRouter's, Cloudflare's and Vercel's go to `openrouter.ai`, `api.cloudflare.com` and
+  `ai-gateway.vercel.sh` over https and nowhere else, whatever `REFLEX_API_URL` says. TypeSafe's and
+  a compatible endpoint's go to the host their endpoint was configured with (`REFLEX_API_URL` can
+  point TypeSafe's at a proxy); never to another provider's host, never to the Laya server's port,
+  and never over plain http off this machine. Hosts are compared lowercased, without a trailing dot
+  or a default port. Redirects are refused, and the LiteLLM router ignores `HTTP(S)_PROXY` for these
+  calls, so the key cannot follow either one elsewhere. An HTTP error is logged as its status only. Keys are never written to a file,
   logged or printed; `reflex doctor` shows the provider and the host, not the key. The MCP tool
   router strips every provider key from the environment of the servers it starts.
 - **Answers.** Every reply is checked against the questions asked: a probability in [0, 1], a
   choice among the question's criteria, a score on its scale, a valid confidence. A reply that
-  fails any check, is not JSON, or (Cloudflare) did not complete is treated as Jev unavailable:
-  the policy fallback asks. A malformed answer is never read as a pass.
+  fails any check (probabilities only for the question's own options), is not JSON, or
+  (Cloudflare) did not complete is treated as Jev unavailable: the policy fallback asks. A
+  malformed answer is never read as a pass.
 - **Time.** One deadline covers the whole call, retries included: the hook's budget
   (`REFLEX_TIMEOUT_MS`, 3 s by default), not a per-attempt timeout. Only 408, 409, 429 and 5xx
   are retried, at most three attempts, with jittered exponential backoff, and only when the wait

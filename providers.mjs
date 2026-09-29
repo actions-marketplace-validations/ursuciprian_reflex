@@ -16,39 +16,47 @@ import {createServer} from "node:http";
 
 export const PROVIDER_NAMES = ["typesafe", "openrouter", "cloudflare", "vercel", "compatible"];
 const typesafeBody = (state, questions, model) => ({state, model, questions});
-// url: the default endpoint. env: where its key is read, in order. keychain: the macOS Keychain item
-// (TypeSafe's is configurable, as before: REFLEX_KEYCHAIN_SERVICE or "keychain" in config.json).
+// url: the default endpoint. env: where its key is read once the provider is chosen, in order.
+// detect: the variables that choose it when no provider is named; only Reflex's own JEV_ names for
+// the proxies, so a CLOUDFLARE_API_TOKEN set for wrangler or an OPENROUTER_API_KEY set for another
+// tool never sends commands anywhere on its own. pinned: its key goes to this host and no other.
+// keychain: the macOS Keychain item (TypeSafe's is REFLEX_KEYCHAIN_SERVICE or "keychain" in config.json).
 export const PROVIDERS = {
-  typesafe: {url: () => "https://api.typesafe.ai/v1/systemone", env: ["TYPESAFE_API_KEY"], keychain: "typesafe-api-key",
+  typesafe: {url: () => "https://api.typesafe.ai/v1/systemone", env: ["TYPESAFE_API_KEY"], detect: ["TYPESAFE_API_KEY"], keychain: "typesafe-api-key",
     model: m => m, body: typesafeBody},
   // OpenRouter serves pinned minor versions (typesafe/jev-1.13), no patch level and no latest alias.
-  openrouter: {url: () => "https://openrouter.ai/api/alpha/decisions", env: ["OPENROUTER_API_KEY"], keychain: "openrouter-api-key",
+  openrouter: {url: () => "https://openrouter.ai/api/alpha/decisions", env: ["JEV_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"], detect: ["JEV_OPENROUTER_API_KEY"],
+    keychain: "openrouter-api-key", pinned: "openrouter.ai",
     model: m => m.startsWith("typesafe/") ? m : `typesafe/${m.replace(/^(jev-\d+\.\d+)\.\d+$/, "$1")}`, body: typesafeBody,
     headers: {"HTTP-Referer": "https://github.com/ursuciprian/reflex", "X-Title": "Reflex"}},
   // Cloudflare serves one always-current alias, typesafe/jev; the call wraps the contract in {model, input}.
   cloudflare: {url: s => `https://api.cloudflare.com/client/v4/accounts/${s.account}/ai/run`, env: ["JEV_CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN"],
-    keychain: "cloudflare-api-token", model: m => m.startsWith("typesafe/") ? m : "typesafe/jev",
-    body: (state, questions, model) => ({model, input: {state, questions}})},
+    detect: ["JEV_CLOUDFLARE_API_TOKEN"], keychain: "cloudflare-api-token", pinned: "api.cloudflare.com",
+    model: m => m.startsWith("typesafe/") ? m : "typesafe/jev", body: (state, questions, model) => ({model, input: {state, questions}})},
   // The gateway's TypeSafe-compatible API: TypeSafe's request and response shapes, model typesafe-ai/jev.
-  vercel: {url: () => "https://ai-gateway.vercel.sh/typesafe/v1/systemone", env: ["AI_GATEWAY_API_KEY"], keychain: "ai-gateway-api-key",
-    model: m => m.startsWith("typesafe-ai/") ? m : "typesafe-ai/jev", body: typesafeBody},
-  compatible: {url: s => s.url, env: ["JEV_API_KEY"], keychain: "jev-api-key", model: m => m, body: typesafeBody},
+  vercel: {url: () => "https://ai-gateway.vercel.sh/typesafe/v1/systemone", env: ["JEV_AI_GATEWAY_API_KEY", "AI_GATEWAY_API_KEY"], detect: ["JEV_AI_GATEWAY_API_KEY"],
+    keychain: "ai-gateway-api-key", pinned: "ai-gateway.vercel.sh", model: m => m.startsWith("typesafe-ai/") ? m : "typesafe-ai/jev", body: typesafeBody},
+  compatible: {url: s => s.url, env: ["JEV_API_KEY"], detect: ["JEV_API_KEY"], keychain: "jev-api-key", model: m => m, body: typesafeBody},
 };
-const hostOf = u => { try { return new URL(u).host; } catch { return null; } };
-export const DEFAULT_HOSTS = ["typesafe", "openrouter", "vercel"].map(p => hostOf(PROVIDERS[p].url()))
-  .concat("api.cloudflare.com");
+/** host[:port] lowercased, without a trailing dot or the scheme's default port; null when not a URL. */
+export const hostOf = u => { try { const x = new URL(u); return x.hostname.replace(/\.$/, "") + (x.port ? `:${x.port}` : ""); } catch { return null; } };
+export const DEFAULT_HOSTS = ["api.typesafe.ai", "openrouter.ai", "api.cloudflare.com", "ai-gateway.vercel.sh"];
+const LOOPBACK = ["127.0.0.1", "[::1]", "localhost"];
+/** The key for provider `p` in `env`; when `detecting`, only from the variables that may choose it. */
+export const envKey = (env, p, detecting) => (detecting ? PROVIDERS[p].detect : PROVIDERS[p].env).map(n => env[n]?.trim()).find(Boolean) ?? null;
 
 /**
  * The provider from the environment and saved settings (no Keychain lookup, so it is cheap on every
- * hook): REFLEX_PROVIDER, JEV_PROVIDER or config.json "provider" wins; otherwise jev-mcp's order over
- * the environment, and TypeSafe when none is set (its key then comes from the Keychain, as before).
- * `reflex setup` also looks in the Keychain, in the same order, and saves what it finds.
+ * hook): REFLEX_PROVIDER, JEV_PROVIDER or config.json "provider" wins. With a TypeSafe key, or a
+ * TypeSafe Keychain item named in config.json, TypeSafe. Otherwise jev-mcp's order over the opt-in
+ * `detect` variables, else TypeSafe with its Keychain item, as before. `reflex setup` also looks in
+ * the Keychain, in the same order, and saves what it finds.
  */
 export function resolveProvider(env, saved = {}) {
   const chosen = String(env.REFLEX_PROVIDER || env.JEV_PROVIDER || saved.provider || "auto").toLowerCase();
   const settings = {account: env.CLOUDFLARE_ACCOUNT_ID?.trim() || saved.cloudflare_account_id, url: env.JEV_API_BASE_URL?.trim() || saved.provider_url};
-  const found = chosen === "auto" && detect(p => PROVIDERS[p].env.some(n => env[n]?.trim()) &&
-    (p !== "openrouter" || /^sk-or-/.test(env.OPENROUTER_API_KEY.trim())), settings);
+  const found = chosen === "auto" && !saved.keychain && detect(p => !!envKey(env, p, true) &&
+    (p !== "openrouter" || /^sk-or-/.test(envKey(env, p, true))), settings);
   const name = chosen !== "auto" ? chosen : found || "typesafe";
   return {name, explicit: chosen !== "auto", detected: !!found, settings, error: providerError(name, settings)};
 }
@@ -68,16 +76,21 @@ export function providerError(name, s) {
 export const providerUrl = (name, s) => PROVIDERS[name]?.url(s) ?? null;
 
 /**
- * Whether a provider's key may go to `url`: only to the host that provider was configured with
- * (`keyHost`), never to another built-in provider's host, and never in clear text off this machine.
+ * Whether a provider's key may go to `url`. OpenRouter's, Cloudflare's and Vercel's go to their own
+ * host over https and nowhere else. TypeSafe's and a compatible endpoint's go to the host their
+ * endpoint was configured with (`keyHost`), never to another provider's host, never in clear text
+ * off this machine, and never to the Laya server's port (`layaPort`).
  */
-export function keyRouteError(name, url, keyHost) {
-  const host = hostOf(url);
-  if (!host || host !== keyHost) return `the ${name} key goes only to ${keyHost}, not to ${host ?? "an invalid URL"}`;
-  const own = name === "cloudflare" ? "api.cloudflare.com" : hostOf(PROVIDERS[name].url({}) ?? "");
-  if (DEFAULT_HOSTS.includes(host) && host !== own) return `the ${name} key never goes to another provider (${host})`;
-  const u = new URL(url);
-  if (u.protocol !== "https:" && !["127.0.0.1", "[::1]", "localhost"].includes(u.hostname)) return `the ${name} key is sent over https only`;
+export function keyRouteError(name, url, keyHost, layaPort = 8421) {
+  const host = hostOf(url), spec = PROVIDERS[name];
+  if (!spec) return `unknown provider ${name}`;
+  if (!host) return `the ${name} key goes only to its own host, not to an invalid URL`;
+  const u = new URL(url), loopback = LOOPBACK.includes(u.hostname);
+  if (spec.pinned) return host === spec.pinned && u.protocol === "https:" ? null : `the ${name} key goes only to https://${spec.pinned}, not to ${host}`;
+  if (host !== keyHost) return `the ${name} key goes only to ${keyHost}, not to ${host}`;
+  if (DEFAULT_HOSTS.includes(host) && host !== (name === "typesafe" ? "api.typesafe.ai" : null)) return `the ${name} key never goes to another provider (${host})`;
+  if (u.protocol !== "https:" && !loopback) return `the ${name} key is sent over https only`;
+  if (loopback && Number(u.port || (u.protocol === "https:" ? 443 : 80)) === Number(layaPort)) return `the ${name} key never goes to the Laya server`;
   return null;
 }
 
@@ -110,6 +123,10 @@ export function normalize(provider, payload, questions) {
     if (confidence !== undefined && !unit(confidence)) throw bad("has an invalid confidence");
     const probabilities = a.probabilities ?? undefined;
     if (probabilities !== undefined && !(isObject(probabilities) && Object.values(probabilities).every(unit))) throw bad("has invalid probabilities");
+    // Probability keys name options: a choice's criteria, a score's level indices. Callers rank by them.
+    const option = k => q.type === "choice" ? !isObject(q.criteria) || Object.hasOwn(q.criteria, k)
+      : q.type === "score" ? /^(0|[1-9]\d*)$/.test(k) && (!Array.isArray(q.criteria) || Number(k) < q.criteria.length) : true;
+    if (probabilities !== undefined && !Object.keys(probabilities).every(option)) throw bad("has probabilities for options it was not asked about");
     const extra = {...(probabilities && {probabilities}), ...(confidence !== undefined && {confidence})};
     if (q.type === "noul") {
       if (!unit(a.noul)) throw bad("is not a probability");
@@ -144,7 +161,8 @@ export async function call({provider, url, key, headers = {}, state, questions, 
   for (let attempt = 0; ; attempt++) {
     let r;
     try {
-      r = await fetch(url, {method: "POST", signal, body,
+      // redirect: "error": a redirect would re-send the state (and answer for Jev) from another host
+      r = await fetch(url, {method: "POST", signal, body, redirect: "error",
         headers: {...spec.headers, ...headers, ...(key && {Authorization: `Bearer ${key}`}), "Content-Type": "application/json"}});
     } catch (e) { throw Object.assign(new Error(scrub(e.message)), {name: e.name}); }
     if (retryable(r.status) && attempt + 1 < retry.attempts) {
@@ -155,9 +173,10 @@ export async function call({provider, url, key, headers = {}, state, questions, 
         continue;
       }
     }
+    // The status only: an error body may echo the request or the key, and this text reaches the trace.
+    if (!r.ok) { await r.body?.cancel().catch(() => {}); throw new Error(`HTTP ${r.status} (${provider})`); }
     let text;
     try { text = await r.text(); } catch (e) { throw Object.assign(new Error(scrub(e.message)), {name: e.name}); }
-    if (!r.ok) throw new Error(`HTTP ${r.status} (${provider}): ${scrub(text).slice(0, 200)}`);
     let payload;
     try { payload = JSON.parse(text); } catch { throw new Malformed(`${provider}: the reply is not JSON`); }
     return normalize(provider, payload, questions);
@@ -220,7 +239,11 @@ async function selfcheck() {
     ["choice outside criteria", {answers: {...good, env: {choice: "moon"}}}], ["wrong type", {answers: {...good, mutates: {type: "choice", choice: "local"}}}],
     ["score off the scale", {answers: {...good, blast: {score: 9}}}], ["negative score", {answers: {...good, blast: {score: -1}}}],
     ["bad confidence", {answers: {...good, env: {choice: "local", confidence: 3}}}], ["bad probabilities", {answers: {...good, env: {choice: "local", probabilities: {local: "x"}}}}],
-    ["answer not an object", {answers: {...good, mutates: 0}}]];
+    ["answer not an object", {answers: {...good, mutates: 0}}],
+    ["probability for an option not asked", {answers: {...good, env: {choice: "local", probabilities: {local: 0.5, rm_rf_tool: 0.99}}}}],
+    ["__proto__ probability", {answers: {...good, env: JSON.parse('{"choice": "local", "probabilities": {"local": 0.9, "__proto__": 0.5}}')}}],
+    ["score probability off the scale", {answers: {...good, blast: {score: 1, probabilities: {0: 0.1, 1: 0.5, 7: 0.4}}}}],
+    ["score probability not an index", {answers: {...good, blast: {score: 1, probabilities: {"1.5": 1}}}}]];
   for (const p of PROVIDER_NAMES) {
     const s = await serve((_, __, n) => [200, p === "cloudflare" && typeof malformed[n - 1][1] === "object" ? {success: true, result: malformed[n - 1][1]} : malformed[n - 1][1]]);
     for (const [why] of malformed)
@@ -263,24 +286,49 @@ async function selfcheck() {
   // Detection: jev-mcp's order over the environment; an explicit choice wins; what each one needs.
   const A = "0123456789abcdef0123456789abcdef";
   const R = (env, saved) => resolveProvider(env, saved);
-  ok(R({TYPESAFE_API_KEY: "t", OPENROUTER_API_KEY: "sk-or-x"}).name === "typesafe", "detect: TypeSafe first");
-  ok(R({OPENROUTER_API_KEY: "sk-or-x", CLOUDFLARE_API_TOKEN: "c", CLOUDFLARE_ACCOUNT_ID: A}).name === "openrouter", "detect: OpenRouter second");
-  ok(R({OPENROUTER_API_KEY: "not-openrouter", CLOUDFLARE_API_TOKEN: "c", CLOUDFLARE_ACCOUNT_ID: A}).name === "cloudflare", "detect: only an sk-or- key is OpenRouter");
-  ok(R({CLOUDFLARE_API_TOKEN: "c", AI_GATEWAY_API_KEY: "v"}).name === "vercel", "detect: Cloudflare needs its account id");
-  ok(R({AI_GATEWAY_API_KEY: "v", JEV_API_KEY: "j", JEV_API_BASE_URL: "https://x.example/v1/systemone"}).name === "vercel", "detect: Vercel before compatible");
+  ok(R({TYPESAFE_API_KEY: "t", JEV_OPENROUTER_API_KEY: "sk-or-x"}).name === "typesafe", "detect: TypeSafe first");
+  ok(R({JEV_OPENROUTER_API_KEY: "sk-or-x", JEV_CLOUDFLARE_API_TOKEN: "c", CLOUDFLARE_ACCOUNT_ID: A}).name === "openrouter", "detect: OpenRouter second");
+  ok(R({JEV_OPENROUTER_API_KEY: "not-openrouter", JEV_CLOUDFLARE_API_TOKEN: "c", CLOUDFLARE_ACCOUNT_ID: A}).name === "cloudflare", "detect: only an sk-or- key is OpenRouter");
+  ok(R({JEV_CLOUDFLARE_API_TOKEN: "c", JEV_AI_GATEWAY_API_KEY: "v"}).name === "vercel", "detect: Cloudflare needs its account id");
+  ok(R({JEV_AI_GATEWAY_API_KEY: "v", JEV_API_KEY: "j", JEV_API_BASE_URL: "https://x.example/v1/systemone"}).name === "vercel", "detect: Vercel before compatible");
+  // Keys set for other tools choose nothing: wrangler's token, an OpenRouter or gateway key.
+  const ambient = {CLOUDFLARE_API_TOKEN: "c", CLOUDFLARE_ACCOUNT_ID: A, OPENROUTER_API_KEY: "sk-or-x", AI_GATEWAY_API_KEY: "v"};
+  ok(R(ambient).name === "typesafe" && !R(ambient).detected, "detect: ambient CLOUDFLARE_API_TOKEN, OPENROUTER_API_KEY, AI_GATEWAY_API_KEY never choose a provider");
+  ok(R({JEV_OPENROUTER_API_KEY: "sk-or-x"}, {keychain: "dev/typesafe"}).name === "typesafe", "detect: a TypeSafe Keychain item in config.json keeps TypeSafe");
+  ok(R({JEV_OPENROUTER_API_KEY: "sk-or-x"}, {provider: "typesafe"}).name === "typesafe", "detect: a saved provider keeps it");
+  ok(R({CLOUDFLARE_API_TOKEN: "c", CLOUDFLARE_ACCOUNT_ID: A}, {provider: "cloudflare"}).name === "cloudflare" && envKey({CLOUDFLARE_API_TOKEN: "c"}, "cloudflare") === "c",
+     "explicit cloudflare reads CLOUDFLARE_API_TOKEN");
   ok(R({JEV_API_KEY: "j", JEV_API_BASE_URL: "https://x.example/v1/systemone"}).name === "compatible", "detect: compatible last");
   ok(R({}).name === "typesafe" && !R({}).explicit, "detect: nothing set is TypeSafe (its Keychain item)");
   ok(R({TYPESAFE_API_KEY: "t"}, {provider: "vercel"}).name === "vercel" && R({REFLEX_PROVIDER: "openrouter"}, {provider: "vercel"}).name === "openrouter", "explicit: environment, then config.json");
   ok(R({}, {provider: "cloudflare"}).error && !R({}, {provider: "cloudflare", cloudflare_account_id: A}).error, "cloudflare needs an account id");
   ok(R({CLOUDFLARE_ACCOUNT_ID: "../../x"}, {provider: "cloudflare"}).error, "cloudflare: an account id that is not one is refused");
   ok(R({}, {provider: "compatible"}).error && R({}, {provider: "wat"}).error, "compatible needs a URL; unknown names are errors");
-  // Key routing: only the configured host, never another provider's, never clear text off the machine.
+  // Key routing: the proxies' keys to their own host only; TypeSafe's and compatible's to the
+  // configured host, never another provider's, never clear text off the machine, never Laya.
   ok(!keyRouteError("openrouter", "https://openrouter.ai/api/alpha/decisions", "openrouter.ai"), "route: own host");
-  ok(keyRouteError("openrouter", "https://api.typesafe.ai/v1/systemone", "openrouter.ai"), "route: not another provider's host");
+  ok(!keyRouteError("openrouter", "https://OpenRouter.AI.:443/api/alpha/decisions", "x"), "route: host normalised (case, trailing dot, :443)");
   ok(keyRouteError("openrouter", "https://api.typesafe.ai/v1/systemone", "api.typesafe.ai"), "route: not another provider's host even when configured there");
-  ok(!keyRouteError("typesafe", "http://127.0.0.1:9/v1/systemone", "127.0.0.1:9"), "route: a loopback override is fine");
+  for (const p of ["openrouter", "cloudflare", "vercel"])
+    ok(keyRouteError(p, "http://127.0.0.1:9/x", "127.0.0.1:9") && keyRouteError(p, "https://proxy.example/x", "proxy.example"), `route: ${p} is pinned to its own host`);
+  ok(keyRouteError("openrouter", "http://openrouter.ai/api/alpha/decisions", "openrouter.ai"), "route: pinned means https too");
+  ok(!keyRouteError("typesafe", "http://127.0.0.1:9/v1/systemone", "127.0.0.1:9") && !keyRouteError("compatible", "https://jev.example/v1", "jev.example"),
+     "route: TypeSafe and compatible follow their configured host");
+  ok(keyRouteError("typesafe", "https://proxy.example/v1", "127.0.0.1:9"), "route: only the configured host");
+  for (const u of ["https://OPENROUTER.AI/x", "https://openrouter.ai./x", "https://openrouter.ai:443/x", "https://user@api.cloudflare.com/x"])
+    ok(keyRouteError("compatible", u, hostOf(u)), `route: compatible never to another provider (${u})`);
   ok(keyRouteError("compatible", "http://jev.example/v1/systemone", "jev.example"), "route: no key over http off the machine");
-  ok(keyRouteError("vercel", "http://127.0.0.1:8421/v1/systemone", "ai-gateway.vercel.sh"), "route: never the Laya URL");
+  ok(keyRouteError("typesafe", "http://127.0.0.1:8421/v1/systemone", "127.0.0.1:8421") && keyRouteError("compatible", "http://localhost:9000/v1", "localhost:9000", 9000),
+     "route: never the Laya port");
+  ok(keyRouteError("wat", "https://x.example", "x.example"), "route: unknown provider");
+  // A redirect is an error, not followed: its target would answer for Jev.
+  { const target = await serve(() => [200, {answers: good}]);
+    const s = await serve(() => [307, {}]);
+    const redirecting = createServer((req, res) => { res.writeHead(307, {Location: target.url("/v1/systemone")}); res.end(); });
+    await new Promise(r => redirecting.listen(0, "127.0.0.1", r));
+    await call({provider: "typesafe", url: `http://127.0.0.1:${redirecting.address().port}/v1/systemone`, key: KEY, state: {}, questions: Q, model: "jev-1.13.0",
+      deadline: Date.now() + 2000}).then(() => ok(false, "redirect followed"), () => ok(target.seen.length === 0, "a redirect is refused, its target never called"));
+    redirecting.closeAllConnections(); await new Promise(r => redirecting.close(r)); await target.close(); await s.close(); }
   if (!process.exitCode) console.log("providers selfcheck ok");
 }
 
