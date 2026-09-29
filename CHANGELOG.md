@@ -36,15 +36,20 @@ All notable changes to Reflex are documented here. The format follows
   `reflex queue approve|deny`, `reflex suggest --write` or `reflex learn --write` is a tamper ask,
   also in the bundled fast lane (`npm run lint`). `reflex suggest` or `reflex learn` with its flags in
   a variable, `"$@"`, `xargs`, `eval` or a function is a tamper ask too.
-- Tamper: a shell write into the Reflex data directory (`REFLEX_DATA_DIR`, else
-  `$XDG_STATE_HOME/reflex` or `~/.local/state/reflex`) or the config directory is a tamper ask when
-  the agent's working directory is the directory, a parent or a folder inside it, not only after a
-  `cd` in the command (`echo x >> reflex/trace.jsonl` from `~/.local/state`, `echo x >> ../feedback.jsonl`
-  from `queue/`). A Reflex file (`trace.jsonl`, `feedback.jsonl`, `queue/`, `reflex/...`) written
-  under a variable the command does not set asks too, and a local script that writes the config
-  directory, or the data directory through a `cd`, is a tamper ask. A path next to the data or config
-  directory that only starts with its name (`reflex-old`) no longer counts. `reflex learn` trusts these
-  logs as far as this check protects them; the GUIDE says so.
+- Tamper: more spellings of a shell write into the Reflex data directory (`REFLEX_DATA_DIR`, else
+  `$XDG_STATE_HOME/reflex` or `~/.local/state/reflex`) or the config directory are tamper asks: from
+  a working directory inside or above it with no `cd` (`echo x >> reflex/trace.jsonl` from
+  `~/.local/state`, `echo x >> ../feedback.jsonl` from `queue/`), a relative `cd reflex` from the
+  parent, a `..` climb, a glob (`refle?`, `[r]eflex`), `./` or `//` in the path, another case, a
+  symlinked spelling, an archive unpacked in the parent or `cp`/`rsync` into it (`tar -xf`, `tar -C`,
+  `cp -r x/. .`), and a Reflex file under a variable the command does not set (`$D/trace.jsonl`,
+  `${D}feedback.jsonl`, `cd $Q && tee q-1.json`). `$PWD` and `$TMPDIR` are resolved. A local script
+  is read the same way. A `(cd /tmp)` subshell no longer leaves the next command resolved to `/tmp`,
+  and `cd ~-` is `cd -`. A custom data or config directory is matched only as itself or a path in
+  it, not a sibling that starts with its name. Not caught: a bare variable (`echo x >> $F`), a
+  generic file name such as `config.json` under a variable, or an unknown program run in the parent
+  that writes `reflex/` without naming it. `reflex learn` trusts these logs as far as this check
+  protects them; the GUIDE says so.
 
 ### Fixed
 

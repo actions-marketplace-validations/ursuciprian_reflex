@@ -629,11 +629,13 @@ Claude Code plugin does not ship it.
 
 **What it trusts.** The answers come from Reflex's own logs (`trace.jsonl`, `feedback.jsonl` and the
 queue items in the data directory). There is no second record kept somewhere a shell write cannot
-reach, so the logs are trusted only as far as the tamper check protects them: a shell write into the
-data or config directory (a path, a relative path after `cd` into one or its parent, a working
-directory there, a script, or a variable the command does not set naming a Reflex file) asks a human,
-and so does a file tool write there. A write you approve yourself, or one made outside the agent, can
-still change what `reflex learn` counts, and `--write` shows every entry before it adds it.
+reach, so the logs are trusted only as far as the tamper check protects them. It asks a human for
+a shell write into the data or config directory by path, by a relative path after `cd` into one or
+its parent, from a working directory there, through a glob or a `..` climb, from a local script,
+and for a Reflex file under a variable the command does not set; a file tool write there asks too.
+It does not follow a bare variable (`echo x >> $F`) or an unknown program that writes there without
+naming it. A write you approve yourself, or one made outside the agent, can still change what
+`reflex learn` counts, and `--write` shows every entry before it adds it.
 
 ### Calibrated allow
 
