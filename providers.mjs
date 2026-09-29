@@ -181,7 +181,7 @@ async function selfcheck() {
       setTimeout(() => { res.writeHead(status, {"Content-Type": "application/json"}); res.end(typeof out === "string" ? out : JSON.stringify(out)); }, delay);
     });
     await new Promise(r => server.listen(0, "127.0.0.1", r));
-    return {seen, url: path => `http://127.0.0.1:${server.address().port}${path}`, close: () => new Promise(r => server.close(r))};
+    return {seen, url: path => `http://127.0.0.1:${server.address().port}${path}`, close: () => new Promise(r => { server.close(r); server.closeAllConnections(); })};   // Node 18 keeps idle keep-alive sockets open
   };
   const KEY = ["sk-or-v1", "selfcheck", process.pid].join("-");
   const go = (s, provider, path, extra = {}) => call({provider, url: s.url(path), key: KEY, state: {call: {command: "ls"}}, questions: Q,
