@@ -701,12 +701,12 @@ try {
 
     // The hook with that file: in-process, pointed at the same scratch configuration.
     Object.assign(process.env, {HOME: home, XDG_CONFIG_HOME: settings, XDG_STATE_HOME: data, REFLEX_ENGINE: "local", REFLEX_MODE: "shadow"});
-    const {precheck} = await import("./gate.mjs");
+    const {precheck, READ_ONLY_MODE} = await import("./gate.mjs");
     const {parseFastLane, userFastPass, loadFastLane} = await import("./fastlane.mjs");
     const passes = (c, cwd = proj, e = {}) => precheck(c, cwd, e)?.source === "fast-lane";
     assert.ok(loadFastLane().error === null && ["npm run typecheck", "make lint 2>&1 | tail -5", "ruff check src/app.py", "ruff check ./pkg/x_y.py",
-      "docker compose images"].every(c => passes(c)) && !passes("git status && npm run typecheck"),
-      "the written entries pass what they were made from, one command or pipeline at a time (readonly simple)");
+      "docker compose images"].every(c => passes(c)) && passes("git status && npm run typecheck") === (READ_ONLY_MODE === "legacy"),
+      "the written entries pass what they were made from; with readonly simple one command or pipeline at a time");
     mkdirSync(join(proj, "src"));
     assert.ok(passes("ruff check app.py", join(proj, "src")) && !passes("ruff check app.py", other) && !passes("npm run typecheck", other) && !passes("npm run typecheck", home), "scoped to the project");
     for (const c of ["npm run typecheck; rm -rf ~", "npm run typecheck && rm -rf node_modules", "npm run build; rm -rf ~", "make deploy", "make lint deploy",
