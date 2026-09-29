@@ -41,6 +41,28 @@ All notable changes to Reflex are documented here. The format follows
   were found.
 - Golden cases for applies without a readable plan; `infra.mjs --selfcheck` with fixture plans
   (`setup/tool-gate/plans/`), a fake `terraform` and a fake `kubectl` on `PATH`.
+- Jev providers: Jev now runs through TypeSafe directly (the default when a TypeSafe key is set),
+  OpenRouter's Decisions API, Cloudflare Workers AI, the Vercel AI Gateway (its TypeSafe-compatible
+  API) or any compatible endpoint (a full URL and a Bearer token). The provider comes from
+  `REFLEX_PROVIDER` (or `JEV_PROVIDER`), `provider` in `config.json`, or the first key in the
+  environment in jev-mcp's order; `reflex setup --provider x` (with `--cloudflare-account` or
+  `--provider-url` where needed) also looks in the Keychain. The TypeSafe Keychain flow
+  (`typesafe-api-key`, `REFLEX_KEYCHAIN_SERVICE`) is unchanged, and so is the laya engine.
+  `reflex doctor` shows the provider and the host its key goes to, never the key. The LiteLLM
+  router reads the same providers. `npm run eval-compare -- --engines jev@typesafe,jev@openrouter`
+  compares providers on the live golden sets. The provider layer (`providers.mjs`) is adapted from
+  [jev-mcp](https://github.com/jkudish/jev-mcp) by Joey Kudish (MIT, commit a34db93,
+  `src/provider.ts` and `src/lib.ts`): the provider list and detection order, the model slugs, the
+  Cloudflare envelope and the retry rules. Request and response formats were checked against
+  OpenRouter's, Cloudflare's and Vercel's documentation.
+- Each provider's key goes only to the host that provider was configured with, checked on every
+  call: never to another provider's host, never to Laya, never over plain http off the machine.
+  The MCP tool router strips every provider key from the servers it starts.
+- Every provider's answers are checked against the questions and read into one typed shape. A
+  probability outside [0, 1], a choice outside its criteria, a score off its scale, an invalid
+  confidence, a reply that is not JSON or a Cloudflare run that did not complete is Jev
+  unavailable, so the policy fallback asks; it is never read as a pass.
+
 - Change freezes: a `freeze` list in `config.json` or a team policy. Each window has `days`,
   `after` / `before` (local `HH:MM`), `from` / `to` (inclusive dates), a `tz` read with `Intl`
   (default UTC), `applies_to` (`prod` or `all`) and `outcome` (`ask` or `deny`). During a window, a
@@ -68,6 +90,10 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Changed
 
+- One deadline per Jev call: the hook's budget (`REFLEX_TIMEOUT_MS`) covers every attempt and the
+  body read. Retries happen on 408, 409, 429 and 5xx only (before: 429 and 529, once), at most three
+  attempts with jittered exponential backoff, and only when the wait ends before the deadline. A
+  network error is not retried. HTTP errors no longer quote the key if an endpoint echoes it.
 - `terraform plan`, `show`, `validate`, `state show`, `providers` and `graph` are no longer on the
   read-only list, and `terraform init` and `validate` are no longer in the fast lane (rules-v20): they
   start or install provider binaries from `.terraform`, which an agent can write outside the gate.

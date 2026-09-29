@@ -2,6 +2,7 @@
 
 ## Contents
 
+- [Use Jev through OpenRouter, Cloudflare or Vercel](#use-jev-through-openrouter-cloudflare-or-vercel)
 1. [How a command is decided](#how-a-command-is-decided)
    - [Subgoal dedup](#subgoal-dedup)
 2. [Testing](#testing)
@@ -49,6 +50,60 @@ do not count as live activation. `reflex status` separately reports the last rea
 hook event and whether it matches the latest installation and settings. The heartbeat is local
 operational evidence, not proof against an agent that can modify files. Native dialog behavior and
 host trust must also be checked in the agent itself.
+
+## Use Jev through OpenRouter, Cloudflare or Vercel
+
+Jev does not need a TypeSafe account. The same model, the same questions and the same policy run
+through any of five providers, and every provider's answers are read into one typed shape before
+the policy sees them:
+
+| Provider | Key (environment, else macOS Keychain item) | Endpoint | Model sent |
+|---|---|---|---|
+| `typesafe` (default) | `TYPESAFE_API_KEY`, Keychain `typesafe-api-key` (or `REFLEX_KEYCHAIN_SERVICE`) | `https://api.typesafe.ai/v1/systemone` | `jev-1.13.0` |
+| `openrouter` | `OPENROUTER_API_KEY` (an `sk-or-` key), Keychain `openrouter-api-key` | `https://openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` |
+| `cloudflare` | `JEV_CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_API_TOKEN`, Keychain `cloudflare-api-token`, plus `CLOUDFLARE_ACCOUNT_ID` | `https://api.cloudflare.com/client/v4/accounts/<id>/ai/run` | `typesafe/jev` |
+| `vercel` | `AI_GATEWAY_API_KEY`, Keychain `ai-gateway-api-key` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` |
+| `compatible` | `JEV_API_KEY`, Keychain `jev-api-key`, plus `JEV_API_BASE_URL` (the full URL) | your URL | `jev-1.13.0` |
+
+```bash
+reflex setup --provider openrouter                      # Jev OpenRouter: uses OPENROUTER_API_KEY or offers the Keychain
+reflex setup --provider cloudflare --cloudflare-account 0123456789abcdef0123456789abcdef   # Jev Cloudflare Workers AI
+reflex setup --provider vercel                          # Vercel AI Gateway
+reflex setup --provider compatible --provider-url https://jev.example.com/v1/systemone
+reflex doctor                                           # System 1: Jev via openrouter (openrouter.ai) + policy
+```
+
+Which provider is used: `REFLEX_PROVIDER` (or `JEV_PROVIDER`, as in jev-mcp), else `provider` in
+`~/.config/reflex/config.json`, else the first of TypeSafe, OpenRouter, Cloudflare, Vercel and
+compatible whose key is in the environment (jev-mcp's order), else TypeSafe with its Keychain item,
+as before. `reflex setup` without `--provider` looks in the environment and then in the Keychain,
+in the same order, and saves the provider it found only in the Keychain, since the hooks read the
+environment and `config.json` but never search the Keychain. `cloudflare_account_id` and
+`provider_url` can also be saved in `config.json`; neither is a secret.
+
+- **Keys.** Each provider's key goes to that provider's host only: the host its endpoint was
+  configured with, checked on every call. It never goes to another provider's host, never to the
+  Laya server, and never over plain http off this machine. Keys are never written to a file,
+  logged or printed; `reflex doctor` shows the provider and the host, not the key. The MCP tool
+  router strips every provider key from the environment of the servers it starts.
+- **Answers.** Every reply is checked against the questions asked: a probability in [0, 1], a
+  choice among the question's criteria, a score on its scale, a valid confidence. A reply that
+  fails any check, is not JSON, or (Cloudflare) did not complete is treated as Jev unavailable:
+  the policy fallback asks. A malformed answer is never read as a pass.
+- **Time.** One deadline covers the whole call, retries included: the hook's budget
+  (`REFLEX_TIMEOUT_MS`, 3 s by default), not a per-attempt timeout. Only 408, 409, 429 and 5xx
+  are retried, at most three attempts, with jittered exponential backoff, and only when the wait
+  still ends before the deadline. A network error is not retried: without an idempotency key a
+  re-send could be charged twice. The breaker and the fallback are unchanged: an outage asks.
+- **Versions.** TypeSafe and compatible endpoints get the pinned `jev-1.13.0`. OpenRouter pins the
+  minor version (`typesafe/jev-1.13`). Cloudflare and Vercel serve one current alias, so an answer
+  there can change when TypeSafe ships a new Jev; set `REFLEX_MODEL` to pin where a provider
+  supports it.
+- **Latency.** A proxy adds a hop; direct TypeSafe stays the default when several keys are set.
+- **Compare providers** on the live golden sets: `npm run eval-compare -- --engines jev@typesafe,jev@openrouter`.
+
+Every provider is a place your data goes; see [Data handling](#data-handling). The provider layer
+is adapted from [jev-mcp](https://github.com/jkudish/jev-mcp) by Joey Kudish (MIT).
 
 ## How a command is decided
 
@@ -1000,6 +1055,14 @@ configured webhook and reports the HTTP status. Doctor sends nothing without tha
   [Data Processing Agreement](https://typesafe.ai/legal/data-processing), and zero data retention
   is available for enterprise customers ([legal](https://docs.typesafe.ai/legal)). Check this
   against your own data policy before rollout.
+- **Jev provider.** Everything above that goes "to TypeSafe" goes to the provider you picked
+  ([Use Jev through OpenRouter, Cloudflare or Vercel](#use-jev-through-openrouter-cloudflare-or-vercel)):
+  TypeSafe directly (`api.typesafe.ai`), OpenRouter (`openrouter.ai`), Cloudflare Workers AI
+  (`api.cloudflare.com`), the Vercel AI Gateway (`ai-gateway.vercel.sh`) or the compatible
+  endpoint you configured. OpenRouter, Cloudflare and Vercel pass the request on to TypeSafe, so
+  the data reaches both that provider and TypeSafe, under each one's own terms and logs: check
+  OpenRouter's, Cloudflare's and Vercel's data policies as well before rollout. The same redaction
+  applies whichever provider carries the call.
 - **Injection guard** (engine `jev`), per inspected tool result (a web page, an MCP result, network
   command output, or a file read from outside the project; never a credential file): up to 8 chunks of the result
   (3,000 characters each), redacted, the tool name, a redacted origin (URL, path or command, 200

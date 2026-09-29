@@ -254,6 +254,10 @@ runs it the tamper rule asks a human: an agent cannot widen its own allow list. 
   network calls. Uncovered commands ask.
 - `jev`: TypeSafe's Jev model through the System One API answers six typed questions per uncovered
   command (eight with a task envelope); the policy file turns the answers into pass, ask or deny.
+  Jev runs through TypeSafe directly or through a provider you may already pay for: Jev OpenRouter
+  (Decisions API), Jev Cloudflare Workers AI, the Vercel AI Gateway, or any compatible endpoint.
+  `reflex setup --provider openrouter`; each key goes to its own provider only
+  ([GUIDE: use Jev through OpenRouter, Cloudflare or Vercel](docs/GUIDE.md#use-jev-through-openrouter-cloudflare-or-vercel)).
 - `laya` (experimental): the same questions answered by a
   [Laya](https://huggingface.co/convaiinnovations/laya) checkpoint (`typed-decisions` by default)
   served on 127.0.0.1. Nothing leaves the machine. Measured below Jev on every golden set, so
@@ -915,6 +919,22 @@ key is only for the optional Jev engine, Laya runs on 127.0.0.1 with no key, and
 for the optional model routing hook. See
 [docs/SETUP.md: start locally](docs/SETUP.md#1-start-locally-or-enable-hosted-classification).
 
+### Do I need a TypeSafe account?
+
+No. The local engine needs no account at all. For Jev, a TypeSafe key is one option; an OpenRouter
+key, a Cloudflare API token with its account id, a Vercel AI Gateway key or a compatible endpoint
+work too, with the same questions, the same policy and the same fail-closed handling:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...     # or CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, or AI_GATEWAY_API_KEY
+reflex setup --provider openrouter
+reflex doctor                           # System 1: Jev via openrouter (openrouter.ai) + policy
+```
+
+Each key goes only to its own provider's host, and that provider is then a place your data goes
+(it passes the request on to TypeSafe). See
+[GUIDE: use Jev through OpenRouter, Cloudflare or Vercel](docs/GUIDE.md#use-jev-through-openrouter-cloudflare-or-vercel).
+
 ### What is TypeSafe Jev, and how does it compare with Laya?
 
 Jev is TypeSafe's small System One model: it answers typed questions (probabilities, scores,
@@ -933,7 +953,8 @@ fast-lane commands make no API call, and in shadow mode Jev runs in the backgrou
 
 ### Does Reflex send my code anywhere?
 
-Not with the default local engine. With Jev, a command the rules leave open sends TypeSafe the
+Not with the default local engine. With Jev, a command the rules leave open sends TypeSafe (or the
+OpenRouter, Cloudflare, Vercel or compatible provider you chose, which passes it on to TypeSafe) the
 redacted command, the working directory, environment names, the agent's last message and last five
 commands, and the first 16 KB of a local script it runs, never a credentials file. The injection
 guard also sends redacted excerpts of inspected tool results, and optional features such as
