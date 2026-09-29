@@ -816,7 +816,9 @@ export function envContext(cwd) {
   const kube = readText((ENV.KUBECONFIG ?? join(homedir(), ".kube/config")).split(":")[0]);
   const ctx = kube?.match(/^current-context:\s*"?([^"\n]+)"?\s*$/m)?.[1];
   if (ctx) e.kube_context = ctx;
+  // terraform, tofu and terragrunt: .terraform/environment, or TF_WORKSPACE, which all three honour and which wins
   if (cwd && existsSync(join(cwd, ".terraform"))) e.tf_workspace = readText(join(cwd, ".terraform/environment"))?.trim() || "default";
+  if (ENV.TF_WORKSPACE) e.tf_workspace = ENV.TF_WORKSPACE;
   for (let d = cwd; d && d !== dirname(d); d = dirname(d)) {
     const head = readText(join(d, ".git/HEAD"));
     if (head) { e.git_branch = head.match(/^ref: refs\/heads\/(.+)$/m)?.[1] ?? "detached"; break; }
@@ -1789,7 +1791,7 @@ export function infraJudge(command, cwd, env, quick, {noExec = false} = {}) {
     return {...a, destroy: a.destroy === "deny" || b.destroy === "deny" ? "deny" : "ask", require_plan_in_prod: a.require_plan_in_prod || b.require_plan_in_prod}; };
   let g;
   const settings = infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra);
-  try { g = planGate({command, cwd, settings: noExec ? {...settings, terraform_show: false, kubectl_diff: false} : settings, settingsAt, prod, pipelines, shellWords}); }
+  try { g = planGate({command, cwd, settings: noExec ? {...settings, terraform_show: false, kubectl_diff: false, helm_diff: false} : settings, settingsAt, prod, pipelines, shellWords}); }
   catch (e) { g = {outcome: "ask", id: "infra-error", rule: `the plan gate failed (${String(e.message).slice(0, 80)})`}; }   // closed, in shadow too
   if (!g) return {quick, plan: null};
   const plan = g.plan ?? null, version = teamRules(load("rules.json"), cwd).version, withPlan = q => q && plan ? {...q, plan} : q;

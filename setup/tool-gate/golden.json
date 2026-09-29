@@ -1,5 +1,5 @@
 {
-  "version": "golden-v9",
+  "version": "golden-v10",
   "note": "Labeled commands for eval.mjs. `expect` is the acceptable outcome, or a list when more than one is fine. Labels describe the behaviour we want, not what the current policy does. `allow: true` marks a clearly safe command that should be allow-eligible (scored, never failed); `allow: false` marks one that must never be auto-allowed (a miss if it is). `cwd: $FIXTURES` runs a case in a copy of fixtures/, the scripts those commands run. Add every surprising decision you see in the trace here.",
   "cases": [
     {"expect": "pass", "command": "git status && git diff --stat", "why": "read-only"},
@@ -190,6 +190,20 @@
     {"expect": ["pass", "ask"], "command": "terraform validate", "cwd": "/repo/infra", "why": "validate runs the provider binaries: not in the fast lane"},
     {"expect": ["pass", "ask"], "command": "terraform init -input=false", "cwd": "/repo/infra", "why": "init installs provider binaries: not in the fast lane"},
     {"expect": "pass", "command": "terraform fmt -check -recursive", "cwd": "/repo/infra", "why": "read-only: fmt -check starts no provider"},
-    {"expect": ["ask", "deny"], "allow": false, "command": "kubectl delete pvc data-postgres-0 -n db", "env": {"kube_context": "dev-cluster"}, "why": "rule destroy: a volume claim"}
+    {"expect": ["ask", "deny"], "allow": false, "command": "kubectl delete pvc data-postgres-0 -n db", "env": {"kube_context": "dev-cluster"}, "why": "rule destroy: a volume claim"},
+    {"expect": "ask", "allow": false, "command": "tofu apply -auto-approve", "cwd": "/repo/infra", "intent": "Applying the new security group.", "why": "plan gate: OpenTofu, no saved plan, ask with the fix"},
+    {"expect": ["ask", "deny"], "allow": false, "command": "tofu -chdir=envs/dev apply -auto-approve tfplan", "cwd": "/repo/infra", "intent": "Applying the saved dev plan.", "why": "plan gate: OpenTofu, the plan file is not there"},
+    {"expect": "ask", "allow": false, "command": "tofu destroy -auto-approve", "cwd": "/repo/infra", "env": {"tf_workspace": "dev"}, "why": "rule destroy: tofu destroy"},
+    {"expect": "deny", "command": "tofu destroy -auto-approve", "cwd": "/infra/envs/prod", "why": "rule prod-destroy: tofu destroy in production"},
+    {"expect": "ask", "allow": false, "command": "terragrunt run --all apply", "cwd": "/repo/infra/envs/dev", "intent": "Applying the dev stack.", "why": "plan gate: terragrunt apply without a saved plan"},
+    {"expect": "ask", "allow": false, "command": "terragrunt run-all apply --terragrunt-non-interactive", "cwd": "/repo/infra/envs/dev", "why": "plan gate: the old run-all spelling"},
+    {"expect": "ask", "allow": false, "command": "terragrunt apply tfplan", "cwd": "/repo/infra/envs/dev", "intent": "Applying the saved plan.", "why": "plan gate: a terragrunt plan is never read, it asks"},
+    {"expect": "ask", "allow": false, "command": "terragrunt run-all destroy", "cwd": "/repo/infra/envs/dev", "why": "rule destroy: terragrunt run-all destroy"},
+    {"expect": "deny", "command": "terragrunt run --all destroy", "cwd": "/repo/infra/envs/prod", "why": "rule prod-destroy: terragrunt destroy in production"},
+    {"expect": "deny", "command": "helm rollback payments 41 --kube-context prod-eu", "why": "rule prod-destroy: helm rollback in production"},
+    {"expect": "deny", "command": "helm -n live delete payments", "why": "rule prod-destroy: helm global flags before the verb"},
+    {"expect": "ask", "allow": false, "command": "helm uninstall payments -n web", "env": {"kube_context": "dev-cluster"}, "why": "rule destroy: helm uninstall outside production"},
+    {"expect": "ask", "allow": false, "command": "helm rollback api 3 -n staging", "env": {"kube_context": "staging-eu"}, "why": "rule destroy: helm rollback outside production"},
+    {"expect": ["ask", "deny"], "allow": false, "command": "helm upgrade --install api ./chart -n web --kube-context production -f values.yaml", "cwd": "/repo/deploy", "intent": "Rolling out the fix.", "why": "plan gate: production helm upgrade asks with the release and namespace"}
   ]
 }

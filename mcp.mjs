@@ -330,18 +330,24 @@ const main = process.argv[1] && fileURLToPath(import.meta.url) === (() => { try 
 // The selfcheck (npm test): a real server process in a scratch home, over its stdio.
 async function selfcheck() {
   const assert = (await import("node:assert/strict")).default;
-  const {mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, statSync} = await import("node:fs");
+  const {mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, statSync, utimesSync} = await import("node:fs");
   const {tmpdir} = await import("node:os"), {createHash} = await import("node:crypto");
   const scratch = mkdtempSync(join(tmpdir(), "reflex-mcp-")), config = join(scratch, "config/reflex"), data = join(scratch, "state/reflex");
   mkdirSync(config, {recursive: true}); mkdirSync(data, {recursive: true});
   const TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8", PROFILE = "acme-prod-admin-profile", JUDGE_URL = "https://judge.internal.example.test";
   writeFileSync(join(config, "config.json"), JSON.stringify({mode: "shadow", judge: {backend: "openai-compatible", url: JUDGE_URL, model: "m-secret-model", key_env: "MY_JUDGE_KEY"},
     notify: {url: "https://hooks.example.test/T000/B000/secretpath"}, freeze: [{after: "00:00", applies_to: "all", outcome: "ask"}],
-    infra: {terraform_show: true, kubectl_diff: true}}));
+    infra: {terraform_show: true, kubectl_diff: true, helm_diff: true}}));
   // reflex_check runs no program: a fake terraform and kubectl first on PATH log any call, outside the snapshot
   const aux = mkdtempSync(join(tmpdir(), "reflex-mcp-bin-")), calls = join(aux, "calls.log");
   mkdirSync(join(aux, "bin")); mkdirSync(join(aux, "tf")); mkdirSync(join(scratch, ".terraform.d/plugin-cache"), {recursive: true});
-  for (const b of ["terraform", "kubectl"]) writeFileSync(join(aux, "bin", b), `#!/bin/sh\necho "${b} $*" >> "${calls}"\n`, {mode: 0o755});
+  // and an installed helm-diff plugin, older than config.json, so only the MCP server's noExec keeps helm diff from running
+  const plug = join(scratch, process.platform === "darwin" ? "Library/helm/plugins/helm-diff" : ".local/share/helm/plugins/helm-diff");
+  mkdirSync(join(plug, "bin"), {recursive: true});
+  writeFileSync(join(plug, "plugin.yaml"), "name: diff\nplatformCommand:\n  - command: ${HELM_PLUGIN_DIR}/bin/diff\n");
+  writeFileSync(join(plug, "bin/diff"), "#!/bin/sh\n", {mode: 0o755});
+  utimesSync(join(config, "config.json"), Date.now() / 1000 + 3600, Date.now() / 1000 + 3600);
+  for (const b of ["terraform", "tofu", "kubectl", "helm"]) writeFileSync(join(aux, "bin", b), `#!/bin/sh\necho "${b} $*" >> "${calls}"\n`, {mode: 0o755});
   writeFileSync(join(aux, "tf/tfplan"), `PK\x03\x04\n${readFileSync(join(HERE, "setup/tool-gate/plans/clean.json"), "utf8")}`);
   writeFileSync(join(aux, "tf/app.yaml"), "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: x}\n");
   writeFileSync(join(data, "trace.jsonl"), JSON.stringify({ts: new Date().toISOString(), agent: "claude-code", cwd: "/srv/acme", tier: {prod: true, by: "aws_profile", why: `aws_profile=${PROFILE}`},
@@ -384,7 +390,7 @@ async function selfcheck() {
     assert.ok(shadow.decision === "ask" && shadow.rule === "freeze" && shadow.enforced === true, `the freeze asks, in shadow too: ${JSON.stringify(shadow)}`);
     const read = (await call(25, "reflex_check", {command: "git status"})).structuredContent;
     assert.ok(read.source === "read-only" && read.decision === "pass", "a read-only command passes");
-    for (const [id, command] of [[26, "terraform apply tfplan"], [27, "kubectl apply -f app.yaml"]]) {
+    for (const [id, command] of [[26, "terraform apply tfplan"], [27, "kubectl apply -f app.yaml"], [28, "tofu apply tfplan"], [29, "helm upgrade --install api ./chart -n web"]]) {
       const c = (await call(id, "reflex_check", {command, cwd: join(aux, "tf")})).structuredContent;
       assert.ok(c.decision && !existsSync(calls), `reflex_check ${command} runs nothing: ${JSON.stringify(c)} ${existsSync(calls) ? readFileSync(calls, "utf8") : ""}`);
     }
