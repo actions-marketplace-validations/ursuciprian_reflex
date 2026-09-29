@@ -136,6 +136,8 @@ All notable changes to Reflex are documented here. The format follows
   under "Also included", the comparison has a capability table, the FAQ answers "How does Reflex
   handle terraform apply?", and the local terraform apply scenario shows the current rule ask
   (rules-v20).
+- The Claude Code plugin, its marketplace entry and the Codex plugin describe Reflex with the same
+  positioning: prod-safe AI coding agents for infra teams.
 
 ### Fixed
 
@@ -153,6 +155,28 @@ All notable changes to Reflex are documented here. The format follows
   hooks installed before it; re-run `reflex setup` to rewrite them.
 - The opencode and pi adapters treat a gate result that is missing, not JSON, or not a decision as
   ask (shadow and off still pass). A malformed hook input asks instead of passing.
+- `reflex setup --engine jev --cloudflare-account <id>` or `--provider-url <url>` without
+  `--provider` reported the provider it picked but saved neither the provider nor the account id or
+  URL, so the hooks fell back to TypeSafe. Setup now saves those flags whenever they are given, and
+  the provider when the pick used them.
+- `reflex doctor` without `--notify-test` no longer posts its probe decisions (the forced
+  `git push` deny) to the configured decision webhook: the probes run with `REFLEX_NOTIFY=off`, which
+  the gate honours (no webhook for that session).
+- The MCP server's `reflex_check` runs nothing. With `infra.terraform_show` or `infra.kubectl_diff`
+  on it used to run `terraform show` or a `kubectl` server dry run; it now judges without the plan
+  gate's external programs and no longer returns plan counts.
+- A hook that failed with a throw that has no string form (`Object.create(null)`) crashed while
+  reporting it and exited 2, which blocks, even in shadow mode and on post-execution hooks. The
+  error message now falls back to a fixed text.
+- aws global options before the service (`aws --profile prod rds delete-db-instance`,
+  `--region`, `--output`, `--no-cli-pager`, `--endpoint-url`, `--debug` and the rest) hid the command
+  from the destroy and production destroy rules, so it only asked as not covered. The rules now also
+  read it with those options moved behind the operation, and `--profile <name>` counts as the
+  `aws_profile` context for production markers and a team policy when `AWS_PROFILE` is not set.
+- Tests: the doctor webhook test could not fail (a synchronous spawn blocked the in-process
+  server), and two plugin cache asserts matched any reason. They now wait for the detached sender
+  and assert the refusal.
+- docs/GUIDE.md: the plan gate's decision JSON example shows the current rules version (rules-v20).
 
 ## [0.14.0] - 2026-09-28
 
