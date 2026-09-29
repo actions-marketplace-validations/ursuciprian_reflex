@@ -1,5 +1,5 @@
 {
-  "version": "rules-v21",
+  "version": "rules-v22",
   "note": "Deterministic and authoritative: checked before Jev, enforced even in shadow mode. Patterns are case-insensitive and run over the command plus its context (cwd=, aws_profile=, kube_context=, tf_workspace=, git_branch=). A rule fires when every pattern in `all` matches. `pass` patterns apply per segment: a command passes the fast lane when every segment is read-only or matches one. `applies_to` says what a rule reads: the command (the default) and/or the local scripts the command runs. Script rules run line by line, with the script's simple VAR=value assignments expanded and whole-line comments dropped; `whole_script` rules see the whole body. `context: false` rules read the command without the cwd=/profile context. `tainted` rules apply only in a session whose agent read a suspected prompt injection (guard.mjs); like Jev decisions, they are enforced in enforce mode only. `shell` rules read shell commands: they skip a command whose every pipeline only reads (or is mkdir, touch, git add, git commit or reflex check) and writes nothing but notes (.md, .txt, .log, .csv, /dev/null), and the program of a bare `python3 - <<'EOF'` (the whole command) when nothing in it could run, load, write or delete anything. `writes` rules read what the command changes: a pipeline that only reads counts by its redirect targets.",
   "rules": [
     {
@@ -170,10 +170,15 @@
     }
   ],
   "pass": [
-    "^(go\\s+(build|test|vet|fmt)|pytest|uv\\s+run\\s+pytest|python3?\\s+-m\\s+(pytest|py_compile)|cargo\\s+(build|test|check|clippy|fmt)|npm\\s+(test|ci|run\\s+(test|lint|build|smoke))|node\\s+--check(?![^<>`$]*\\s(-r|--require|--import|--loader|--experimental-loader|--env-file[\\w-]*|--experimental-(default-)?config-file|--run|--build-snapshot[\\w-]*|--snapshot-blob)(\\s|=|$))|bash\\s+-n|terraform\\s+fmt)\\b[^<>`$]*$",
+    "^(go\\s+(build|test|vet|fmt)|pytest|uv\\s+run\\s+pytest|python3?\\s+-m\\s+(pytest|py_compile)|cargo\\s+(build|test|check|clippy|fmt)|npm\\s+(test|ci|run\\s+(test|lint|build|smoke))|node\\s+--check(?![^<>`$]*\\s(-r|--require|--import|--loader|--experimental-loader|--env-file[\\w-]*|--experimental-(default-)?config-file|--run|--build-snapshot[\\w-]*|--snapshot-blob)(\\s|=|$))|terraform\\s+fmt)(?=\\s|$)[^<>`$]*$",
+    "^bash\\s+-n(\\s+[\\w./~][\\w./-]*)+$",
     "^(mkdir|touch)\\s[^<>`$]*$",
     "^chmod\\s+[+u]?x\\s[^<>`$]*$",
-    "^git\\s+(add|commit|stash(\\s+push)?|checkout\\s+-b|switch(\\s+-c)?|restore\\s+--staged)\\b[^<>`$]*$",
+    "^git\\s+(add|commit)(?=\\s|$)[^<>`$]*$",
+    "^git\\s+stash(\\s+push)?(\\s+(-u|--include-untracked|-k|--keep-index|-m\\s+(''|[\\w.-]+)|--message=[\\w.-]+))*$",
+    "^git\\s+(checkout\\s+-b|switch\\s+-c)\\s+(?!-)[\\w./-]+(\\s+(?!-)[\\w./-]+)?$",
+    "^git\\s+switch\\s+(?!-)[\\w./-]+$",
+    "^git\\s+restore\\s+--staged(\\s+((?!-)[\\w./-]+|''))+$",
     "^git\\s+push\\s+(-u\\s+|--set-upstream\\s+)?origin\\s+(?!-)(?!(main|master|release|prod)\\b)[\\w./-]+$",
     "^reflex\\s+(status|queue(\\s+(list|show)(\\s+[\\w-]+)?)?|envelope\\s+show|checkpoints(\\s+list)?)(\\s+--(json|cwd\\s+\\S+|session\\s+\\S+))*\\s*$",
     "^reflex\\s+(check\\s+(''|\\\\')+|report(\\s+--(since\\s+\\d+|list\\s+(ask|deny|pass)|calibration))*|replay(\\s+(claude|codex|opencode|pi|omp|all))?(\\s+--since\\s+\\d+[dhw]?)?|suggest(\\s+(claude|codex|opencode|pi|omp|all))?(\\s+--(since\\s+\\d+[dhw]?|min\\s+\\d+))*)(\\s+--json)?\\s*$"

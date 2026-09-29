@@ -659,7 +659,7 @@ async function selfcheck() {
     // #26: a read-only remote command passes on the read-only list without System 2; in a tainted
     // session it is egress like any other; sending local data over ssh is System 2's, never allowed.
     judged = 0;
-    ok((await K("ssh -o BatchMode=yes web-1 'uptime; df -h /'")).effective === "pass" && judged === 0, "keyless: a read-only ssh passes without System 2");
+    ok((await K("ssh -o BatchMode=yes web-1 'df -h /'")).effective === "pass" && judged === 0, "keyless: a read-only ssh passes without System 2");
     ok(/only a human may approve it/.test((await K("ssh -o BatchMode=yes web-1 'uptime'", {session_id: "T"})).reason), "keyless: a read-only ssh in a tainted session needs a human");
     const piped = await K("tar cz src | ssh web-1 'cat > /tmp/src.tgz'");
     ok(piped.effective === "pass" && /network egress/.test(piped.reason) && judged === 2, `keyless: local data over ssh goes to System 2 and is never allowed (${piped.effective})`);

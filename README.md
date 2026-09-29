@@ -434,7 +434,7 @@ file and `infra.terraform_show` on, the plan gate reads it and decides by what i
  "decision": "ask",
  "rule": "terraform apply without a saved plan: run `terraform plan -out=tfplan` and apply the plan file (terraform apply tfplan)",
  "source": "rule",
- "policy": "rules-v21",
+ "policy": "rules-v22",
  "latency_s": 0,
  "answers": {}
 }
@@ -922,8 +922,10 @@ trust or verify a native approval dialog; run a harmless command in a fresh agen
 
 ## Limits
 
-- Rules and the read-only list are pattern matching, not a shell parser. They are designed to fail
-  towards asking, and the self-checks pin known bypasses, but treat them as a strong filter.
+- Rules are pattern matching, not a shell parser, and the read-only list is an allowlist of
+  programs and flags over plain words (one command or a pipeline, no `;`, `&&`, `$` or redirects).
+  They are designed to fail towards asking, and the self-checks pin known bypasses, but treat them
+  as a strong filter.
 - Only shell tools (and subagent spawns) are gated. File edits, MCP calls, omp's `eval` and Hermes'
   `execute_code` are not.
 - The injection guard is a heuristic filter. An injection phrased as ordinary prose passes the local
