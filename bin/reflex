@@ -14,6 +14,7 @@
 //   reflex check "<cmd>" [--cwd dir] [--intent text]   judge one command
 //   reflex scan <file|-> [--rewrite]                  judge text for prompt injection (exit 0 pass, 1 warn, 2 block)
 //   reflex policy [dir] | reflex policy init [dir]     this repo's team policy (.reflex/policy.json) | write a starter
+//   reflex policy init [dir] --pack <name>             write a policy pack instead: aws, eks, terraform, startup-default
 //   reflex trust [dir] | reflex trust --revoke [dir]   let this repo's team fast lane apply (hash-bound, terminal only)
 //   reflex report [...]                                what the gate has been doing
 //   reflex audit [--since 7d] [--format csv|json|jsonl] [--prod-only] [--agent a]

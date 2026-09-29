@@ -670,6 +670,19 @@ stricter, unless each teammate trusts it.
 }
 ```
 
+**Policy packs.** `reflex policy init --pack <name>` writes a ready policy instead of the starter,
+and never overwrites an existing file. The packs are in
+[examples/policies/](../examples/policies/), stricter only, with a `note` on every rule:
+
+| Pack | What it adds |
+|---|---|
+| `aws` | Denies RDS deletes without a final snapshot, `s3 rb --force`, turning off CloudTrail, GuardDuty, Config or Security Hub, and KMS key deletion; asks for any IAM or Organizations command that is not read-only, EC2 terminate, Route 53 and DynamoDB deletes; AWS profiles such as `prod` or `acme-prod` (not `nonprod`) are production. |
+| `eks` | Denies EKS cluster and node group deletes and `kubectl delete --all` / `-A`; asks for namespace, volume, stateful set and CRD deletes, drains, scale to zero, RBAC and `aws-auth` changes, and Helm uninstall or rollback; kube contexts such as `prod-eu` are production. |
+| `terraform` | `infra` with `destroy: deny` and `require_plan_in_prod`; denies `state push`, state changes with `-lock=false` and workspace deletes; asks for state edits, imports, taints, `-target` and Terragrunt `run-all`; workspaces such as `prod` are production. |
+| `startup-default` | Denies `DROP` of a database, schema or table and `gh repo delete`; asks for truncates, migrations, force pushes, package and image publishes, GitHub secret and release changes and hosted app deploys (Vercel and Netlify `--prod`, fly, Heroku); a Friday 16:00 UTC freeze for production. |
+
+Rename the prod markers to your own profiles, contexts and workspaces, then commit the file.
+
 What each part does. All of them apply as soon as the file is in the repository:
 
 | Key | Effect |

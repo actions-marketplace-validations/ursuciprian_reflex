@@ -274,7 +274,8 @@ To work on Reflex itself, clone the repo, run `npm test`, and install that check
 ### Publishing a release (maintainers)
 
 Once: add the `NPM_TOKEN` repository secret (an npm access token with publish rights on the
-`@ursuciprian` scope). Then per release: bump `version` in `package.json`, `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`
+`@ursuciprian` scope). Then per release: bump `version` in `package.json`, `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`,
+and the `@ursuciprian/reflex@<version>` pins in `action.yml`
 (`npm test` fails when they differ; plugin users receive a release only when this version changes) and
 `CHANGELOG.md`, merge,
 and tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. `.github/workflows/publish.yml` checks the tag
@@ -472,6 +473,54 @@ other directories and remote systems are not covered). `--checkpoints off` turns
 
 **Watch it.** `reflex report` shows human interventions per 100 commands, System 2's escalation
 rate, verdicts, tokens and cost, cache hits, queue waits and fast-lane candidates.
+
+## GitHub Action: check the team policy and commands in CI
+
+`action.yml` at the root of this repository is a composite action for teams. It runs the published
+package, pinned to the same version as the action (`npx @ursuciprian/reflex@<version>`), and:
+
+1. validates the repository's `.reflex/policy.json` (`reflex policy --json`) and fails on any error,
+   so a broken team policy does not reach the main branch;
+2. judges each command you list with `reflex check`, keyless (`REFLEX_ENGINE=local`) and with an
+   empty config directory, so on a clean runner the result depends on the rules and the team policy,
+   and fails when one is denied. The commands are
+   data: `reflex check` never runs them. A table of decisions goes to the job summary;
+3. optionally runs the golden set (`reflex eval`), which calls Jev for each case the rules do not
+   settle and so needs a TypeSafe key.
+
+```yaml
+# .github/workflows/reflex.yml
+name: reflex
+on:
+  pull_request:
+    paths: [".reflex/**", "ops/reflex-commands.txt"]
+permissions:
+  contents: read
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ursuciprian/reflex@v0.16.0   # a release tag or a commit SHA
+        with:
+          commands: |
+            make deploy-staging
+            terraform plan -out=tfplan
+          commands-file: ops/reflex-commands.txt   # optional, relative to the workspace, # for comments
+          fail-on: deny                            # or ask: also fail when a command needs a human
+          # golden-eval: "true"
+          # typesafe-api-key: ${{ secrets.TYPESAFE_API_KEY }}
+```
+
+The action is in releases from 0.16.0. Inputs: `directory` (default `.`, a git checkout),
+`require-policy` (default `true`; `false` skips validation when there is no policy file),
+`commands`, `commands-file`, `fail-on` (`deny` or `ask`), `golden-eval`, `golden-file` (a golden
+set for `reflex eval --golden`) and `typesafe-api-key`. Outputs: `denied` and `asked`, the counts.
+List the commands your CI, runbooks or agents are expected to run: a policy change that would deny
+one of them fails the pull request before it reaches a teammate's agent. `reflex check` sees the
+runner's own context (AWS profile, kube context, git branch), so keep production credentials out of
+this job. It needs Node.js 18+ on `PATH`, which GitHub-hosted runners
+have.
 
 ## Configuration
 

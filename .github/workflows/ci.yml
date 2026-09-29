@@ -45,3 +45,45 @@ jobs:
         run: npm test
         env:
           REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
+
+  action:
+    # The composite action (action.yml) end to end, against the published package it pins. On a
+    # release PR that version is not on npm until the tag publishes it, so the job skips then.
+    name: action (uses ./)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Is the pinned version on npm
+        id: published
+        run: |
+          v=$(node -p 'require("./package.json").version')
+          if [ "$(npm view "@ursuciprian/reflex@$v" version 2>/dev/null)" = "$v" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::@ursuciprian/reflex@$v is not on npm yet, skipping the action checks"; fi
+      - name: A policy pack as this checkout's team policy
+        if: steps.published.outputs.ok == 'true'
+        run: mkdir -p .reflex && cp examples/policies/startup-default.json .reflex/policy.json
+      - name: Allowed and asked commands pass with fail-on deny
+        if: steps.published.outputs.ok == 'true'
+        uses: ./
+        with:
+          commands: |
+            # a comment line is skipped
+              # an indented one too
+            git status
+            terraform plan
+      - name: A denied command fails the step
+        if: steps.published.outputs.ok == 'true'
+        id: denied
+        uses: ./
+        continue-on-error: true
+        with:
+          commands: psql -c "drop table users" | tee a<b.txt
+      - name: Check the deny failed it
+        if: steps.published.outputs.ok == 'true'
+        env:
+          OUTCOME: ${{ steps.denied.outcome }}
+          DENIED: ${{ steps.denied.outputs.denied }}
+        run: test "$OUTCOME" = failure && test "$DENIED" = 1

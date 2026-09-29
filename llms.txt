@@ -4,7 +4,7 @@
 
 In Claude Code install it as a plugin: `/plugin marketplace add ursuciprian/reflex`, then `/plugin install reflex@reflex`. Codex CLI: `codex plugin marketplace add ursuciprian/reflex`, then `codex plugin add reflex@reflex`. opencode: `{"plugin": ["@ursuciprian/reflex"]}` in `opencode.json`. Every agent: `npx @ursuciprian/reflex setup` or `curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash`. Requires Node.js 18+ on macOS or Linux, including WSL. New installs use the local engine in shadow mode: deterministic rules block, everything else is logged. Reflex gates shell commands and subagent spawns only; file edits and MCP tool calls go through each agent's own permissions. It supplements a sandbox and least-privilege credentials. Claude Desktop, Cursor, Cowork and other MCP hosts can run `reflex mcp`, an MCP server for AI agent safety with read-only, advisory tools (`reflex_check`, `reflex_scan`, `reflex_status`, `reflex_audit`, `reflex_explain`); hooks enforce, the MCP server only advises.
 
-npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/reflex
+npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/reflex. Documentation website: https://ursuciprian.github.io/reflex/
 
 ## Docs
 
