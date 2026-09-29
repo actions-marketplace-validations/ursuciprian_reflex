@@ -931,6 +931,9 @@ try {
     const pkg = read(join(root, "package.json")), action = readFileSync(join(root, "action.yml"), "utf8");
     const pins = [...action.matchAll(/@ursuciprian\/reflex@([^\s"']+)/g)].map(m => m[1]);
     assert.ok(pins.length >= 3 && pins.every(v => v === pkg.version), `action.yml pins @ursuciprian/reflex@${pkg.version}, found ${pins}`);
+    // GitHub Marketplace rejects a description of 125 characters or more
+    const desc = action.match(/^description: "?(.*?)"?$/m)?.[1] ?? "";
+    assert.ok(desc.length > 0 && desc.length < 125, `action.yml description is under 125 characters (${desc.length})`);
     for (const step of action.split(/\n {4}- name: /).slice(1))
       assert.ok(!/\$\{\{/.test(step.split(/\n {6}run: \|/)[1] ?? ""), `action.yml: no expression in the script of step "${step.split("\n")[0]}"`);
     // The docs site (site/build.mjs): one page per intent with its own title, description, canonical
