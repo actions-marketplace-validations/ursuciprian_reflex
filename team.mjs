@@ -287,8 +287,9 @@ function confirm(question) {
 export const PACKS = join(dirname(fileURLToPath(import.meta.url)), "examples/policies");
 function main(argv) {
   const [cmd, ...args] = argv, init = cmd === "policy" && args[0] === "init";
-  const p = args.indexOf("--pack"), pack = init && p > -1 ? args[p + 1] ?? "" : null;
-  const rest = p > -1 ? args.filter((_, i) => i !== p && i !== p + 1) : args;
+  const eq = args.find(a => a.startsWith("--pack="));
+  const p = args.indexOf("--pack"), pack = !init ? null : eq ? eq.slice(7) : p > -1 ? args[p + 1] ?? "" : null;
+  const rest = args.filter((a, i) => a !== eq && (p < 0 || (i !== p && i !== p + 1)));
   const target = resolve((init ? rest.slice(1) : rest).find(a => !a.startsWith("--")) ?? ".");
   const root = repoRoot(target);
   if (!root) die(`${target} is not inside a git repository; a team policy lives at the repository root`);

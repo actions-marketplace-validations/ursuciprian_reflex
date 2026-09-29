@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Reflex policy pack: aws. Copy it with `reflex policy init --pack aws`, then commit .reflex/policy.json. It only adds checks. deny rules block in every mode; ask rules go to a human, and in the autonomous profile never to System 2. Patterns are case-insensitive and read the command plus its context (aws_profile=, kube_context=, tf_workspace=, git_branch=, cwd=). The prod markers treat an AWS profile whose name contains prod or production as production, so a command there that is not read-only asks. Rename them to match your profiles.",
+  "note": "Reflex policy pack: aws. Copy it with `reflex policy init --pack aws`, then commit .reflex/policy.json. It only adds checks. deny rules block in every mode; ask rules go to a human, and in the autonomous profile never to System 2. Patterns are case-insensitive and read the command plus its context (aws_profile=, kube_context=, tf_workspace=, git_branch=, cwd=). The prod markers treat AWS profiles with names that contain prod as a separate part (prod, prod-eu, acme-prod, production, prod01, cluster/prod-eu; not nonprod) as production, so a command there that is not read-only asks. Rename them to match your profiles.",
   "rules": [
     {"id": "aws-rds-no-final-snapshot", "outcome": "deny", "shell": true,
      "rule": "deletes an RDS database without a final snapshot",
@@ -23,13 +23,13 @@
      "all": ["\\baws\\s+kms\\s+(schedule-key-deletion|disable-key)\\b"],
      "note": "deny: data encrypted with the key becomes unreadable."},
     {"id": "aws-iam-change", "outcome": "ask", "shell": true,
-     "rule": "changes IAM users, roles, policies or access keys",
-     "all": ["\\baws\\s+iam\\s+(create|delete|attach|detach|put|update|add|remove|upload)-"],
-     "note": "ask: IAM changes decide what every other credential can do."},
+     "rule": "changes IAM (an aws iam command that is not read-only)",
+     "all": ["\\baws\\s+iam\\s+[a-z]"],
+     "note": "ask: any aws iam command that is not read-only (get-, list- pass before the rules). IAM changes decide what every other credential can do."},
     {"id": "aws-organizations", "outcome": "ask", "shell": true,
-     "rule": "changes AWS Organizations accounts or policies",
-     "all": ["\\baws\\s+organizations\\s+(create|delete|attach|detach|update|move|remove|leave|enable|disable)-"],
-     "note": "ask: SCPs and account moves apply to the whole organization."},
+     "rule": "changes AWS Organizations (a command that is not read-only)",
+     "all": ["\\baws\\s+organizations\\s+[a-z]"],
+     "note": "ask: any aws organizations command that is not read-only. SCPs and account moves apply to the whole organization."},
     {"id": "aws-ec2-terminate", "outcome": "ask", "shell": true,
      "rule": "terminates EC2 instances or deletes volumes or snapshots",
      "all": ["\\baws\\s+ec2\\s+(terminate-instances|delete-volume|delete-snapshot)\\b"],
@@ -48,5 +48,5 @@
      "all": ["\\baws\\s+(iam|organizations)\\s"],
      "note": "never approved by System 2 in the autonomous profile, always a human"}
   ],
-  "prod": ["aws_profile=\\S*prod"]
+  "prod": ["aws_profile=(\\S*[-_./:])?prod"]
 }

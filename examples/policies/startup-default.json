@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "note": "Reflex policy pack: startup-default, a general starting point for a small team. Copy it with `reflex policy init --pack startup-default`, then commit .reflex/policy.json. It only adds checks. deny rules block in every mode; ask rules go to a human, and in the autonomous profile never to System 2. Patterns are case-insensitive and read the command plus its context (aws_profile=, kube_context=, tf_workspace=, git_branch=, cwd=). The prod markers treat an AWS profile, kube context or Terraform workspace whose name contains prod as production. The freeze asks before production changes on Friday after 16:00 UTC; change the time zone to yours. After a shadow period, add \"mode\": \"enforce\" to make enforce the floor for everyone in this repository.",
+  "note": "Reflex policy pack: startup-default, a general starting point for a small team. Copy it with `reflex policy init --pack startup-default`, then commit .reflex/policy.json. It only adds checks. deny rules block in every mode; ask rules go to a human, and in the autonomous profile never to System 2. Patterns are case-insensitive and read the command plus its context (aws_profile=, kube_context=, tf_workspace=, git_branch=, cwd=). The prod markers treat AWS profiles, kube contexts and Terraform workspaces with names that contain prod as a separate part (prod, prod-eu, acme-prod, production, prod01, cluster/prod-eu; not nonprod) as production. The freeze asks before production changes on Friday after 16:00 UTC; change the time zone to yours. After a shadow period, add \"mode\": \"enforce\" to make enforce the floor for everyone in this repository.",
   "rules": [
     {"id": "drop-table", "outcome": "deny", "shell": true,
      "rule": "drops a database, schema or table",
      "all": ["\\bdrop\\s+(database|schema|table)\\b"],
-     "note": "deny: blocked in every mode, whatever the agent says."},
+     "note": "deny: blocked in every mode, whatever the agent says. It reads the whole command, so the phrase in any argument (an echo, a file name) matches too."},
     {"id": "truncate-table", "outcome": "ask", "shell": true,
      "rule": "truncates a table",
      "all": ["\\btruncate\\s+(table\\s+)?\\w"],
      "note": "ask: the rows are gone, the table stays."},
     {"id": "migrations", "outcome": "ask", "shell": true,
      "rule": "runs database migrations",
-     "all": ["\\b(db:migrate|alembic\\s+upgrade|prisma\\s+migrate\\s+deploy|manage\\.py\\s+migrate|knex\\s+migrate:latest|flyway\\s+migrate)\\b"],
+     "all": ["\\bdb:migrate(\\s|$)|\\b(alembic\\s+upgrade|prisma\\s+migrate\\s+deploy|manage\\.py\\s+migrate|knex\\s+migrate:latest|flyway\\s+migrate)\\b"],
      "note": "ask: a human confirms, and in the autonomous profile it never goes to System 2."},
     {"id": "gh-repo-delete", "outcome": "deny", "shell": true,
      "rule": "deletes a GitHub repository",
@@ -31,16 +31,16 @@
      "all": ["\\bgh\\s+(secret\\s+(set|delete|remove)|variable\\s+(set|delete)|release\\s+(create|delete|edit)|repo\\s+(edit|rename|archive))\\b"],
      "note": "ask: these reach CI and every user of the repository."},
     {"id": "prod-deploy", "outcome": "ask", "shell": true,
-     "rule": "deploys to a hosted production environment",
+     "rule": "deploys or changes a hosted app",
      "all": ["\\b(vercel\\b.*--prod\\b|netlify\\s+deploy\\b.*--prod\\b|fly\\s+deploy\\b|heroku\\s+\\S*(releases:rollback|ps:scale|pg:reset|apps:destroy)\\b)"],
-     "note": "ask: a human confirms a production deploy."}
+     "note": "ask: vercel and netlify deploys with --prod, every fly deploy (fly has no production flag), and heroku rollback, scale, database reset and app destroy."}
   ],
   "always_human": [
     {"id": "billing", "rule": "calls a billing or payments CLI",
      "all": ["\\bstripe\\s+(charges|refunds|payouts|subscriptions|customers)\\s+(create|update|delete|cancel)\\b"],
      "note": "never approved by System 2 in the autonomous profile, always a human"}
   ],
-  "prod": ["aws_profile=\\S*prod", "kube_context=\\S*prod", "tf_workspace=\\S*prod"],
+  "prod": ["aws_profile=(\\S*[-_./:])?prod", "kube_context=(\\S*[-_./:])?prod", "tf_workspace=(\\S*[-_./:])?prod"],
   "freeze": [
     {"days": ["fri"], "after": "16:00", "tz": "UTC", "applies_to": "prod", "outcome": "ask",
      "note": "no production changes late on Friday without a human"}

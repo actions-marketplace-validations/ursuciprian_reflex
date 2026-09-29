@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Reflex policy pack: eks (Kubernetes on EKS). Copy it with `reflex policy init --pack eks`, then commit .reflex/policy.json. It only adds checks. deny rules block in every mode; ask rules go to a human, and in the autonomous profile never to System 2. Patterns are case-insensitive and read the command plus its context (kube_context=, aws_profile=, cwd=). The prod markers treat a kube context or AWS profile whose name contains prod as production, so a command there that is not read-only asks; EKS contexts are often ARNs such as arn:aws:eks:eu-west-1:123456789012:cluster/prod-eu, which match too. Rename them to match your clusters. For a server-side dry run before deletes, also set \"infra\": {\"kubectl_diff\": true} in your own config.json.",
+  "note": "Reflex policy pack: eks (Kubernetes on EKS). Copy it with `reflex policy init --pack eks`, then commit .reflex/policy.json. It only adds checks. deny rules block in every mode; ask rules go to a human, and in the autonomous profile never to System 2. Patterns are case-insensitive and read the command plus its context (kube_context=, aws_profile=, cwd=). The prod markers treat kube contexts and AWS profiles with names that contain prod as a separate part (prod, prod-eu, acme-prod, production, prod01, cluster/prod-eu; not nonprod) as production, so a command there that is not read-only asks; EKS contexts are often ARNs such as arn:aws:eks:eu-west-1:123456789012:cluster/prod-eu, which match too. Rename them to match your clusters. For a server-side dry run before deletes, also set \"infra\": {\"kubectl_diff\": true} in your own config.json.",
   "rules": [
     {"id": "eks-cluster-delete", "outcome": "deny", "shell": true,
      "rule": "deletes an EKS cluster or node group",
@@ -12,7 +12,7 @@
      "note": "deny: kubectl delete --all or -A removes more than anyone reviews. Name the resources."},
     {"id": "k8s-stateful-delete", "outcome": "ask", "shell": true,
      "rule": "deletes a namespace, volume, stateful set or CRD",
-     "all": ["\\bkubectl\\b.*\\bdelete\\s+(ns|namespaces?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|sts|statefulsets?|crds?|customresourcedefinitions?)\\b"],
+     "all": ["\\bkubectl\\b.*\\bdelete\\b.*[\\s,](ns|namespaces?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|sts|statefulsets?|crds?|customresourcedefinitions?)([\\s,/]|$)"],
      "note": "ask: these hold data, and a CRD delete removes every custom resource of that type."},
     {"id": "k8s-node-drain", "outcome": "ask", "shell": true,
      "rule": "drains or cordons a node",
@@ -36,5 +36,5 @@
      "all": ["\\b(clusterroles?|clusterrolebindings?|aws-auth)\\b"],
      "note": "never approved by System 2 in the autonomous profile, always a human"}
   ],
-  "prod": ["kube_context=\\S*prod", "aws_profile=\\S*prod"]
+  "prod": ["kube_context=(\\S*[-_./:])?prod", "aws_profile=(\\S*[-_./:])?prod"]
 }

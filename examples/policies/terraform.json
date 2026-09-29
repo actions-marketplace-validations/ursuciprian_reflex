@@ -1,27 +1,27 @@
 {
   "version": 1,
-  "note": "Reflex policy pack: terraform. Copy it with `reflex policy init --pack terraform`, then commit .reflex/policy.json. It only adds checks. deny rules block in every mode; ask rules go to a human, and in the autonomous profile never to System 2. Patterns are case-insensitive and read the command plus its context (tf_workspace=, aws_profile=, cwd=). infra: a saved plan that deletes or replaces anything is denied (this is also the default; the pack keeps a user's config from softening it to ask in this repository), and in production an apply without a saved plan is denied instead of asked. The deny needs infra.terraform_show and a provider plugin cache in each teammate's config.json; see the plan-aware terraform gate in docs/GUIDE.md. The prod markers treat a Terraform workspace whose name contains prod as production. Rename them to match your workspaces.",
+  "note": "Reflex policy pack: terraform. Copy it with `reflex policy init --pack terraform`, then commit .reflex/policy.json. It only adds checks. deny rules block in every mode; ask rules go to a human, and in the autonomous profile never to System 2. Patterns are case-insensitive and read the command plus its context (tf_workspace=, aws_profile=, cwd=). infra: a saved plan that deletes or replaces anything is denied (this is also the default; the pack keeps a user's config from softening it to ask in this repository), and in production an apply without a saved plan is denied instead of asked. The deny needs infra.terraform_show and a provider plugin cache in each teammate's config.json; see the plan-aware terraform gate in docs/GUIDE.md. The prod markers treat Terraform workspaces with names that contain prod as a separate part (prod, prod-eu, acme-prod, production, prod01, cluster/prod-eu; not nonprod) as production. Rename them to match your workspaces.",
   "infra": {"destroy": "deny", "require_plan_in_prod": true},
   "rules": [
     {"id": "tf-state-push", "outcome": "deny", "shell": true,
      "rule": "overwrites remote Terraform state",
-     "all": ["\\b(terraform|tofu)\\b.*\\bstate\\s+push\\b"],
+     "all": ["\\b(terraform|tofu)(\\s+-\\S+)*\\s+state\\s+push\\b"],
      "note": "deny: state push replaces the shared state file. Recover state by hand, with a backup."},
     {"id": "tf-no-lock", "outcome": "deny", "shell": true,
-     "rule": "runs Terraform with state locking turned off",
-     "all": ["\\b(terraform|tofu)\\b", "-lock=false\\b"],
-     "note": "deny: two runs without a lock can corrupt the state."},
+     "rule": "changes Terraform state with locking turned off",
+     "all": ["\\b(terraform|tofu)(\\s+-\\S+)*\\s+(apply|destroy|import|refresh|taint|untaint|state)\\b", "-lock=false\\b"],
+     "note": "deny: two runs without a lock can corrupt the state. plan and init with -lock=false are not matched."},
     {"id": "tf-workspace-delete", "outcome": "deny", "shell": true,
      "rule": "deletes a Terraform workspace",
-     "all": ["\\b(terraform|tofu)\\b.*\\bworkspace\\s+delete\\b"],
+     "all": ["\\b(terraform|tofu)(\\s+-\\S+)*\\s+workspace\\s+delete\\b"],
      "note": "deny: the workspace's state goes with it."},
     {"id": "tf-state-edit", "outcome": "ask", "shell": true,
      "rule": "edits Terraform state directly",
-     "all": ["\\b(terraform|tofu)\\b.*\\b(state\\s+(rm|mv|replace-provider)|import|taint|untaint|force-unlock)\\b"],
+     "all": ["\\b(terraform|tofu)(\\s+-\\S+)*\\s+(state\\s+(rm|mv|replace-provider)|import|taint|untaint|force-unlock)\\b"],
      "note": "ask: these change what Terraform manages without a plan to review."},
     {"id": "tf-target", "outcome": "ask", "shell": true,
      "rule": "applies or destroys part of the configuration with -target",
-     "all": ["\\b(terraform|tofu)\\b.*\\b(apply|destroy)\\b", "-target[=\\s]"],
+     "all": ["\\b(terraform|tofu)(\\s+-\\S+)*\\s+(apply|destroy)\\b", "-target[=\\s]"],
      "note": "ask: a targeted run skips dependencies and leaves the rest of the plan unreviewed."},
     {"id": "terragrunt-all", "outcome": "ask", "shell": true,
      "rule": "applies or destroys many Terragrunt modules at once",
@@ -30,8 +30,8 @@
   ],
   "always_human": [
     {"id": "tf-state", "rule": "a direct Terraform state change",
-     "all": ["\\b(terraform|tofu)\\b.*\\bstate\\s+(rm|mv|push|replace-provider)\\b"],
+     "all": ["\\b(terraform|tofu)(\\s+-\\S+)*\\s+state\\s+(rm|mv|push|replace-provider)\\b"],
      "note": "never approved by System 2 in the autonomous profile, always a human"}
   ],
-  "prod": ["tf_workspace=\\S*prod"]
+  "prod": ["tf_workspace=(\\S*[-_./:])?prod"]
 }
