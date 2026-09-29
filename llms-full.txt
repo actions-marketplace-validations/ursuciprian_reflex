@@ -40,7 +40,7 @@ yarn dlx @ursuciprian/reflex setup    # yarn 2+
 - Requirements: Node.js 18+ on macOS or Linux (including WSL). Native Windows is not supported yet. No runtime dependencies. The optional LiteLLM routing hook needs Python 3.9+, the optional Laya engine Python 3.10+.
 - The installer copies the package to `~/.local/share/reflex`, links `reflex` into `~/.local/bin`, and adds hooks to every supported agent it finds, in shadow mode, with the local engine.
 - Options: `--agents claude,codex`, `--mode shadow|enforce|off`, `--engine local|jev|laya`, `--allow off|shadow|on`, `--dry-run`, `--profile supervised|autonomous`.
-- Jev needs a TypeSafe API key from https://console.typesafe.ai/keys, in `TYPESAFE_API_KEY` or the macOS Keychain item `typesafe-api-key`.
+- Jev needs a key for one provider: TypeSafe (https://console.typesafe.ai/keys, `TYPESAFE_API_KEY` or the macOS Keychain item `typesafe-api-key`), OpenRouter (`OPENROUTER_API_KEY`), Cloudflare Workers AI (`CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID`), the Vercel AI Gateway (`AI_GATEWAY_API_KEY`) or a compatible endpoint (`JEV_API_KEY` plus `JEV_API_BASE_URL`). `reflex setup --provider typesafe|openrouter|cloudflare|vercel|compatible` picks one. Unnamed, TypeSafe wins when its key or Keychain item is configured; otherwise only the opt-in variables `JEV_OPENROUTER_API_KEY`, `JEV_CLOUDFLARE_API_TOKEN`, `JEV_AI_GATEWAY_API_KEY` and `JEV_API_KEY` choose a provider, in that order. The OpenRouter, Cloudflare and Vercel keys go only to their own host over https.
 - Settings live in `~/.config/reflex/config.json`, the editable policy in `~/.config/reflex/tool-gate/policy.json`, logs in `~/.local/state/reflex/`.
 
 ## What it does
@@ -93,6 +93,7 @@ Every decision is logged with the policy and rule versions to `~/.local/state/re
 
 - `local` (default for new installs): rules, the read-only list and the fast lane. No key, no network calls. Uncovered commands ask.
 - `jev`: TypeSafe's Jev model through the System One API answers the typed questions; the policy file decides. Pinned model `jev-1.13.0`.
+- Jev providers: TypeSafe direct (default), Jev OpenRouter (Decisions API, `typesafe/jev-1.13`), Jev Cloudflare Workers AI (`typesafe/jev`), the Vercel AI Gateway (`typesafe-ai/jev`) or a compatible System One endpoint. Every provider's answers are checked and read into one typed shape; a malformed answer counts as Jev unavailable, so the policy fallback asks. One deadline (`REFLEX_TIMEOUT_MS`) covers the whole call; only 408, 409, 429 and 5xx are retried, with jittered backoff inside it. Each key goes only to its own provider's host. The provider layer is adapted from jev-mcp by Joey Kudish (MIT). `reflex doctor` shows the provider and host.
 - `laya` (experimental): the same questions answered by a Laya checkpoint (`typed-decisions` by default, from https://huggingface.co/convaiinnovations/laya) served on 127.0.0.1. Nothing leaves the machine. Measured below Jev on every golden set, so not recommended for enforcement.
 
 ## Supported agents
@@ -167,6 +168,7 @@ Replay of one DevOps and GenAI engineer's last 7 days, local engine, v0.9.0: Cla
 - Laya engine: everything goes to the Laya server on 127.0.0.1 instead.
 - System 2: a redacted case of at most 1,500 tokens to the backend you chose.
 - TypeSafe states it does not train on customer data; see https://docs.typesafe.ai/legal.
+- Jev provider: what goes to Jev goes to the provider you chose: TypeSafe (api.typesafe.ai), OpenRouter (openrouter.ai), Cloudflare (api.cloudflare.com), Vercel (ai-gateway.vercel.sh) or your compatible endpoint. OpenRouter, Cloudflare and Vercel pass it on to TypeSafe, so it reaches both, under each one's terms. The same redaction applies.
 
 ## Limits
 
@@ -307,6 +309,13 @@ account, no key and no network calls. A TypeSafe API key is needed only for `--e
 experimental Laya engine runs on 127.0.0.1 with no key (it needs Python 3.10+). LiteLLM is needed
 only for the optional model routing hook, and the gate never uses it. Some optional features need
 Jev: subgoal dedup, semantic instruction selection, model routing and the context layer.
+
+### Do I need a TypeSafe account?
+
+No. The local engine needs no account. For Jev, an OpenRouter key, a Cloudflare API token with its
+account id, a Vercel AI Gateway key or a compatible endpoint work as well as a TypeSafe key:
+`reflex setup --provider openrouter` (or cloudflare, vercel, compatible). Each key goes only to its
+own provider's host, and that provider becomes a place your data goes.
 
 ### What is TypeSafe Jev (System One)?
 

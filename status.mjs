@@ -6,6 +6,7 @@ import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
 import {CLAUDE_SETTINGS, CODEX_HOOKS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooks, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
+import {PROVIDERS, keyRouteError} from "./providers.mjs";
 import {detectors, guardMode, sourceKind} from "./guard.mjs";
 import {judgeKey, probe, budgetState} from "./judge2.mjs";
 import {breaker, listItems, runawayTrips} from "./autonomy.mjs";
@@ -68,10 +69,15 @@ try { detectors(); sourceKind({tool: "WebFetch"}); }
 catch (e) { errors.push(`Cannot load the injection guard setup: ${e.message}`); }
 if (guardMode() !== CONFIG.mode) warnings.push(`Injection guard mode is ${guardMode()} (REFLEX_GUARD or "guard" in config.json).`);
 let key = "not required";
+// The Jev provider and the host its key goes to; never the key itself.
+const provider = CONFIG.engine === "jev" ? {name: CONFIG.provider, host: PROVIDERS[CONFIG.provider]?.pinned ?? CONFIG.keyHost} : null;
+const route = provider && PROVIDERS[CONFIG.provider] && keyRouteError(CONFIG.provider, CONFIG.api, CONFIG.keyHost, USER_CONFIG.laya?.port ?? 8421);
+if (route) errors.push(`Jev: ${route}, so every Jev call is refused (check REFLEX_API_URL).`);
 if (CONFIG.engine === "jev") {
-  key = process.env.TYPESAFE_API_KEY?.trim() ? "environment" : platform() === "darwin" &&
-    spawnSync("security", ["find-generic-password", "-s", CONFIG.keychain], {stdio: "ignore", timeout: 2000}).status === 0 ? "keychain" : "missing";
-  if (key === "missing") errors.push("Jev needs TYPESAFE_API_KEY or a Keychain item. Use reflex setup --engine local for offline operation.");
+  const p = PROVIDERS[CONFIG.provider], item = CONFIG.provider === "typesafe" ? CONFIG.keychain : p.keychain;
+  key = p.env.some(n => process.env[n]?.trim()) ? "environment" : platform() === "darwin" &&
+    spawnSync("security", ["find-generic-password", "-s", item], {stdio: "ignore", timeout: 2000}).status === 0 ? "keychain" : "missing";
+  if (key === "missing") errors.push(`Jev through ${CONFIG.provider} needs ${p.env.join(" or ")} or the Keychain item ${item}. Use reflex setup --engine local for offline operation.`);
 }
 // engine laya: the local server must answer, or System 1 falls back to the policy exactly as in a Jev outage.
 const laya = CONFIG.engine === "laya" ? await layaHealth() : null;
@@ -296,8 +302,8 @@ if (hook_errors.last) {
   (hook_errors.gate ? errors : warnings).push(`${hookErrors.length} Reflex hook error${hookErrors.length === 1 ? "" : "s"} in the last 24 h, ${hook_errors.gate} in the pre-execution gate; last ${ago} min ago: ${l.script} ${l.flag} (${l.mode} mode) answered ${l.outcome}: ${l.error}.` +
     `${hookErrors.some(e => e.outcome === "pass" && e.mode === "shadow") ? " In shadow mode a broken gate checks nothing, deterministic rules included." : ""} Log: ${errorsFile}.`);
 }
-const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, hook_errors, team_policy, freeze, notify, infra, agents, errors, warnings};
+const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? `Jev via ${provider.name} (${provider.host}) + policy` : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
+  policy, provider, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, hook_errors, team_policy, freeze, notify, infra, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);

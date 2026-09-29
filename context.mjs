@@ -28,6 +28,7 @@ import {tmpdir} from "node:os";
 import {basename, dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {ask as jevAsk, redact, CONFIG} from "./gate.mjs";
+import {hostOf} from "./providers.mjs";
 
 const ENV = process.env;
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -522,6 +523,7 @@ async function selfcheck() {
   });
   await new Promise(r => server.listen(0, "127.0.0.1", r));
   CONFIG.api = `http://127.0.0.1:${server.address().port}/v1/systemone`;
+  CONFIG.keyHost = hostOf(CONFIG.api);   // the key goes only to the host it was configured for
   try {
     // chunking and rendering
     const grep = [];
