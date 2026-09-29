@@ -1,7 +1,7 @@
 {
   "name": "@ursuciprian/reflex",
   "version": "0.14.0",
-  "description": "Open-source pre-execution risk gate and prompt injection guard for AI coding agents (Claude Code, Codex CLI, opencode, pi, oh-my-pi, Hermes): local rules, optional TypeSafe Jev (System One) or local Laya judgments, an editable policy, System 2 escalation and a human approval queue",
+  "description": "Prod-safe AI coding agents for infra teams: terraform AI agent guardrails (plan-aware apply gate), AWS, kubectl and Terraform workspace context, change freezes, a team policy and a SOC 2 / ISO 27001 audit export for Claude Code, Codex CLI, opencode and pi. Pre-execution risk gate and prompt injection guard with local rules and optional TypeSafe Jev",
   "keywords": [
     "ai-coding-agents",
     "coding-agents",
@@ -51,7 +51,19 @@
     "mcp-server",
     "model-context-protocol",
     "claude-desktop",
-    "cursor"
+    "cursor",
+    "terraform-guardrails",
+    "terraform-plan",
+    "kubernetes",
+    "aws",
+    "production-safety",
+    "platform-engineering",
+    "infra-teams",
+    "change-freeze",
+    "soc2",
+    "iso27001",
+    "compliance",
+    "fail-closed"
   ],
   "license": "MIT",
   "author": "Ciprian Ursu",
