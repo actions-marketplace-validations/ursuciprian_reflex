@@ -134,7 +134,9 @@ function pickProvider(keychain) {
   const name = String(named || fromEnv || fromKeychain || "typesafe").toLowerCase();
   if (!PROVIDERS[name]) die(providerError(name, settings));
   const key = envKey(ENV, name) ? "environment" : inKeychain(keychainItem(name, keychain)) ? "keychain" : null;
-  return {name, settings, key, error: providerError(name, settings), save: !!opt(args, "--provider") || (!!fromKeychain && fromKeychain !== "typesafe")};
+  // A pick that used --cloudflare-account or --provider-url is saved too: the gate would not see those flags.
+  const flagged = !named && name !== "typesafe" && !!(opt(args, "--cloudflare-account") || opt(args, "--provider-url"));
+  return {name, settings, key, error: providerError(name, settings), save: !!opt(args, "--provider") || flagged || (!!fromKeychain && fromKeychain !== "typesafe")};
 }
 const hasKey = keychain => !!pickProvider(keychain).key;
 const SETUP_OPTIONS = ["--mode", "--allow", "--agents", "--keychain", "--provider", "--provider-url", "--cloudflare-account", "--node", "--engine", "--profile", "--judge", "--judge-cli", "--judge-url",
@@ -313,9 +315,10 @@ function setup() {
   let written = {};
   try { written = JSON.parse(readFileSync(USER_CONFIG_FILE, "utf8")); } catch { /* first setup */ }
   mkdirSync(dirname(USER_CONFIG_FILE), {recursive: true});
-  // The provider only when it was named or found in the Keychain: one found in the environment is
-  // found there again by every hook. Its account id and URL are not secrets; its key never lands here.
-  const saved = !provider?.save ? {} : {provider: provider.name,
+  // The provider when it was named, found in the Keychain or picked with a flag's help: one found in the
+  // environment alone is found there again by every hook. --cloudflare-account and --provider-url are
+  // saved whenever given. Neither is a secret; the key never lands here.
+  const saved = !provider ? {} : {...(provider.save && {provider: provider.name}),
     ...(opt(args, "--cloudflare-account") && {cloudflare_account_id: opt(args, "--cloudflare-account")}),
     ...(opt(args, "--provider-url") && {provider_url: opt(args, "--provider-url")})};
   writeFileSync(USER_CONFIG_FILE, JSON.stringify({...written, profile: settings.profile, judge: settings.judge, queue: settings.queue,

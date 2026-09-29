@@ -88,8 +88,10 @@ let wrote = false, failing = false;
 export function hookFailure(e, {simulated = false} = {}) {
   if (failing) return;
   failing = true;
-  const hook = hookOf(process.argv), msg = shortMessage(e);
+  const hook = hookOf(process.argv);
+  let msg = "an error that cannot be printed";
   try {
+    try { msg = shortMessage(e); } catch { /* e has no string form (Object.create(null)): the fallback stands */ }
     if (!hook) { err(`reflex: ${msg}\n`); process.exit(1); }
     const mode = hookMode();
     // A simulated crash (REFLEX_TEST_CRASH) is always treated as enforce: it can only ever make a hook stricter.
@@ -189,6 +191,7 @@ export async function run() {
     if (crash === "reject") Promise.reject(Object.assign(new Error("simulated unhandled rejection (REFLEX_TEST_CRASH)"), {simulated: true}));
     if (crash === "reject") await new Promise(r => setImmediate(r));   // handled before the gate loads
     if (crash === "load") throw Object.assign(new Error("simulated load crash (REFLEX_TEST_CRASH)"), {simulated: true});
+    if (crash === "unprintable") throw Object.create(null);   // no string form, and not simulated: the mode decides
     await import(pathToFileURL(target).href);
   } catch (e) { hookFailure(e, {simulated: e?.simulated === true}); }
 }

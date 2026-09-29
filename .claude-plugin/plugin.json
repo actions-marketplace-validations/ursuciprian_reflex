@@ -2,7 +2,7 @@
   "name": "reflex",
   "displayName": "Reflex",
   "version": "0.14.0",
-  "description": "Pre-execution risk gate and prompt injection guard for Claude Code: judges every Bash command and subagent spawn before it runs, with local rules, an editable policy, optional TypeSafe Jev (System One) judgments, System 2 escalation and a human approval queue. Shadow mode by default, no API key needed.",
+  "description": "Prod-safe AI coding agents for infra teams: a pre-execution hook that judges each shell command by where it points and what it will change, then runs it, asks a human, or blocks it.",
   "author": {
     "name": "Ciprian Ursu",
     "url": "https://github.com/ursuciprian"

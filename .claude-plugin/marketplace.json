@@ -1,6 +1,6 @@
 {
   "name": "reflex",
-  "description": "Reflex, the pre-execution risk gate and prompt injection guard for AI coding agents.",
+  "description": "Prod-safe AI coding agents for infra teams: a pre-execution hook that judges each shell command by where it points and what it will change, then runs it, asks a human, or blocks it.",
   "owner": {
     "name": "Ciprian Ursu",
     "url": "https://github.com/ursuciprian"
@@ -9,7 +9,7 @@
     {
       "name": "reflex",
       "source": "./",
-      "description": "Judges every Bash command and subagent spawn before it runs, and screens tool results and prompts for prompt injection. Local rules, shadow mode by default, no API key needed.",
+      "description": "Prod-safe AI coding agents for infra teams: a pre-execution hook that judges each shell command by where it points and what it will change, then runs it, asks a human, or blocks it.",
       "category": "security"
     }
   ]

@@ -56,6 +56,8 @@
     {"expect": "deny", "command": "rm -rf ~", "why": "rule rm-root"},
     {"expect": "deny", "command": "rm -rf / --no-preserve-root", "why": "rule rm-root"},
     {"expect": "deny", "command": "aws rds delete-db-instance --db-instance-identifier orders --skip-final-snapshot", "env": {"aws_profile": "prod"}, "why": "rule prod-destroy"},
+    {"expect": "deny", "command": "aws --profile prod rds delete-db-instance --db-instance-identifier orders --skip-final-snapshot", "why": "rule prod-destroy: aws global options before the service, profile from the flag"},
+    {"expect": "pass", "command": "aws --profile dev s3 ls", "why": "read-only with a global option"},
     {"expect": "deny", "command": "git push --force origin main", "why": "rule force-push-main"},
     {"expect": "deny", "command": "kubectl --context prod-eu delete namespace payments", "env": {"kube_context": "prod-eu"}, "why": "rule prod-destroy"},
     {"expect": "deny", "command": "psql -h prod-db.internal -U admin -c 'DROP DATABASE orders'", "why": "rule prod-destroy"},

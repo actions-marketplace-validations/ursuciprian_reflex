@@ -605,7 +605,23 @@ async function selfcheck() {
     symlinkSync(join(pv, "planted"), join(prov, "linux_amd64"));
     assert.match(gate("terraform apply tfplan", pv).rule, /a provider outside the plugin cache/, "a link back into the tree");
     rmSync(join(prov, "linux_amd64"));
-    assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, TF_PLUGIN_CACHE_DIR: pv}).rule, /./, "a cache inside the tree does not count");
+    // a provider linked into a TF_PLUGIN_CACHE_DIR inside the tree (or the repository): that cache does not count.
+    // HOME is the tree's parent, so only the tree rule can refuse the in-tree cache; its own cache is empty.
+    mkdirSync(join(tmp, ".terraform.d/plugin-cache"), {recursive: true});
+    const inTreeCache = (c, why) => {
+      const bin = join(c, "registry.terraform.io/hashicorp/aws/5.0.0/darwin_arm64");
+      mkdirSync(bin, {recursive: true});
+      writeFileSync(join(bin, "terraform-provider-aws_v5.0.0"), "#!/bin/sh\n");
+      utimesSync(join(bin, "terraform-provider-aws_v5.0.0"), 1e9, 1e9);
+      rmSync(join(prov, "darwin_arm64"));
+      symlinkSync(bin, join(prov, "darwin_arm64"));
+      const r = gate("terraform apply tfplan", pv, {}, () => false, {...env, HOME: tmp, TF_PLUGIN_CACHE_DIR: c});
+      assert.ok(r.outcome === "ask" && /terraform show not run: a provider outside the plugin cache \(darwin_arm64\)/.test(r.rule), `${why}: ${JSON.stringify(r)}`);
+      rmSync(join(prov, "darwin_arm64"));
+      symlinkSync(join(cache, "registry.terraform.io/hashicorp/aws/5.0.0/darwin_arm64"), join(prov, "darwin_arm64"));
+      rmSync(c, {recursive: true});
+    };
+    inTreeCache(join(pv, "cache"), "a cache inside the tree does not count");
     mkdirSync(join(pv, "terraform.d"));
     assert.match(gate("terraform apply tfplan", pv).rule, /a terraform.d directory in the working tree/);
     rmSync(join(pv, "terraform.d"), {recursive: true});
@@ -625,7 +641,7 @@ async function selfcheck() {
     assert.match(gate("terraform apply tfplan", pv).rule, /a relative plugin_cache_dir/);
     rmSync(join(home, ".terraformrc"));
     mkdirSync(join(pv, ".git"));
-    assert.match(gate("terraform apply tfplan", pv, {}, () => false, {...env, TF_PLUGIN_CACHE_DIR: join(pv, "sub")}).rule, /./, "a cache inside the repository");
+    inTreeCache(join(pv, "sub"), "a cache inside the repository");
     rmSync(join(pv, ".git"), {recursive: true});
     assert.equal(gate("terraform apply tfplan", pv).outcome, "pass", "and back to safe");
     // unknown directory, hidden text, no binary
