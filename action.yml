@@ -1,5 +1,5 @@
 name: Reflex policy check
-description: Validate a Reflex team policy (.reflex/policy.json), judge a list of commands with reflex check and fail on deny, and optionally run the golden set.
+description: "Check AI coding agent commands in CI: validate a Reflex team policy and fail when a command would be denied."
 author: Ciprian Ursu
 branding:
   icon: shield
@@ -51,7 +51,7 @@ runs:
     - name: Validate the team policy
       shell: bash
       env:
-        REFLEX: npx --yes @ursuciprian/reflex@0.15.0
+        REFLEX: npx --yes @ursuciprian/reflex@0.16.0
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
         XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         DIR: ${{ inputs.directory }}
@@ -80,7 +80,7 @@ runs:
       id: check
       shell: bash
       env:
-        REFLEX: npx --yes @ursuciprian/reflex@0.15.0
+        REFLEX: npx --yes @ursuciprian/reflex@0.16.0
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
         XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         REFLEX_ENGINE: local
@@ -127,7 +127,7 @@ runs:
       if: inputs.golden-eval == 'true'
       shell: bash
       env:
-        REFLEX: npx --yes @ursuciprian/reflex@0.15.0
+        REFLEX: npx --yes @ursuciprian/reflex@0.16.0
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
         XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         TYPESAFE_API_KEY: ${{ inputs.typesafe-api-key }}
