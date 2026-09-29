@@ -6,8 +6,10 @@ branding:
   color: blue
 
 # Runs the published npm package with npx, pinned to this repository's version; test.mjs keeps
-# the version in the REFLEX variables below equal to package.json. Needs Node.js 18+ on PATH (GitHub-hosted
-# runners have it). reflex check only judges: the commands are data and never run.
+# the version in the REFLEX variables below equal to package.json. Needs Node.js 18+ on PATH
+# (GitHub-hosted runners have it). reflex check only judges: the commands are data and never run.
+# Every step uses an empty config directory, so a runner's own ~/.config/reflex does not change
+# the result.
 
 inputs:
   directory:
@@ -20,7 +22,7 @@ inputs:
     description: Commands to judge, one per line. Empty lines and lines starting with # are skipped.
     default: ""
   commands-file:
-    description: A file with commands to judge, one per line, same format as commands.
+    description: A file with commands to judge (path relative to the workspace), one per line, same format as commands.
     default: ""
   fail-on:
     description: '"deny" fails the step when any command is denied; "ask" also fails when one needs a human.'
@@ -51,6 +53,7 @@ runs:
       env:
         REFLEX: npx --yes @ursuciprian/reflex@0.15.0
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
+        XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         DIR: ${{ inputs.directory }}
         REQUIRE: ${{ inputs.require-policy }}
       run: |
@@ -64,10 +67,14 @@ runs:
         DIR=$(cd "$DIR" && pwd); cd "$RUNNER_TEMP"
         $REFLEX policy "$DIR" --json > "$RUNNER_TEMP/reflex-policy.json"
         node -e '
-          const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-          for (const e of t.errors) console.log(`::error file=${t.file}::${e}`);
+          let t;
+          try { t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch {
+            console.log(`::error::reflex did not read ${process.argv[2]}/.reflex/policy.json: the directory and the file must be owned by the user this job runs as, in a git checkout`);
+            process.exit(1);
+          }
+          for (const e of t.errors) console.log(`::error file=${t.file}::${e.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
           console.log(`${t.file}: ${t.rules.length} rules, ${t.always_human.length} always-human, mode floor ${t.mode ?? "none"}, ${t.freeze.length} freezes, ${t.errors.length} errors`);
-          process.exit(t.errors.length ? 1 : 0);' "$RUNNER_TEMP/reflex-policy.json"
+          process.exit(t.errors.length ? 1 : 0);' "$RUNNER_TEMP/reflex-policy.json" "$DIR"
 
     - name: Judge the commands
       id: check
@@ -75,6 +82,7 @@ runs:
       env:
         REFLEX: npx --yes @ursuciprian/reflex@0.15.0
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
+        XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         REFLEX_ENGINE: local
         DIR: ${{ inputs.directory }}
         COMMANDS: ${{ inputs.commands }}
@@ -87,18 +95,28 @@ runs:
         printf '%s\n' "$COMMANDS" > "$list"
         if [ -n "$COMMANDS_FILE" ]; then cat "$COMMANDS_FILE" >> "$list"; fi
         DIR=$(cd "$DIR" && pwd); cd "$RUNNER_TEMP"   # npx outside the checkout, as above
+        # one decision: the log line, the summary row (HTML-escaped) and an escaped ::error:: when it fails; the decision last
+        report='
+          const j = JSON.parse(require("fs").readFileSync(0, "utf8")), [cmd, failOn] = process.argv.slice(1), rule = j.rule ?? "";
+          const html = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "&#124;");
+          const wf = s => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+          require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, `| ${j.decision} | <code>${html(cmd)}</code> | ${html(rule)} |\n`);
+          console.log(`${j.decision}  ${cmd}  (${rule})`);
+          if (j.decision === "deny" || (j.decision === "ask" && failOn === "ask")) console.log(`::error::reflex ${j.decision === "deny" ? "denies" : "asks"}: ${wf(cmd)} (${wf(rule)})`);
+          console.log(j.decision);'
         denied=0 asked=0 total=0
         { echo "| decision | command | rule |"; echo "|---|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
         while IFS= read -r cmd || [ -n "$cmd" ]; do
+          cmd=${cmd%$'\r'}
+          cmd="${cmd#"${cmd%%[![:space:]]*}"}"   # leading whitespace
           case "$cmd" in ''|'#'*) continue ;; esac
           total=$((total + 1))
           out=$($REFLEX check "$cmd" --cwd "$DIR")
-          decision=$(printf '%s' "$out" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).decision')
-          rule=$(printf '%s' "$out" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).rule ?? ""')
-          echo "$decision  $cmd  ($rule)"
-          printf '| %s | `%s` | %s |\n' "$decision" "${cmd//|/\\|}" "${rule//|/\\|}" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$decision" = deny ]; then denied=$((denied + 1)); echo "::error::reflex denies: $cmd ($rule)"; fi
-          if [ "$decision" = ask ]; then asked=$((asked + 1)); if [ "$FAIL_ON" = ask ]; then echo "::error::reflex asks: $cmd ($rule)"; fi; fi
+          res=$(printf '%s' "$out" | node -e "$report" "$cmd" "$FAIL_ON")
+          decision=${res##*$'\n'}
+          printf '%s\n' "${res%$'\n'*}"
+          if [ "$decision" = deny ]; then denied=$((denied + 1)); fi
+          if [ "$decision" = ask ]; then asked=$((asked + 1)); fi
         done < "$list"
         echo "denied=$denied" >> "$GITHUB_OUTPUT"
         echo "asked=$asked" >> "$GITHUB_OUTPUT"
@@ -111,6 +129,7 @@ runs:
       env:
         REFLEX: npx --yes @ursuciprian/reflex@0.15.0
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
+        XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         TYPESAFE_API_KEY: ${{ inputs.typesafe-api-key }}
         GOLDEN: ${{ inputs.golden-file }}
       run: |

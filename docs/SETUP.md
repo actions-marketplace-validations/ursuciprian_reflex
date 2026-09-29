@@ -481,8 +481,9 @@ package, pinned to the same version as the action (`npx @ursuciprian/reflex@<ver
 
 1. validates the repository's `.reflex/policy.json` (`reflex policy --json`) and fails on any error,
    so a broken team policy does not reach the main branch;
-2. judges each command you list with `reflex check`, keyless (`REFLEX_ENGINE=local`, so the result
-   depends only on the rules and the team policy), and fails when one is denied. The commands are
+2. judges each command you list with `reflex check`, keyless (`REFLEX_ENGINE=local`) and with an
+   empty config directory, so on a clean runner the result depends on the rules and the team policy,
+   and fails when one is denied. The commands are
    data: `reflex check` never runs them. A table of decisions goes to the job summary;
 3. optionally runs the golden set (`reflex eval`), which calls Jev for each case the rules do not
    settle and so needs a TypeSafe key.
@@ -503,9 +504,9 @@ jobs:
       - uses: ursuciprian/reflex@v0.16.0   # a release tag or a commit SHA
         with:
           commands: |
-            git push --force origin main
-            kubectl --context prod-eu delete namespace payments
-          commands-file: ops/reflex-commands.txt   # optional, one command per line, # for comments
+            make deploy-staging
+            terraform plan -out=tfplan
+          commands-file: ops/reflex-commands.txt   # optional, relative to the workspace, # for comments
           fail-on: deny                            # or ask: also fail when a command needs a human
           # golden-eval: "true"
           # typesafe-api-key: ${{ secrets.TYPESAFE_API_KEY }}
@@ -515,8 +516,10 @@ The action is in releases from 0.16.0. Inputs: `directory` (default `.`, a git c
 `require-policy` (default `true`; `false` skips validation when there is no policy file),
 `commands`, `commands-file`, `fail-on` (`deny` or `ask`), `golden-eval`, `golden-file` (a golden
 set for `reflex eval --golden`) and `typesafe-api-key`. Outputs: `denied` and `asked`, the counts.
-Use it to keep a list of commands your team policy must block: a change to the policy that lets one
-of them through fails the pull request. It needs Node.js 18+ on `PATH`, which GitHub-hosted runners
+List the commands your CI, runbooks or agents are expected to run: a policy change that would deny
+one of them fails the pull request before it reaches a teammate's agent. `reflex check` sees the
+runner's own context (AWS profile, kube context, git branch), so keep production credentials out of
+this job. It needs Node.js 18+ on `PATH`, which GitHub-hosted runners
 have.
 
 ## Configuration
