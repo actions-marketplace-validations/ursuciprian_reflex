@@ -38,7 +38,7 @@
         "rule": "destructive delete",
         "context": false,
         "all": [
-          "(\\brm\\s+(-\\S*\\s+)*-[a-z]*(r[a-z]*f|f[a-z]*r)|\\brm\\s+(-\\S+\\s+)*--recursive\\b|\\bgit\\s+(reset\\s+--hard|clean\\s+-[a-z]*f|push\\b[^;&|]*(--force|\\s-[a-z]*f\\b|--delete|\\s:)|branch\\s+-D|stash\\s+(drop|clear)|filter-(branch|repo))|\\b(dd\\b[^;&|]*\\bof=|mkfs|shred|wipefs)\\b|\\b(drop\\s+(database|table|schema)|truncate\\s+table|delete\\s+from)\\b|\\bdocker\\s+(system|volume|image)\\s+prune\\b|\\baws\\s+(\\S+\\s+)*(delete|terminate|remove|deregister|purge)-|\\bkubectl\\b.*\\s(delete|drain)\\s|\\bterraform\\s+(\\S+\\s+)*(destroy|state\\s+rm)|\\bhelm\\s+(uninstall|delete)\\s|\\bgh\\s+(repo|release)\\s+delete\\b)"
+          "(\\brm\\s+(-\\S*\\s+)*-[a-z]*(r[a-z]*f|f[a-z]*r)|\\brm\\s+(-\\S+\\s+)*--recursive\\b|\\bgit\\s+(reset\\s+--hard|clean\\s+-[a-z]*f|push\\b[^;&|]*(--force|\\s-[a-z]*f\\b|--delete|\\s:)|branch\\s+-D|stash\\s+(drop|clear)|filter-(branch|repo))|\\b(dd\\b[^;&|]*\\bof=|mkfs|shred|wipefs)\\b|\\b(drop\\s+(database|table|schema)|truncate\\s+table|delete\\s+from)\\b|\\bdocker\\s+(system|volume|image)\\s+prune\\b|\\baws\\s+(\\S+\\s+)*(delete|terminate|remove|deregister|purge)-|\\bkubectl\\b.*\\s(delete|drain)\\s|\\b(terraform|tofu|terragrunt)\\s+(\\S+\\s+)*(destroy(-all)?|state\\s+rm)|\\bhelm\\s+(\\S+\\s+)*?(uninstall|delete|rollback)\\s|\\bgh\\s+(repo|release)\\s+delete\\b)"
         ]
       },
       {
