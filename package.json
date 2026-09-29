@@ -52,6 +52,8 @@
     "change-management",
     "audit-log",
     "mcp-server",
+    "mcp-guardrails",
+    "mcp-security",
     "model-context-protocol",
     "claude-desktop",
     "cursor",
