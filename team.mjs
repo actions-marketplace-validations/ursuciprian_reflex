@@ -86,10 +86,10 @@ function ruleError(r, human) {
   return null;
 }
 
-const KEYS = new Set(["version", "note", "rules", "always_human", "prod", "mode", "freeze", "fastlane", "notify"]);
+const KEYS = new Set(["version", "note", "rules", "always_human", "prod", "mode", "freeze", "fastlane", "notify", "infra"]);
 /** The file, validated part by part: every valid stricter entry is kept, every problem is an error. */
 export function parseTeam(text) {
-  const out = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, errors: []};
+  const out = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, infra: null, errors: []};
   let doc;
   try { doc = JSON.parse(text); } catch (e) { out.errors.push(`not JSON (${e.message})`); return out; }
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) { out.errors.push("must be a JSON object"); return out; }
@@ -120,6 +120,15 @@ export function parseTeam(text) {
     const why = regexError(m);
     if (why) out.errors.push(`prod ${i + 1}: pattern ${why}`);
     else if (spend(1, `prod ${i + 1}`)) out.rules.push(linear({id: "team:prod", outcome: "ask", shell: true, rule: "production, by a marker in the team policy", all: [m]}));
+  }
+  // The plan-aware infra gate (infra.mjs), stricter only: deny a plan that destroys, require a saved plan in production.
+  if (doc.infra !== undefined) {
+    const i = doc.infra, bad = !i || typeof i !== "object" || Array.isArray(i) ? "must be an object"
+      : Object.keys(i).find(k => !["destroy", "require_plan_in_prod"].includes(k)) ? 'takes only "destroy": "deny" and "require_plan_in_prod": true'
+      : i.destroy !== undefined && i.destroy !== "deny" ? 'destroy can only be "deny" (a team policy cannot soften it)'
+      : i.require_plan_in_prod !== undefined && i.require_plan_in_prod !== true ? "require_plan_in_prod can only be true" : null;
+    if (bad) out.errors.push(`infra ${bad}`);
+    else out.infra = {...i};
   }
   if (doc.mode !== undefined && !["shadow", "enforce"].includes(doc.mode)) out.errors.push('mode must be "shadow" or "enforce" (a floor: it can only raise the mode)');
   else out.mode = doc.mode ?? null;
@@ -155,7 +164,7 @@ export function readTrust(file = TRUST_FILE) {
 }
 
 // One root's file: null when there is none, else what it adds and its problems.
-const parsed = new Map(), empty = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null};
+const parsed = new Map(), empty = {rules: [], always_human: [], mode: null, freeze: [], fastlane: [], notify: null, infra: null};
 function readOne(root) {
   const file = join(root, ".reflex/policy.json");
   let text;
@@ -191,6 +200,7 @@ export function teamPolicy(cwd) {
       rules: found.flatMap(f => f.rules), always_human: found.flatMap(f => f.always_human), freeze: found.flatMap(f => f.freeze),
       notify: active ? t.notify : null, notify_target: t.notify,
       mode: found.some(f => f.mode === "enforce") ? "enforce" : found.find(f => f.mode)?.mode ?? null,
+      infra: found.some(f => f.infra) ? Object.assign({}, ...found.map(f => f.infra ?? {})) : null,
       fastlane: active ? t.fastlane.map(pattern => ({pattern, cwd: t.root, re: compilePattern(pattern), team: true})) : [],
       fastlane_count: t.fastlane.length, fastlane_patterns: t.fastlane};
   } catch (e) {

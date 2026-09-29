@@ -42,6 +42,9 @@
     "pi",
     "oh-my-pi",
     "hermes",
+    "terraform",
+    "kubectl",
+    "infrastructure-as-code",
     "deploy-freeze",
     "change-management",
     "audit-log"

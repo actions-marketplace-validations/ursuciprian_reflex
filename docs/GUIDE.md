@@ -11,6 +11,7 @@
    - [Calibrated allow](#calibrated-allow)
 4. [Changing behaviour](#changing-behaviour)
    - [Team policy: share Reflex rules across a repo](#team-policy-share-reflex-rules-across-a-repo)
+   - [Plan-aware terraform gate: stop AI agents from destroying infrastructure](#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure)
    - [Change freeze for AI coding agents](#change-freeze-for-ai-coding-agents)
    - [Audit log for AI agent commands (SOC 2)](#audit-log-for-ai-agent-commands-soc-2)
 5. [Metrics](#metrics)
@@ -663,6 +664,162 @@ in: its path, whether you trust it, its hash, and what it adds. `reflex policy` 
 one repository. Decisions record it too: a rule from the team policy says `(team policy)`, and the
 policy version reads `rules-v16+team-<hash>`. `reflex check --cwd <dir>` and `reflex replay` judge
 each command with the team policy of its own working directory.
+
+## Plan-aware terraform gate: stop AI agents from destroying infrastructure
+
+A rule can tell that `terraform destroy` destroys. It cannot tell what `terraform apply` will do:
+the same command creates one tag on Monday and replaces the production database on Tuesday. So
+when a coding agent (Claude Code, Codex, opencode and the others) runs `terraform apply`, Reflex
+judges the change, not only the command text. This is the part that prevents a `terraform destroy`
+hidden inside an apply.
+
+**What the hook runs, and what it never runs.** The hook never runs `terraform plan` or
+`terraform apply`. A plan executes providers with your credentials, runs `data "external"`
+programs and can take minutes. With `infra.terraform_show` on, the hook reads a saved plan the agent
+already made, with `terraform show -json <planfile>` in the directory the command runs in (`-chdir=`
+and a leading `cd dir &&` are followed). `terraform show` reads the plan file locally and configures
+no provider, so it makes no provider API calls, but it does start the provider binaries to read their
+schemas.
+
+**Why plan reading is off by default.** Those provider binaries live in `.terraform/providers`,
+and an agent can write that directory, and `.terraform.lock.hcl`, with its file tools (Write, Edit,
+apply_patch), which the command gate does not see. Reading the plan would then make the hook itself
+run code the agent put there, before any approval. So `infra.terraform_show` is `false` by default:
+a `terraform apply <planfile>` is judged as before (the rules, then Jev or, keyless, a human), and an
+apply without a plan file still asks with the fix. For the same reason `terraform plan`, `show`,
+`validate`, `state show`, `providers`, `graph` and `init` are no longer on the read-only list or the
+fast lane, nor `output` and `state list`, which start the backend saved in `.terraform`; `fmt -check`
+and `version` still are.
+
+**The plugin cache requirement.** Turn it on with `"infra": {"terraform_show": true}` only with a
+[provider plugin cache](https://developer.hashicorp.com/terraform/cli/config/config-file#provider-plugin-cache):
+`TF_PLUGIN_CACHE_DIR`, `plugin_cache_dir` in `~/.terraformrc`, or `~/.terraform.d/plugin-cache`. With
+a cache, `terraform init` puts symbolic links into `.terraform/providers` instead of copies ("when
+possible", in HashiCorp's words). The hook runs `terraform show` only when:
+
+- every entry under `.terraform/providers` (or `$TF_DATA_DIR/providers`) is a symlink whose real
+  path is inside that cache;
+- the cache is under your home directory and outside both the directory the apply runs in and the
+  one the command started in (a working directory that is your home never qualifies);
+- no file in the cache that is linked is newer than the plan file;
+- there is no `terraform.d` in the working directory, no `dev_overrides` in the CLI config and no
+  `TF_REATTACH_PROVIDERS`.
+
+Anything else (a copied provider, a regular file in `.terraform`, a link back into the tree, a
+packed filesystem mirror that Terraform had to extract) asks: "no readable saved plan (terraform
+show not run: ...)". The cache itself is trusted as yours: an agent that can write your home
+directory outside the gate can also write it. The check keeps the working tree out, which is where
+an agent's file tools usually write. It runs with a
+strict timeout (`infra.timeout_ms`, 3 s by default and 4 s at most, so the whole hook stays inside its 10 s), a
+sanitized environment (no `AWS_*`, `GOOGLE_*`, `ARM_*`, `TF_VAR_*` or tokens; only `PATH`, `HOME`,
+the locale and Terraform's data and plugin directories) and `CHECKPOINT_DISABLE=1`, so Terraform
+does not call HashiCorp's version service either. The `terraform` binary comes from an absolute
+`PATH` entry, never a relative one such as `./bin`.
+
+**What it decides.**
+
+| The command | Outcome |
+|---|---|
+| `terraform apply tfplan` with `infra.terraform_show` off (the default) | judged as before: the rules, then Jev or, keyless, a human |
+| `terraform apply tfplan`, the plan has 0 deletes and 0 replaces | allow-eligible: the usual policy decides, with the counts in Jev's state (keyless: pass). In production it asks, and the reason shows the counts |
+| the plan deletes or replaces anything | deny (`infra.destroy: "ask"` softens it), for example `plan destroys 3: aws_db_instance.main, aws_s3_bucket.logs, aws_iam_role.ci (1 replace); stateful: aws_db_instance.main, aws_s3_bucket.logs` |
+| `terraform apply` or `terraform apply -auto-approve`, no plan file | ask: "terraform apply without a saved plan: run `terraform plan -out=tfplan` and apply the plan file". Deny in production with `infra.require_plan_in_prod` |
+| the plan file is missing, not a plan (a state file shows as JSON too), stale, the providers are not all linked from the plugin cache, or `terraform show` failed or timed out | ask: "no readable saved plan (...)" with the same fix |
+| `terraform destroy`, `apply -destroy`, `apply -replace=` | unchanged: the destroy rules ask, and deny in production |
+
+A replace is a delete plus a create (`["delete","create"]` or `["create","delete"]` in the JSON
+plan format). Stateful types are named first: `aws_db_instance`, `aws_rds_cluster`,
+`aws_s3_bucket`, `aws_dynamodb_table`, `aws_efs_file_system`, `aws_ebs_volume`, ElastiCache,
+Redshift, DocumentDB, KMS keys, `google_sql_database_instance`, `google_storage_bucket`, BigQuery,
+`azurerm_*database*`, storage accounts, `kubernetes_persistent_volume*`, namespaces, statefulsets and
+others. A plan is stale when a `.tf`, `.tf.json`, `.tfvars`, `.terraform.lock.hcl` or local
+`terraform.tfstate` in its directory is newer than the plan file. Terraform itself also refuses to
+apply a plan whose state moved.
+
+A plan's deny is a rule outcome: it holds in shadow and enforce mode, and no approval in the queue
+lifts it. A plan's ask goes to a human, never to System 2. With the Jev engine in enforce mode, Jev
+still judges the command under the ask, and a deny Jev finds stands. A clean plan passes on its own
+only when the command is nothing but `cd` steps and the apply: `terraform apply tfplan && ./deploy.sh`
+gets the counts in its trace, and the rest is judged as usual. It also needs the apply to run exactly
+the plan that was read, so none of these pass (they keep the counts, and the usual judge decides):
+
+- a binary other than `terraform` from `PATH` (`./terraform`, `bin/../terraform`);
+- an assignment, `env`, `sudo`, `nice` or `exec` in front (`PATH=.`, `TF_CLI_ARGS_apply=-destroy`,
+  `env --chdir=/`), or `TF_CLI_ARGS*` in the hook's own environment;
+- an option outside `-auto-approve`, `-input=false`, `-no-color`, `-compact-warnings`, `-json`,
+  `-lock-timeout=`, `-parallelism=` (`--destroy`, `-target`, `-state-out`, an option Terraform adds later);
+- a `..` in the plan path, `-chdir` or a `cd` (it resolves through symlinks for Terraform);
+- a `cd` in a pipe, behind `&` or before `||` (it does not carry over; the directory is unknown and
+  the apply asks);
+- a plan that runs code at apply: a provisioner, a deferred `external` or `http` data source read,
+  or action invocations.
+
+Production is read in the directory the command runs in, the physical one too (a `current` symlink
+to `envs/prod`), and the team policy of that directory counts as well as the one the command started in.
+The hook budget: when the rules and the plan read took more than 5 s, Jev is not waited for as
+well, and the command asks.
+
+**Decision JSON and trace.** Every decision the plan gate spoke to carries the counts:
+
+```json
+{"effective": "deny", "decision": "deny", "reason": "reflex (rule): plan destroys 1: aws_instance.old", "source": "rule",
+ "policy": "rules-v19", "plan": {"kind": "terraform", "create": 1, "update": 0, "delete": 1, "replace": 0, "stateful": [], "digest": "..."}}
+```
+
+The `digest` (of the plan JSON) is also part of the approval queue key and the Jev cache key, so an
+approval of one plan is never reused for a different plan under the same command.
+
+**The workflow it asks agents for.** Plan, read, apply the file:
+
+```bash
+terraform plan -out=tfplan        # judged like any command that runs providers; the agent runs it, not the hook
+terraform show -json tfplan | jq '.resource_changes[] | select(.change.actions != ["no-op"]) | .address'
+terraform apply tfplan            # judged by what tfplan will change
+```
+
+**kubectl delete guardrail (optional).** With `"infra": {"kubectl_diff": true}` (off by default,
+because it calls the API server), `kubectl apply` is checked with `kubectl diff` and the same
+arguments, and `kubectl delete|replace|patch` with `--dry-run=server -o name` added at the end.
+Both use the current kube context (or the command's `--context`), the same timeout, and never a flag
+that writes: `--dry-run=server -o name` goes right after the verb, so an option of the command left
+waiting for a value cannot take it, and a command with its own `--dry-run`, `--raw`, `--`, `-f -` or
+`-o` is not run at all. Nor is one that names its own `--kubeconfig`, `--server` or `--token`, or runs
+with a `KUBECONFIG` inside its working directory: an agent's kubeconfig could carry an exec credential
+plugin, and an agent's server would receive your credentials. `kubectl
+diff` exits 0 for no differences, 1 for differences and above 1 on an error. Deletes of namespaces,
+PVCs, PVs, statefulsets or CRDs follow `infra.destroy` (deny by default); other deletes ask with the
+count; changes without deletes only add the counts. Off, or on any failure, kubectl commands are
+judged as before, and the production markers (`--context prod`, a prod kube context) still deny
+destructive ones.
+
+**Configuration.** In `~/.config/reflex/config.json`:
+
+```json
+{"infra": {"enabled": true, "destroy": "deny", "require_plan_in_prod": false, "terraform_show": false, "kubectl_diff": false, "timeout_ms": 3000}}
+```
+
+A team policy can only make it stricter (`.reflex/policy.json`):
+
+```json
+{"version": 1, "infra": {"destroy": "deny", "require_plan_in_prod": true}}
+```
+
+`destroy` there accepts only `"deny"` and `require_plan_in_prod` only `true`; a team `infra` section
+also turns the gate on for a user who turned it off. `reflex doctor` shows the settings and where
+`terraform` and `kubectl` were found.
+
+**Measured on real sessions.** A replay of 2,232 local Claude Code and Codex transcripts found 63
+unique commands that mention `terraform ... apply` or a mutating kubectl verb. Most only mention it
+(commit messages, heredocs that write CI workflows); the deterministic outcome changed for 2 real
+applies, both from "left to the judge" to an ask with the fix: one apply without a plan file and one
+whose plan file was gone. With the local engine those already asked, so the effective change there
+is the reason, not the outcome.
+
+**Limits.** The plan is read when the hook runs and applied a moment later: a process the agent left
+running could swap the file in between (Terraform still refuses a plan whose state moved). A command
+whose text hides what runs (`$VAR`, a heredoc) is not read, and is judged as before. OpenTofu
+(`tofu`), Terragrunt and Terraform Cloud saved plans are not read yet. `kubectl diff` does not show
+objects that a `--prune` would delete unless the command has `--prune`.
 
 ## Change freeze for AI coding agents
 

@@ -380,7 +380,7 @@ export function runawayReset({session, all} = {}) {
 const QDIR = () => join(CONFIG.data, "queue");
 const itemFile = id => join(QDIR(), `${id}.json`);
 const queueKey = call => createHash("sha256").update(JSON.stringify([String(call.command ?? ""), redact(String(call.command ?? "")),
-  resolve("/", call.cwd || "/"), String(call.session_id ?? ""), !!tainted(call.session_id)])).digest("hex");
+  resolve("/", call.cwd || "/"), String(call.session_id ?? ""), !!tainted(call.session_id), ...(call.plan?.digest ? [call.plan.digest] : [])])).digest("hex");
 export function readItem(id) {
   if (!/^q-[0-9a-f]{10}$/.test(String(id))) return null;
   try { return JSON.parse(readFileSync(itemFile(id), "utf8")); } catch { return null; }
