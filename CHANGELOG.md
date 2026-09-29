@@ -65,6 +65,27 @@ All notable changes to Reflex are documented here. The format follows
 - Policy packs in `examples/policies/`: `aws`, `eks`, `terraform` and `startup-default`, valid team
   policies that only add checks, with a note on every rule. `reflex policy init --pack <name>` (or `--pack=<name>`) copies
   one to `.reflex/policy.json` and never overwrites an existing file.
+- Claude Code plugin, for the plugin directory's policy. Its settings come from plugin options
+  (`userConfig` in `plugin.json`: `engine`, `provider`, `jev_api_key` and `judge_api_key`, both
+  sensitive, and `mode`), which Claude Code hands to the hooks as `CLAUDE_PLUGIN_OPTION_<KEY>` and to
+  the MCP server through `.mcp.json` `env`, and from Reflex's own config files. In the plugin, Reflex
+  never asks the Keychain (`security`), never reads `TYPESAFE_API_KEY`, another provider's key
+  variable, `ANTHROPIC_API_KEY` or `judge.key_env`, and ignores the `REFLEX_*` settings variables
+  (`plugin.mjs`). With no options it runs local in shadow mode, as before. `reflex setup` installs
+  and the Codex CLI plugin are unchanged.
+- Plugin hooks never answer `allow` (the allow gate is off; what setup would allow is a silent pass)
+  and never rewrite a tool's input. The plugin's injection guard warns next to a blocked result
+  (`additionalContext`) instead of replacing it; `reflex setup` still removes the injected text.
+- The plugin's commands and skill run the plugin's own scripts, `node "${CLAUDE_PLUGIN_ROOT}/<script>.mjs"
+  --plugin ...`, not a `reflex` from `PATH`. The gate judges such a command as the `reflex` command it
+  is (same fast lane, same tamper rules), for this copy's own scripts only. Nothing the plugin runs
+  downloads or installs anything.
+- `bin/` moved to `scripts/` (`scripts/reflex`, `scripts/reflex-sh`, `scripts/reflex-review`):
+  claude.ai and Cowork do not install a plugin with a top-level `bin/`. `package.json` `bin` points
+  there, so `npx @ursuciprian/reflex` and the `reflex` command work as before; the plugin no longer
+  puts `reflex` on the Bash `PATH`.
+- Plugin icon: `assets/logo-512.png`, named in `plugin.json` and `marketplace.json`. `logo.svg` and
+  `wordmark.svg` carry no `<style>` element, and the README shows its images with Markdown syntax.
 
 ## [0.15.0] - 2026-09-29
 

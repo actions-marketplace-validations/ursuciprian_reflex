@@ -15,6 +15,7 @@ import {closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync,
 import {homedir, tmpdir} from "node:os";
 import {join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
+import "./plugin.mjs";   // the Claude Code plugin's commands pass --plugin: its settings, and the flag off argv
 
 const argv = process.argv.slice(2), [cmd] = argv;
 const die = s => { console.error(`reflex: ${s}`); process.exit(2); };
