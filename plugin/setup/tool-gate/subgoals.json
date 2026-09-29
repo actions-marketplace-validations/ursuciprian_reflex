@@ -1,0 +1,10 @@
+{
+  "version": "subgoals-v3",
+  "note": "Subgoal dedup: before an agent spawns a subagent, Jev is asked whether the new subgoal duplicates one already launched in the same session. A duplicate whose option probability is at or above duplicateAt is denied (in enforce mode) with a reason naming the earlier subgoal, so the agent reuses its result. keep is how many earlier subgoals are offered as options. An earlier subgoal counts when its spawn ran, or while it is pending (no post-hook record yet) for pendingSeconds, so parallel spawns see each other. Each task of a batch is judged on its own.",
+  "duplicateAt": 0.6,
+  "keep": 20,
+  "pendingSeconds": 300,
+  "context_key": "operator",
+  "context": "A coding agent is about to hand work to a subagent. Every earlier subgoal was launched in this same session, so its result is already available to the agent (or will be when it finishes).",
+  "instructions": "Does the new subgoal in `subgoal.text` ask for the same work, with the same expected result, as one of the earlier subgoals listed as options? Answer that option when running the new one would produce the same result again: same task, same scope, same kind of answer. Different wording alone does not make it new work. A follow-up that builds on an earlier result, a different part of the same problem, a review or verification of earlier work, or a retry that says why the first attempt failed is not a duplicate: answer none."
+}

@@ -1,0 +1,282 @@
+{
+  "name": "Agent tool gate",
+  "version": "tool-gate-v6",
+  "subject": "Shell commands an agent wants to run, gated by risk. The gate tightens the agent's own permissions; it loosens them only through the opt-in allow gate (REFLEX_ALLOW=on, enforce mode).",
+  "fallback": "ask",
+  "params": {
+    "denyAt": {
+      "label": "Deny at blast",
+      "min": 0,
+      "max": 3,
+      "step": 0.1,
+      "default": 2.7,
+      "note": "Blast score at which a production command is refused outright."
+    },
+    "askAt": {
+      "label": "Ask at blast",
+      "min": 0,
+      "max": 3,
+      "step": 0.1,
+      "default": 1.6,
+      "note": "Blast score at which a human confirms before the command runs."
+    },
+    "exfilAt": {
+      "label": "Ask at exfil",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.5
+    },
+    "unsureBelow": {
+      "label": "Ask when blast confidence below",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.5,
+      "note": "Spread-out blast answers on a mutating command get a human look."
+    },
+    "onTaskFloor": {
+      "label": "Ask when on-task below",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.3,
+      "note": "How sure we must be that a mutating command serves the agent's stated task."
+    },
+    "injectionAt": {
+      "label": "Deny at injection",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.6
+    },
+    "allowBlastMax": {
+      "label": "Allow at blast up to",
+      "min": 0,
+      "max": 3,
+      "step": 0.1,
+      "default": 1.2,
+      "note": "Highest blast score a command may have to run without the agent's own prompt (REFLEX_ALLOW)."
+    },
+    "allowConfidence": {
+      "label": "Allow when blast confidence at least",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.7,
+      "note": "Jev must be this sure of the blast score."
+    },
+    "allowRiskBelow": {
+      "label": "Allow when mutates, exfil and injection below",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.3
+    },
+    "allowOnTask": {
+      "label": "Allow when on-task at least",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.5,
+      "note": "A missing on-task answer (a cached one) never allows."
+    },
+    "taintAskAt": {
+      "label": "Tainted session: ask at blast",
+      "min": 0,
+      "max": 3,
+      "step": 0.1,
+      "default": 1,
+      "note": "After the agent read a suspected prompt injection (the injection guard), a lower blast threshold for asking."
+    },
+    "taintExfilAt": {
+      "label": "Tainted session: ask at exfil",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.2
+    },
+    "taintOnTask": {
+      "label": "Tainted session: ask when a mutation's on-task below",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.6
+    },
+    "envelopeAt": {
+      "label": "Inside the task envelope at least",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.8,
+      "note": "How sure Jev must be that a non-production command is inside the user's task envelope (reflex envelope) for it to pass without escalation."
+    },
+    "envelopeFloor": {
+      "label": "Outside the task envelope below",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "default": 0.3,
+      "note": "A mutation Jev places outside the user's task envelope asks (System 2 in the autonomous profile)."
+    }
+  },
+  "flags": {
+    "prodAlwaysAsks": {
+      "label": "Any production mutation asks",
+      "default": true
+    },
+    "taintStrict": {
+      "label": "Stricter after a suspected prompt injection",
+      "default": true
+    },
+    "envelope": {
+      "label": "Use the task envelope",
+      "default": true
+    }
+  },
+  "outcomes": {
+    "deny": {
+      "label": "Deny",
+      "color": "#8c2f3c",
+      "blurb": "Refused; the agent must find another way"
+    },
+    "ask": {
+      "label": "Ask",
+      "color": "#8a5300",
+      "blurb": "A human confirms first"
+    },
+    "allow": {
+      "label": "Allow",
+      "color": "#2f6f9f",
+      "blurb": "Clearly safe; runs without the agent's own prompt when REFLEX_ALLOW=on"
+    },
+    "pass": {
+      "label": "Pass",
+      "color": "#2b7f6c",
+      "blurb": "No opinion; normal permissions apply"
+    }
+  },
+  "gates": [
+    {
+      "id": "injection",
+      "label": "Talking to the reviewer?",
+      "test": "injection >= $injectionAt",
+      "outcome": "deny",
+      "detail": "injection {injection}",
+      "rule": "command text tries to influence its own review"
+    },
+    {
+      "id": "prod-destroy",
+      "label": "Serious production change?",
+      "test": "env == 'production' and blast >= $denyAt",
+      "outcome": "deny",
+      "detail": "{env}, blast {blast}",
+      "rule": "production blast {blast} at or above {$denyAt}"
+    },
+    {
+      "id": "exfil",
+      "label": "Secrets or data leaving?",
+      "test": "exfil >= $exfilAt",
+      "outcome": "ask",
+      "detail": "exfil {exfil}",
+      "rule": "may read secrets or send data out"
+    },
+    {
+      "id": "prod",
+      "label": "Production mutation?",
+      "enabled_when": "$prodAlwaysAsks",
+      "test": "env == 'production' and mutates >= 0.5",
+      "outcome": "ask",
+      "detail": "{env}, mutates {mutates}",
+      "rule": "changes production"
+    },
+    {
+      "id": "tainted-exfil",
+      "label": "Tainted: any sign of data leaving?",
+      "enabled_when": "$taintStrict",
+      "test": "tainted >= 0.5 and exfil >= $taintExfilAt",
+      "outcome": "ask",
+      "detail": "tainted, exfil {exfil}",
+      "rule": "may send data out, in a session that read a suspected prompt injection"
+    },
+    {
+      "id": "tainted-blast",
+      "label": "Tainted: more than a local change?",
+      "enabled_when": "$taintStrict",
+      "test": "tainted >= 0.5 and blast >= $taintAskAt",
+      "outcome": "ask",
+      "detail": "tainted, blast {blast}",
+      "rule": "blast {blast} at or above {$taintAskAt}, in a session that read a suspected prompt injection"
+    },
+    {
+      "id": "tainted-off-task",
+      "label": "Tainted: a mutation off the stated task?",
+      "enabled_when": "$taintStrict",
+      "test": "tainted >= 0.5 and mutates >= 0.5 and on_task < $taintOnTask",
+      "outcome": "ask",
+      "detail": "tainted, on_task {on_task}",
+      "rule": "does not clearly match the stated task, in a session that read a suspected prompt injection"
+    },
+    {
+      "id": "repo-envelope",
+      "label": "Ruled out by the repository?",
+      "enabled_when": "$envelope",
+      "test": "repo_envelope >= 0.5 and repo_forbids >= 0.5",
+      "outcome": "ask",
+      "detail": "repo_forbids {repo_forbids}",
+      "rule": "the repository's envelope (.reflex/envelope.md) rules this out"
+    },
+    {
+      "id": "off-envelope",
+      "label": "Outside the task envelope?",
+      "enabled_when": "$envelope",
+      "test": "envelope >= 0.5 and mutates >= 0.5 and in_envelope < $envelopeFloor",
+      "outcome": "ask",
+      "detail": "in_envelope {in_envelope}",
+      "rule": "outside the task envelope"
+    },
+    {
+      "id": "in-envelope",
+      "label": "Non-production work inside the task envelope?",
+      "enabled_when": "$envelope",
+      "test": "envelope >= 0.5 and in_envelope >= $envelopeAt and env == 'nonprod' and exfil < $exfilAt and blast < $denyAt",
+      "outcome": "pass",
+      "detail": "in_envelope {in_envelope}, {env}, blast {blast}",
+      "rule": "inside the task envelope: {env}, blast {blast}"
+    },
+    {
+      "id": "off-task",
+      "label": "Off the stated task?",
+      "test": "mutates >= 0.5 and blast >= 1 and on_task < $onTaskFloor",
+      "outcome": "ask",
+      "detail": "on_task {on_task}",
+      "rule": "does not match what the agent said it was doing"
+    },
+    {
+      "id": "blast",
+      "label": "High blast?",
+      "test": "blast >= $askAt",
+      "outcome": "ask",
+      "detail": "blast {blast}",
+      "rule": "blast {blast} at or above {$askAt}"
+    },
+    {
+      "id": "unsure",
+      "label": "Unsure about a mutation?",
+      "test": "mutates >= 0.5 and blast.confidence < $unsureBelow",
+      "outcome": "ask",
+      "detail": "blast confidence {blast.confidence}",
+      "rule": "risk unclear"
+    },
+    {
+      "id": "allow",
+      "label": "Clearly safe?",
+      "test": "blast <= $allowBlastMax and blast.confidence >= $allowConfidence and mutates < $allowRiskBelow and exfil < $allowRiskBelow and injection < $allowRiskBelow and on_task >= $allowOnTask and env == 'local'",
+      "outcome": "allow",
+      "detail": "blast {blast} (confidence {blast.confidence}), mutates {mutates}, on_task {on_task}, {env}",
+      "rule": "clearly safe: blast {blast} at confidence {blast.confidence}"
+    }
+  ],
+  "default_outcome": "pass",
+  "default_rule": "low risk"
+}

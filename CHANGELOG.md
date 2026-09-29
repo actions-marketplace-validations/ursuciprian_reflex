@@ -6,6 +6,11 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Plugin bundle: the stripped gate, run without `--plugin` and with no key source, no longer calls the Jev provider without a key; it asks. A test checks that no request is sent.
+- The npm package no longer ships `.claude-plugin/marketplace.json`, which points at `plugin/` (installed from git, not npm).
+
 ## [0.16.0] - 2026-09-29
 
 ### Changed
@@ -17,6 +22,21 @@ All notable changes to Reflex are documented here. The format follows
 - `action.yml` description is under 125 characters, as the GitHub Marketplace requires, and a test keeps it there.
 
 ### Added
+
+- The Claude Code plugin is a generated bundle in `plugin/`, built by `node scripts/build-plugin.mjs`
+  (no dependencies) and committed. It holds only what plugin mode runs: the runtime modules, the
+  setup files the gate and the guard read, the hooks, commands, skill, MCP server entry, README,
+  LICENSE and the icon. Code only `reflex setup` and the selfchecks run is marked
+  `// @reflex:setup-only begin` / `end` in the source and left out (the allow answer, the rewritten
+  tool result, the Keychain and key variable reads, Laya setup, selfchecks, evals and the bench). The
+  build fails when a module does not parse or link, a file is over 256 KiB or binary, or a
+  forbidden pattern is left. `.claude-plugin/marketplace.json` lists `"source": "./plugin"`; the root
+  `.claude-plugin/plugin.json` is gone, so there is one Claude Code plugin. The directory submission
+  uses the plugin path `plugin`. CI rebuilds it and fails on drift, runs `claude plugin validate
+  --strict` when the CLI is there, and runs the plugin-mode checks against it
+  (`CLAUDE_PLUGIN_ROOT=plugin node test.mjs --plugin-only`). The Codex CLI plugin is unchanged.
+  Plugin mode now removes every `*_API_KEY` and `*_API_TOKEN` variable from the hooks' environment
+  (it removed the provider and System 2 key variables by name before), the plugin options excepted.
 
 - OpenTofu AI agent guardrails: `tofu apply <planfile>` goes through the plan gate like terraform,
   read with `tofu show -json` (with `infra.terraform_show` on), in the same sanitized environment

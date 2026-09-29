@@ -293,6 +293,7 @@ async function replay() {
   }
 }
 
+// @reflex:setup-only begin
 // ---------------------------------------------------------------------------------------------
 // Latency of the local precheck over a fixed set, and of the engine when --engine names one. Run in an
 // empty directory, so no script of the user's is read, and nothing but these commands is sent.
@@ -333,6 +334,7 @@ async function bench() {
     console.log(`  spend        ${s.input_tokens} input tokens, $${s.usd}; about $${s.usd_per_1000_calls} per 1,000 calls`);
   } else console.log("  engine       local: no hosted calls (--engine jev or laya to time one)");
 }
+// @reflex:setup-only end
 
 // ---------------------------------------------------------------------------------------------
 // Fast-lane suggestions from the same transcripts, judged with the local rules only (suggest.mjs).
@@ -391,6 +393,8 @@ async function suggestCmd() {
 }
 
 if (cmd === "replay") await replay();
+// @reflex:setup-only begin
 else if (cmd === "bench") await bench();
+// @reflex:setup-only end
 else if (cmd === "suggest") await suggestCmd();
 else die("usage: reflex replay [claude|codex|opencode|pi|all] [--since 7d] [--project path] [--engine local|jev|laya] [--yes] [--limit N] [--json] | reflex bench [--engine local|jev|laya] [--json] | reflex suggest [agent] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]");

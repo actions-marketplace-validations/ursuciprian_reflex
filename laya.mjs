@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // The local Laya server (engine laya): one long-lived process, so a hook never loads a model.
+// @reflex:setup-only begin
 //   reflex laya start | stop | status [--json] | install-service | uninstall-service
 //   reflex laya setup [--dry-run]     Python >= 3.10 venv, laya[serve] pinned, checkpoint, start
+// @reflex:setup-only end
 // The server is setup/laya/server.py on 127.0.0.1 only; its pid file and log are in REFLEX_DATA_DIR.
 // It requires a random local token (~/.config/reflex/laya.token, 0600), so no other local process
 // can stand in for it on the port or query it; Reflex sends that token, never the TypeSafe key.
@@ -17,19 +19,26 @@ import {fileURLToPath} from "node:url";
 import {CONFIG, LAYA_DEFAULTS, LAYA_TOKEN, USER_CONFIG, layaUrl} from "./gate.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url)), ENV = process.env;
+// @reflex:setup-only begin
 export const LAYA_PACKAGE = "laya[serve]==0.3.20";   // the version the evaluation ran on (setup/laya/server.py LAYA_VERSION)
 const PREFIX = ENV.REFLEX_PREFIX ?? join(homedir(), ".local/share/reflex");
+// @reflex:setup-only end
 export const laya = () => {
   const s = {...LAYA_DEFAULTS, ...USER_CONFIG.laya}, url = CONFIG.engine === "laya" ? CONFIG.api : layaUrl(s.port);
-  return {...s, url, port: new URL(url).port, model: CONFIG.engine === "laya" ? CONFIG.model : s.model, models: s.models ?? s.model, device: s.device ?? "auto", venv: join(PREFIX, "laya-venv"), hf: join(PREFIX, "laya-hf"),
+  return {...s, url, port: new URL(url).port, model: CONFIG.engine === "laya" ? CONFIG.model : s.model, models: s.models ?? s.model, device: s.device ?? "auto",
+          // @reflex:setup-only begin
+          venv: join(PREFIX, "laya-venv"), hf: join(PREFIX, "laya-hf"),
+          // @reflex:setup-only end
           pid: join(CONFIG.data, "laya.pid"), log: join(CONFIG.data, "laya.log"), health: new URL("/health", url).href};
 };
+// @reflex:setup-only begin
 // Disk and resident memory, measured on an Apple M5 Max (torch 2.14): the higher of MPS and CPU (docs/GUIDE.md#laya-local-system-1).
 const SIZES = {english: {disk: 0.80, rss: 2.4}, multilingual: {disk: 0.61, rss: 1.4}, "typed-decisions": {disk: 0.80, rss: 2.3}};
 const VENV_GB = 0.9;
 const LABEL = platform() === "darwin" ? "com.ursuciprian.reflex-laya" : "reflex-laya";
 const serviceFile = () => platform() === "darwin" ? join(homedir(), "Library/LaunchAgents", `${LABEL}.plist`)
   : join(ENV.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd/user", `${LABEL}.service`);
+// @reflex:setup-only end
 
 /** GET /health within `ms`: {ok, loaded, device} or {ok: false, error}. */
 export async function health(ms = 1500) {
@@ -39,6 +48,7 @@ export async function health(ms = 1500) {
     return b?.status === "ok" ? {ok: true, ...b, loaded: Array.isArray(b.loaded) ? b.loaded : []} : {ok: false, error: r.ok ? "not a Laya server" : `HTTP ${r.status}`};
   } catch (e) { return {ok: false, error: e.cause?.code ?? e.name}; }
 }
+// @reflex:setup-only begin
 // A pid file can outlive its server (a crash, a reboot) and the pid be reused: only a live process
 // running setup/laya/server.py counts, so stop never signals anything else.
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -198,3 +208,4 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (!actions[cmd]) { console.error("usage: reflex laya start | stop | status [--json] | setup [--dry-run] | install-service | uninstall-service"); process.exit(2); }
   await actions[cmd]();
 }
+// @reflex:setup-only end

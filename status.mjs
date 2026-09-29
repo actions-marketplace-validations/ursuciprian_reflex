@@ -82,12 +82,15 @@ if (CONFIG.engine === "jev" && PLUGIN_MODE && !OPTIONS_VISIBLE) key = "plugin op
 else if (CONFIG.engine === "jev" && PLUGIN_MODE) {
   key = pluginKey() ? "plugin option" : "missing";
   if (key === "missing") errors.push(`Jev through ${CONFIG.provider} needs the Jev API key plugin option (/plugin, reflex, Configure), or the engine option set to local.`);
-} else if (CONFIG.engine === "jev") {
+}
+// @reflex:setup-only begin
+else if (CONFIG.engine === "jev") {
   const p = PROVIDERS[CONFIG.provider], item = CONFIG.provider === "typesafe" ? CONFIG.keychain : p.keychain;
   key = p.env.some(n => process.env[n]?.trim()) ? "environment" : platform() === "darwin" &&
     spawnSync("security", ["find-generic-password", "-s", item], {stdio: "ignore", timeout: 2000}).status === 0 ? "keychain" : "missing";
   if (key === "missing") errors.push(`Jev through ${CONFIG.provider} needs ${p.env.join(" or ")} or the Keychain item ${item}. Use reflex setup --engine local for offline operation.`);
 }
+// @reflex:setup-only end
 // engine laya: the local server must answer, or System 1 falls back to the policy exactly as in a Jev outage.
 const laya = CONFIG.engine === "laya" ? await layaHealth() : null;
 if (laya && !laya.ok) errors.push(`Laya server not reachable at ${CONFIG.api} (${laya.error}): reflex laya start. Until it answers, System 1 falls back to the policy, as in a Jev outage.`);
@@ -133,6 +136,7 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
       seen.mode === item.mode && seen.engine === item.engine && seen.allow === item.allow;
   } catch { /* no real hook event yet */ }
   if (!item.hook_observed) warnings.push(`${name}: awaiting a real pre-execution event. Restart the agent${name === "codex" ? " and trust the hooks in /hooks" : ""}, run a harmless command, then check status again.`);
+  // @reflex:setup-only begin
   if (doctor && item.configured && existsSync(gate)) {
     const scratch = mkdtempSync(join(tmpdir(), "reflex-doctor-"));
     try {
@@ -170,6 +174,7 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
       }
     } finally { rmSync(scratch, {recursive: true, force: true}); }
   }
+  // @reflex:setup-only end
   agents.push(item);
 }
 // The Claude Code plugin (reflex@<marketplace>). Its hooks stand down while `reflex setup` hooks are

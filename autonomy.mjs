@@ -570,6 +570,7 @@ export function restore(cwd, name) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// @reflex:setup-only begin
 async function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
   const saved = {...CONFIG, judge: {...CONFIG.judge}, queue: {...CONFIG.queue}};
@@ -971,6 +972,7 @@ async function runawaySelfcheck(ok, scratch) {
     ok(configurationError()?.startsWith("runaway:"), "runaway: an invalid setting is a configuration error (every command asks)");
   } finally { Object.assign(CONFIG, saved); }
 }
+// @reflex:setup-only end
 
 // ---------------------------------------------------------------------------------------------
 const hours = s => { const m = /^(\d+(?:\.\d+)?)([mhd])$/.exec(s ?? ""); if (!m) throw new Error(`--ttl takes a duration like 30m, 8h or 2d (${s})`); return +m[1] * {m: 1 / 60, h: 1, d: 24}[m[2]]; };
@@ -1036,6 +1038,8 @@ function cli(argv) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  if (process.argv.includes("--selfcheck")) await selfcheck();
-  else try { cli(process.argv.slice(2)); } catch (e) { console.error(`reflex: ${e.message}`); process.exitCode = 1; }
+  // @reflex:setup-only begin
+  if (process.argv.includes("--selfcheck")) await selfcheck(); else
+  // @reflex:setup-only end
+  try { cli(process.argv.slice(2)); } catch (e) { console.error(`reflex: ${e.message}`); process.exitCode = 1; }
 }

@@ -1,0 +1,7 @@
+{
+  "name": "@ursuciprian/reflex",
+  "version": "0.16.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT"
+}

@@ -16,34 +16,43 @@ import {createServer} from "node:http";
 
 export const PROVIDER_NAMES = ["typesafe", "openrouter", "cloudflare", "vercel", "compatible"];
 const typesafeBody = (state, questions, model) => ({state, model, questions});
-// url: the default endpoint. env: where its key is read once the provider is chosen, in order.
-// detect: the variables that choose it when no provider is named; only Reflex's own JEV_ names for
-// the proxies, so a CLOUDFLARE_API_TOKEN set for wrangler or an OPENROUTER_API_KEY set for another
-// tool never sends commands anywhere on its own. pinned: its key goes to this host and no other.
+// url: the default endpoint. pinned: its key goes to this host and no other.
 // keychain: the macOS Keychain item (TypeSafe's is REFLEX_KEYCHAIN_SERVICE or "keychain" in config.json).
+// env and detect (below): the environment variables its key is read from.
 export const PROVIDERS = {
-  typesafe: {url: () => "https://api.typesafe.ai/v1/systemone", env: ["TYPESAFE_API_KEY"], detect: ["TYPESAFE_API_KEY"], keychain: "typesafe-api-key",
+  typesafe: {url: () => "https://api.typesafe.ai/v1/systemone", keychain: "typesafe-api-key",
     model: m => m, body: typesafeBody},
   // OpenRouter serves pinned minor versions (typesafe/jev-1.13), no patch level and no latest alias.
-  openrouter: {url: () => "https://openrouter.ai/api/alpha/decisions", env: ["JEV_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"], detect: ["JEV_OPENROUTER_API_KEY"],
+  openrouter: {url: () => "https://openrouter.ai/api/alpha/decisions",
     keychain: "openrouter-api-key", pinned: "openrouter.ai",
     model: m => m.startsWith("typesafe/") ? m : `typesafe/${m.replace(/^(jev-\d+\.\d+)\.\d+$/, "$1")}`, body: typesafeBody,
     headers: {"HTTP-Referer": "https://github.com/ursuciprian/reflex", "X-Title": "Reflex"}},
   // Cloudflare serves one always-current alias, typesafe/jev; the call wraps the contract in {model, input}.
-  cloudflare: {url: s => `https://api.cloudflare.com/client/v4/accounts/${s.account}/ai/run`, env: ["JEV_CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN"],
-    detect: ["JEV_CLOUDFLARE_API_TOKEN"], keychain: "cloudflare-api-token", pinned: "api.cloudflare.com",
+  cloudflare: {url: s => `https://api.cloudflare.com/client/v4/accounts/${s.account}/ai/run`,
+    keychain: "cloudflare-api-token", pinned: "api.cloudflare.com",
     model: m => m.startsWith("typesafe/") ? m : "typesafe/jev", body: (state, questions, model) => ({model, input: {state, questions}})},
   // The gateway's TypeSafe-compatible API: TypeSafe's request and response shapes, model typesafe-ai/jev.
-  vercel: {url: () => "https://ai-gateway.vercel.sh/typesafe/v1/systemone", env: ["JEV_AI_GATEWAY_API_KEY", "AI_GATEWAY_API_KEY"], detect: ["JEV_AI_GATEWAY_API_KEY"],
+  vercel: {url: () => "https://ai-gateway.vercel.sh/typesafe/v1/systemone",
     keychain: "ai-gateway-api-key", pinned: "ai-gateway.vercel.sh", model: m => m.startsWith("typesafe-ai/") ? m : "typesafe-ai/jev", body: typesafeBody},
-  compatible: {url: s => s.url, env: ["JEV_API_KEY"], detect: ["JEV_API_KEY"], keychain: "jev-api-key", model: m => m, body: typesafeBody},
+  compatible: {url: s => s.url, keychain: "jev-api-key", model: m => m, body: typesafeBody},
 };
+// @reflex:setup-only begin
+// env: where the key is read once the provider is chosen, in order. detect: the variables that
+// choose it when no provider is named; only Reflex's own JEV_ names for the proxies, so a
+// CLOUDFLARE_API_TOKEN set for wrangler or an OPENROUTER_API_KEY set for another tool never sends
+// commands anywhere on its own. The Claude Code plugin reads no key from the environment (plugin.mjs).
+for (const [p, env, detect] of [["typesafe", ["TYPESAFE_API_KEY"], ["TYPESAFE_API_KEY"]],
+  ["openrouter", ["JEV_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"], ["JEV_OPENROUTER_API_KEY"]],
+  ["cloudflare", ["JEV_CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN"], ["JEV_CLOUDFLARE_API_TOKEN"]],
+  ["vercel", ["JEV_AI_GATEWAY_API_KEY", "AI_GATEWAY_API_KEY"], ["JEV_AI_GATEWAY_API_KEY"]],
+  ["compatible", ["JEV_API_KEY"], ["JEV_API_KEY"]]]) Object.assign(PROVIDERS[p], {env, detect});
+// @reflex:setup-only end
 /** host[:port] lowercased, without a trailing dot or the scheme's default port; null when not a URL. */
 export const hostOf = u => { try { const x = new URL(u); return x.hostname.replace(/\.$/, "") + (x.port ? `:${x.port}` : ""); } catch { return null; } };
 export const DEFAULT_HOSTS = ["api.typesafe.ai", "openrouter.ai", "api.cloudflare.com", "ai-gateway.vercel.sh"];
 const LOOPBACK = ["127.0.0.1", "[::1]", "localhost"];
 /** The key for provider `p` in `env`; when `detecting`, only from the variables that may choose it. */
-export const envKey = (env, p, detecting) => (detecting ? PROVIDERS[p].detect : PROVIDERS[p].env).map(n => env[n]?.trim()).find(Boolean) ?? null;
+export const envKey = (env, p, detecting) => (detecting ? PROVIDERS[p].detect : PROVIDERS[p].env)?.map(n => env[n]?.trim()).find(Boolean) ?? null;
 
 /**
  * The provider from the environment and saved settings (no Keychain lookup, so it is cheap on every
@@ -184,6 +193,7 @@ export async function call({provider, url, key, headers = {}, state, questions, 
 }
 
 // ---------------------------------------------------------------------------------------------
+// @reflex:setup-only begin
 async function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
   const Q = {mutates: {type: "noul", instructions: "x"}, env: {type: "choice", instructions: "x", criteria: {local: "a", prod: "b"}},
@@ -331,5 +341,8 @@ async function selfcheck() {
     redirecting.closeAllConnections(); await new Promise(r => redirecting.close(r)); await target.close(); await s.close(); }
   if (!process.exitCode) console.log("providers selfcheck ok");
 }
+// @reflex:setup-only end
 
+// @reflex:setup-only begin
 if (process.argv.includes("--selfcheck") && import.meta.url === `file://${process.argv[1]}`) await selfcheck();
+// @reflex:setup-only end

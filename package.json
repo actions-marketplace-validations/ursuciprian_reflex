@@ -84,7 +84,6 @@
   },
   "files": [
     "*.mjs",
-    ".claude-plugin/",
     ".codex-plugin/",
     ".agents/",
     ".mcp.json",
