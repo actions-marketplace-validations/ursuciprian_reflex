@@ -694,7 +694,7 @@ try {
     assert.ok(again.suggestions.length === 0 && again.before.fast_lane === r.after.fast_lane, JSON.stringify(again.before));
 
     // The hook with that file: in-process, pointed at the same scratch configuration.
-    Object.assign(process.env, {HOME: home, XDG_CONFIG_HOME: settings, XDG_STATE_HOME: data, REFLEX_ENGINE: "local", REFLEX_MODE: "shadow"});
+    Object.assign(process.env, {HOME: home, XDG_CONFIG_HOME: settings, XDG_STATE_HOME: data, REFLEX_ENGINE: "local", REFLEX_MODE: "shadow", REFLEX_READONLY: "simple"});
     const {precheck} = await import("./gate.mjs");
     const {parseFastLane, userFastPass, loadFastLane} = await import("./fastlane.mjs");
     const passes = (c, cwd = proj, e = {}) => precheck(c, cwd, e)?.source === "fast-lane";
