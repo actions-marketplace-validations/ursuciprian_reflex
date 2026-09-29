@@ -12,6 +12,7 @@ import {breaker, listItems, runawayTrips} from "./autonomy.mjs";
 import {health as layaHealth} from "./laya.mjs";
 import {FASTLANE_FILE, loadFastLane} from "./fastlane.mjs";
 import {teamPolicy} from "./team.mjs";
+import {infraSettings, which} from "./infra.mjs";
 import {inWindow} from "./freeze.mjs";
 import {targetLabel, testTargets} from "./notify.mjs";
 
@@ -39,6 +40,11 @@ const team_policy = tp && {file: tp.file, sha256: tp.sha256, trust: tp.trust, fa
 if (tp?.errors.length) warnings.push(`Team policy ${tp.file} is invalid: ${tp.errors.join("; ")}. Its valid stricter parts apply; its fast lane does not.`);
 if (tp?.trust === "changed") warnings.push(`Team policy ${tp.file} changed since you trusted it: its fast lane is off until you review it and run reflex trust again.`);
 if (tp?.mode === "enforce" && CONFIG.mode === "shadow") warnings.push(`Team policy sets a mode floor: enforce applies in ${tp.root}.`);
+// The plan-aware infra gate (infra.mjs): which binaries it would read plans and diffs with.
+const infraSet = infraSettings(USER_CONFIG.infra, tp?.infra);
+const infra = {enabled: infraSet.enabled, destroy: infraSet.destroy, require_plan_in_prod: infraSet.require_plan_in_prod, kubectl_diff: infraSet.kubectl_diff,
+  timeout_ms: infraSet.timeout_ms, terraform: which("terraform"), kubectl: which("kubectl")};
+if (infra.enabled && infra.kubectl_diff && !infra.kubectl) warnings.push("infra.kubectl_diff is on but kubectl is not on PATH: kubectl changes are judged by the command text only.");
 if (CONFIG.mode === "shadow") warnings.push("Shadow mode enforces deterministic rules. Other decisions are logged without blocking.");
 // Change freezes (freeze.mjs): config.json and this directory's team policy, checked against the clock now.
 const windows = [...CONFIG.freeze.windows, ...(tp?.freeze ?? [])], onNow = windows.filter(w => inWindow(w, new Date()));
@@ -276,7 +282,7 @@ const trips = runawayTrips(Date.now() - 36e5);
 const runaway = {enabled: CONFIG.runaway.enabled, stops_last_hour: trips.length, sessions: new Set(trips.map(t => t.session)).size, last: trips[0] ?? null};
 if (trips.length) warnings.push(`The runaway guard ${trips[0].dry ? "would have stopped (shadow)" : "stopped"} ${trips[0].agent ?? "a"} session ${Math.round((Date.now() - trips[0].last) / 60e3)} min ago (${trips[0].signal}): ${trips[0].reason}. reflex runaway list shows every stop.`);
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? "Jev + policy" : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, freeze, notify, agents, errors, warnings};
+  policy, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, team_policy, freeze, notify, infra, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
@@ -288,6 +294,8 @@ else {
   console.log(`Team policy: ${team_policy ? `${team_policy.file}; ${team_policy.trust}${team_policy.valid ? "" : ", INVALID"}; sha256 ${team_policy.sha256?.slice(0, 12) ?? "unreadable"}; ` +
     `rules ${team_policy.rules}, always-human ${team_policy.always_human}, prod markers ${team_policy.prod_markers}, mode floor ${team_policy.mode_floor ?? "none"}, ` +
     `freezes ${team_policy.freezes}, fast lane ${team_policy.fastlane_entries} (${team_policy.fastlane_active ? "active" : "inactive"}), notify ${team_policy.notify}` : "none in this directory"}`);
+  console.log(`Infra gate: ${infra.enabled ? `on; destroy ${infra.destroy}; saved plan required in prod ${infra.require_plan_in_prod ? "yes" : "no"}; ` +
+    `terraform ${infra.terraform ?? "not found"}; kubectl ${infra.kubectl ?? "not found"} (diff ${infra.kubectl_diff ? "on" : "off"})` : "off"}`);
   console.log(`Change freeze: ${freeze.active.length ? `ACTIVE now: ${freeze.active.map(w => `${w.reason} (${w.outcome}, ${w.applies_to})`).join("; ")}` : "none active"} (${freeze.windows} window${freeze.windows === 1 ? "" : "s"})`);
   console.log(`Notify: ${notify.targets.length ? notify.targets.join("; ") : "off"}${notify.test ? `; test ${notify.test.map(t => t.error ?? `HTTP ${t.status}`).join(", ") || "not sent"}` : ""}`);
   console.log(`Runaway guard: ${runaway.enabled ? `on (${CONFIG.mode === "enforce" ? "stops" : CONFIG.mode === "shadow" ? "logs only, shadow" : "off with the mode"}); ${runaway.stops_last_hour} stop${runaway.stops_last_hour === 1 ? "" : "s"} in the last hour` : "off"}`);

@@ -32,6 +32,7 @@ import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
 import {globsReflex, teamMode, teamPolicy, teamRules} from "./team.mjs";
+import {infraError, infraSettings, planGate} from "./infra.mjs";
 import {activeFreeze, inWindow, parseFreeze} from "./freeze.mjs";
 import {notifyLater, notifyTarget} from "./notify.mjs";
 
@@ -179,7 +180,7 @@ export const load = f => JSON.parse(readFileSync(setupFile(f), "utf8"));
 export function configurationError() {
   return USER_CONFIG_ERROR ?? (!ENGINES.includes(CONFIG.engine) ? "engine must be local, jev or laya"
     : !["off", "shadow", "enforce"].includes(CONFIG.mode) ? "mode must be off, shadow or enforce"
-    : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on" : layaError() ?? ladderError());
+    : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra));
 }
 // engine laya promises that nothing leaves the machine: a loopback URL, a known checkpoint, a sane port.
 function layaError() {
@@ -257,7 +258,9 @@ const IP_NEIGH = "n|ne|nei|neig|neigh|neighb|neighbo|neighbor|neighbou|neighbour
 const READ_ONLY_SUB = {
   git: /^(-C\s+\S+\s+)?((status|log|diff|show|blame|ls-files|ls-remote|rev-parse|describe|shortlog|fetch)\b|branch(\s+(-a|-r|-v|-vv|--list|--show-current|--contains\s+\S+|--merged|--no-merged))*\s*$|remote(\s+(-v|show\s+\S+|get-url\s+\S+))?\s*$|reflog(\s+show)?\b(?!.*\b(expire|delete)\b)|config\s+--get|stash\s+(list|show)|worktree\s+list|tag\s+-l)/,
   kubectl: /^(get|describe|logs|top|explain|version|api-resources|config (view|current-context|get-contexts))\b/,
-  terraform: /^(-chdir=\S+\s+)?(plan|show|validate|fmt -check|output|state (list|show)|version|providers|graph)\b/,
+  // not plan, show, validate, state, providers or graph: they start the provider binaries in .terraform,
+  // or (output, state list) the backend saved there, which an agent's file tools can write outside the gate
+  terraform: /^(-chdir=\S+\s+)?(fmt -check|version)\b/,
   aws: /^(--\S+\s+\S+\s+)*(\S+ (describe|list|head)-\S+|(?!s3api\s+get-object)\S+ get-\S+|sts get-caller-identity|configure list|s3 ls)\b/,
   helm: /^(list|ls|status|get|lint|show|history|search|version)\b/,
   // gh api is a GET unless a method, field or input says otherwise, in any spelling
@@ -1559,7 +1562,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
       /\breflex\b[^\n;&|]*\b(queue|envelope|checkpoints|runaway)\b[^\n;&|]*\b(approve|deny|clear|set|restore|reset)\b/.test(command.replace(/["'\\]/g, "")) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
       (inRepo && /\bCDPATH=/.test(command)) ||
-      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
+      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bbin\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // A repo's team policy (.reflex/) and the user's trust in it (team.mjs): a human's call.
   // A glob that expands to .reflex counts, and so does naming policy.json where a team policy applies.
@@ -1690,7 +1693,8 @@ export async function jevJudge({command, cwd, env, session = {}, useCache = true
   const questions = Object.fromEntries(Object.entries(spec.questions).filter(([, q]) => !q.requires || present(q.requires))
     .map(([id, {requires, ...q}]) => [id, q]));
   // An edited script is a different command: its content is part of the key, and so is the envelope.
-  const key = sha([redact(command), cwd, env, spec.version, CONFIG.model, ...scripts.map(s => sha(s.body)), ...(session.envelope ? [session.envelope] : [])]);
+  const key = sha([redact(command), cwd, env, spec.version, CONFIG.model, ...scripts.map(s => sha(s.body)), ...(session.envelope ? [session.envelope] : []),
+                   ...(session.plan ? [session.plan.digest] : [])]);
   const cached = useCache && cacheGet(key);
   const res = cached ? {answers: cached, usage: {}, error: null, latency_s: 0} : await asker(state, questions);
   // Every question must come back with a value, or the policy would read missing answers as "no".
@@ -1730,9 +1734,41 @@ export async function jevJudge({command, cwd, env, session = {}, useCache = true
 /** The whole gate for one command, as eval.mjs and the hook see it. */
 export async function judge({command, cwd, env = envContext(cwd), session = {}, useCache = true, asker}) {
   if (configurationError()) return {outcome: "ask", rule: configurationError(), source: "error"};
-  const quick = precheck(command, cwd, env);
-  return frozen(quick, cwd, quick?.source === "read-only" ? {prod: false} : prodTier(command, cwd, env)) ??
-    (CONFIG.engine === "local" ? localJudgment() : jevJudge({command, cwd, env, session, useCache, asker}));
+  const pre = precheck(command, cwd, env);
+  const {quick, plan, floor} = infraJudge(command, cwd, env, frozen(pre, cwd, pre?.source === "read-only" ? {prod: false} : prodTier(command, cwd, env)));
+  if (quick) return quick;
+  if (CONFIG.engine === "local") return floor ?? localJudgment();
+  return askFloor(await jevJudge({command, cwd, env, session: plan ? {...session, plan} : session, useCache, asker}), floor);
+}
+// A plan's ask is a floor under the judge, not in place of it: Jev still sees the command and a deny
+// it finds stands; anything milder becomes the plan's ask, with Jev's answers kept for the trace.
+export const askFloor = (j, floor) => !floor || j.outcome === "deny" ? j
+  : {...floor, answers: j.answers, state: j.state, questions: j.questions, qset: j.qset, usage: j.usage, latency_s: j.latency_s, error: j.error, policy_outcome: j.policy_outcome ?? j.outcome};
+// The plan-aware infra gate (infra.mjs), after the rules and a change freeze; a rule deny stands and nothing is read.
+// A plan's ask or deny is a rule outcome, enforced in every mode, and the more severe of it and the
+// rules' wins. A clean verified plan is allow-eligible: the usual judge decides with the counts in
+// its state (keyless, it passes). {quick, plan, floor}: the precheck result to use, the counts, and a
+// plan's ask when nothing else decided yet (askFloor: the judge still runs under it).
+const INFRA_LATE_MS = Number(ENV.REFLEX_INFRA_LATE_MS ?? 5000);
+export function infraJudge(command, cwd, env, quick) {
+  if (quick?.source === "rule" && quick.outcome === "deny") return {quick, plan: null};
+  // production: by the markers prodTier reads, in the directory the command runs in or the one it started in
+  const prod = dir => prodTier(command, dir || cwd, env).prod || prodTier(command, cwd, env).prod;
+  // the team policy of the directory each part runs in counts too (a cd or -chdir into another repository)
+  const settingsAt = dir => { const a = infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), b = infraSettings(USER_CONFIG.infra, teamPolicy(dir)?.infra);
+    return {...a, destroy: a.destroy === "deny" || b.destroy === "deny" ? "deny" : "ask", require_plan_in_prod: a.require_plan_in_prod || b.require_plan_in_prod}; };
+  let g;
+  try { g = planGate({command, cwd, settings: infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), settingsAt, prod, pipelines, shellWords}); }
+  catch (e) { g = {outcome: "ask", id: "infra-error", rule: `the plan gate failed (${String(e.message).slice(0, 80)})`}; }   // closed, in shadow too
+  if (!g) return {quick, plan: null};
+  const plan = g.plan ?? null, version = teamRules(load("rules.json"), cwd).version, withPlan = q => q && plan ? {...q, plan} : q;
+  if (g.outcome === "ask" || g.outcome === "deny") {
+    const j = {outcome: g.outcome, rule: g.rule, id: g.id, source: "rule", policy_version: version, plan};
+    if (!quick && j.outcome === "ask") return {quick: null, plan, floor: j};
+    return {quick: quick?.source === "rule" && (SEVERITY[quick.outcome] ?? 0) >= SEVERITY[j.outcome] ? withPlan(quick) : j, plan};
+  }
+  if (g.outcome === "pass" && !quick && CONFIG.engine === "local") return {quick: {outcome: "pass", rule: g.rule, id: g.id, source: "plan", policy_version: version, plan}, plan};
+  return {quick: withPlan(quick), plan};
 }
 const localJudgment = () => ({outcome: "ask", source: "local", rule: "not covered by local rules; a human must review it"});
 
@@ -1756,13 +1792,22 @@ export async function decide(call, {background = false, asker, judger} = {}) {
     const effective = CONFIG.mode === "enforce" ? j.outcome : "pass";
     return {...view(j, effective), ...(CONFIG.mode === "enforce" && j.outcome === "pass" && drop.length && {drop})};
   }
-  const env = envContext(call.cwd);
+  const env = envContext(call.cwd), started = Date.now();
   let quick = background ? null : precheck(call.command, call.cwd, env);
   // the production tier goes into the trace (reflex audit); a change freeze tightens like a rule
   if (quick?.source !== "read-only") {
     call = {...call, tier: prodTier(call.command, call.cwd, env)};
     if (!background) quick = frozen(quick, call.cwd, call.tier);
   }
+  // the counts come from the gate itself, never from the caller (the background copy gets them from its parent)
+  let floor = null;
+  if (!background) { const infra = infraJudge(call.command, call.cwd, env, quick); ({quick, floor} = infra); call = {...call, plan: infra.plan ?? undefined}; }
+  // a plan's ask applies now, like a rule's, unless Jev judges in the foreground (enforce): then it is a
+  // floor under Jev. The hook has 10 s and fails open past them: after INFRA_LATE_MS of rules and plan
+  // reading, Jev (3 s) is not also waited for; what is left asks.
+  const late = !background && Date.now() - started > INFRA_LATE_MS && !quick;
+  if (floor && (CONFIG.engine === "local" || CONFIG.mode !== "enforce" || late)) [quick, floor] = [floor, null];
+  else if (late && CONFIG.engine !== "local" && CONFIG.mode === "enforce") quick = {outcome: "ask", rule: "the rules and the plan or diff read took too long to also ask the judge", id: "infra-budget", source: "rule", policy_version: load("rules.json").version, plan: call.plan};
   // A human's answer in the approval queue (autonomous profile): the identical command, cwd and
   // session, within its TTL. A deterministic deny is never lifted, not even by an approval.
   let resumed = false;
@@ -1806,13 +1851,14 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   if (CONFIG.engine === "local") return finish(localJudgment(), call, CONFIG.mode === "enforce" ? "ask" : "pass", {env, judger, background});
   // Shadow mode: nobody waits for Jev. A detached copy of this script judges and logs.
   if (CONFIG.mode !== "enforce" && !background) return inBackground(call);
-  const j = allowSetting(holdAllow(await jevJudge({command: call.command, cwd: call.cwd, env, session: callSession(call), asker, tainted: !!t}), call));
+  const j = askFloor(allowSetting(holdAllow(await jevJudge({command: call.command, cwd: call.cwd, env, session: callSession(call), asker, tainted: !!t}), call)), floor);
   const effective = CONFIG.mode === "enforce" && j.outcome !== "would_allow" ? j.outcome : "pass";
   return finish(j, call, effective, {env, judger, background, tainted: !!t});
 }
 // Every judged command ends here: the escalation ladder when the autonomous profile has it on
 // (System 2, the always-human class, the queue, checkpoints), then the trace and the agent's view.
 async function finish(j, call, effective, opts = {}) {
+  if (call.plan && !j.plan) j = {...j, plan: call.plan};
   if (CONFIG.judge.enabled || CONFIG.queue.enabled || CONFIG.checkpoints) ({j, effective} = await ladder(j, call, effective, opts));
   runawayNote(call, j, effective);
   trace(j, call, effective);
@@ -1824,6 +1870,7 @@ export function callSession(call) {
   if (call.recent?.length) session.recent = call.recent.slice(-5).map(c => redact(c).slice(0, 200));
   const envelope = envelopeFor(call);
   if (envelope) session.envelope = envelope;
+  if (call.plan) session.plan = call.plan;
   return session;
 }
 function inBackground(call) {
@@ -1991,7 +2038,7 @@ function safeFallback() { try { const f = load("policy.json").fallback; return [
 // read-only list or the fast lane never does.
 const view = (j, effective) => ({effective: effective === "allow" && !["jev", "judge", "queue"].includes(j.source) ? "pass"
                                    : ["pass", "allow", "ask", "deny"].includes(effective) ? effective : "ask", decision: j.outcome, reason: `reflex (${j.source}): ${j.rule}`,
-                                 source: j.source, policy: j.policy_version ?? null});
+                                 source: j.source, policy: j.policy_version ?? null, ...(j.plan && {plan: j.plan})});
 
 // After the command: did it run, and how did it end. An effective "ask" followed by a record
 // means it ran after the prompt; only an explicit "denied" event establishes rejection.
@@ -2023,7 +2070,7 @@ function trace(j, call, effective) {
     decision: j.outcome, policy_decision: j.policy_outcome ?? j.outcome, rule: j.rule, source: j.source, policy_version: j.policy_version ?? null,
     mode: CONFIG.mode, emitted: effective === "pass" ? null : effective,
     agent: call.agent ?? null, session_id: call.session_id ?? null, call_id: call.call_id ?? null,
-    permission_mode: call.permission_mode ?? null, ...(j.ladder && {ladder: j.ladder}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway}),
+    permission_mode: call.permission_mode ?? null, ...(j.plan && {plan: j.plan}), ...(j.ladder && {ladder: j.ladder}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway}),
     ...(j.id && {rule_id: j.id}), ...(call.tier && {tier: call.tier}), cwd: call.cwd ?? null});
   // the decision webhook (notify.mjs): redacted, detached, never waited for; a trusted team policy may add one
   const targets = [CONFIG.notify.target, teamPolicy(call.cwd)?.notify].filter(Boolean);
@@ -2169,6 +2216,12 @@ async function selfcheck() {
   ok(readOnly("ls 2>&1 | head"), "fd dup is not a write");
   ok(!readOnly("env rm -rf x"), "env is not a read-only prefix");
   ok(!readOnly("terraform apply -auto-approve"), "apply");
+  // what starts provider binaries from .terraform (agent-writable through file tools) is never read-only nor fast lane
+  for (const c of ["terraform plan -out=tfplan", "terraform show -json tfplan", "terraform validate", "terraform -chdir=x validate",
+                   "terraform state show aws_instance.a", "terraform providers schema -json", "terraform graph", "terraform init",
+                   "terraform output -json", "terraform state list"])
+    ok(!readOnly(c) && !fastPass(c, load("rules.json")), `provider-executing, judged: ${c}`);
+  ok(readOnly("terraform fmt -check") && readOnly("terraform version") && fastPass("terraform fmt", load("rules.json")), "fmt and version stay fast");
   ok(!readOnly("find . -name '*.tmp' -delete"), "find -delete");
   ok(!readOnly("cat $(rm -rf ~)"), "subshell");
   ok(!readOnly("ls; rm -rf build"), "second segment writes");
@@ -3080,6 +3133,6 @@ else if (flag("--check")) {
   const j = await judge({command: opt("--check"), cwd, session: intent ? {intent} : {}, useCache: false});
   const answers = Object.fromEntries(Object.entries(j.answers ?? {}).map(([k, a]) => [k, a.noul ?? a.choice ?? a.score]));
   console.log(JSON.stringify({decision: j.outcome, rule: j.rule, source: j.source, policy: j.policy_version ?? null,
-                              latency_s: j.latency_s ?? 0, answers, env: j.state?.call?.env, error: j.error ?? undefined}, null, 1));
+                              latency_s: j.latency_s ?? 0, answers, env: j.state?.call?.env, plan: j.plan ?? j.state?.call?.plan, error: j.error ?? undefined}, null, 1));
 }
 else console.error("usage: gate.mjs --check <cmd> | --decide | --record | --claude[-post|-prompted] | --codex[-post] | --hermes[-post] | --sh | --bg | --selfcheck");

@@ -8,6 +8,39 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Added
 
+- Plan-aware infra gate (`infra.mjs`), plan reading opt-in with `infra.terraform_show` (off by
+  default: `terraform show` starts the provider binaries in `.terraform`, which an agent's file tools
+  can write outside the gate). On, it runs only when every provider under `.terraform/providers` is a
+  symlink into a plugin cache under the home directory, outside the working tree and not newer than
+  the plan, with no `terraform.d`, `dev_overrides` or `TF_REATTACH_PROVIDERS`; otherwise it asks.
+  With it on, `terraform apply <planfile>` is judged by what the saved plan
+  will change. The hook reads the plan with `terraform show -json` in the command's directory
+  (`-chdir=` and a leading `cd` are followed), with a 3 s timeout (4 s at most), a sanitized environment (no cloud
+  credentials, `TF_VAR_*` or tokens) and `CHECKPOINT_DISABLE=1`; it never runs `terraform plan` or
+  `terraform apply`. It counts create, update, delete and replace. A plan with any delete or replace
+  is denied (`infra.destroy: "ask"` softens it), with the addresses in the reason and stateful types
+  named first. A clean plan is allow-eligible (keyless: pass) when the command is only the apply,
+  and asks in production with the counts in the reason. An apply without a plan file asks with the
+  fix (`terraform plan -out=tfplan`), and so does a plan file that is missing, not a plan, stale
+  (older than its `.tf`, `.tfvars`, lock or local state files), or that `terraform show` could not
+  read in time. `infra.require_plan_in_prod` makes a missing plan in production a deny.
+- A clean plan passes only when the apply runs exactly the plan that was read: the `terraform` from
+  `PATH`, no assignment, `env`, `sudo` or `TF_CLI_ARGS*`, only options that keep a saved plan as is,
+  no `..`, a `cd` only across `&&` and `;`, and no provisioner, deferred `external`/`http` read or
+  action in the plan. Production is also read in the physical directory and by the team policy of
+  the directory the apply runs in. Past 5 s of rules and plan reading, Jev is not waited for too.
+- Optional `infra.kubectl_diff` (off by default, it calls the API server): `kubectl apply` is
+  checked with `kubectl diff`, and `kubectl delete|replace|patch` with `--dry-run=server -o name`.
+  Deletes of namespaces, PVCs, PVs, statefulsets and CRDs follow `infra.destroy`; other deletes ask.
+  A command with its own `--dry-run`, `--raw`, `--` or `-f -` is never run; on any failure kubectl
+  commands are judged as before.
+- Decisions and trace lines the plan gate spoke to carry `plan: {create, update, delete, replace,
+  stateful, digest}`. The digest is part of the approval queue key and the Jev cache key.
+- Team policy `infra` section, stricter only: `{"destroy": "deny", "require_plan_in_prod": true}`.
+- `reflex doctor` and `reflex status` show the infra settings and where `terraform` and `kubectl`
+  were found.
+- Golden cases for applies without a readable plan; `infra.mjs --selfcheck` with fixture plans
+  (`setup/tool-gate/plans/`), a fake `terraform` and a fake `kubectl` on `PATH`.
 - Change freezes: a `freeze` list in `config.json` or a team policy. Each window has `days`,
   `after` / `before` (local `HH:MM`), `from` / `to` (inclusive dates), a `tz` read with `Intl`
   (default UTC), `applies_to` (`prod` or `all`) and `outcome` (`ask` or `deny`). During a window, a
@@ -32,6 +65,17 @@ All notable changes to Reflex are documented here. The format follows
   `reflex doctor --notify-test` sends one dry-run message.
 - The trace records each judged command's production tier (`tier`), its `rule_id` and its `cwd`,
   and a queue answer records who gave it (`decided_by`).
+
+### Changed
+
+- `terraform plan`, `show`, `validate`, `state show`, `providers` and `graph` are no longer on the
+  read-only list, and `terraform init` and `validate` are no longer in the fast lane (rules-v20): they
+  start or install provider binaries from `.terraform`, which an agent can write outside the gate.
+  `output` and `state list` leave the read-only list too: they start the backend saved in `.terraform`.
+  They now go to the usual judgment (keyless: ask in enforce mode). `fmt` and `version` stay.
+- `terraform apply` without a saved plan is now a rule ask in every mode, shadow included (in shadow
+  it used to pass while Jev judged in the background; keyless enforce asked it as uncovered). With the Jev engine in enforce mode, Jev still judges it and a deny it finds
+  stands. The ladder golden case for a dev apply without a plan now expects a human.
 
 ## [0.14.0] - 2026-09-28
 
