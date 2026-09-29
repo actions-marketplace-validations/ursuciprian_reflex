@@ -1415,27 +1415,36 @@ function roughPipelines(c) {
 // directory (or a parent), or one only a variable names. Elsewhere an argument such as
 // ursuciprian/reflex (gh -R) is not a path and is left unresolved.
 const CD_WATCH = /(^|\/)(\.claude(\/(settings|hooks)\b.*)?|\.codex(\/(hooks|rules|config)\b.*)?|\.hermes(\/.*)?|\.config(\/(reflex|opencode)\b.*)?|\.local(\/state(\/.*)?)?|\.(pi|omp)(\/agent(\/.*)?)?|opencode(\/.*)?|\.?reflex(\/.*)?)\/?$|\$|^~\/?$/i;
+const ownDir = d => [CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => (d + "/").startsWith(p + "/") || p.startsWith(d.replace(/\/$/, "") + "/"));
 const cdWatched = d => CD_WATCH.test(d) || [HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => (d + "/").startsWith(p + "/") || p.startsWith(d.replace(/\/$/, "") + "/"));
 // A cd, pushd or popd the directory tracking below reads writes nothing itself: its effect is the
 // resolved paths, each set on a line of its own so a rule cannot match across it and the command
 // text. One it cannot read is kept whole, and then every cd in the command is (the tracking is not
 // trusted). A relative directory that is not watched as written is also tried against `cwd`
-// (`cd setup/tool-gate` in the checkout). `resolvedOnly`: only those lines.
+// (`cd setup/tool-gate` in the checkout), and before any cd the directory is `cwd` itself (an agent
+// started in ~/.local/state writing reflex/trace.jsonl). `resolvedOnly`: only those lines.
+// A program that unpacks an archive into the directory it runs in (tar x, not tar c).
+const EXTRACT = /(^|[\s|(])((bsd|g)?tar\s([^|;&]*\s)?(-?[a-wyzA-Z]*x[a-zA-Z]*|--extract|--get)(\s|$)|(unzip|unrar|unar)\s|7z[az]?\s+[xe]\s|cpio\s[^|;&]*-[a-zA-Z]*i|pax\s[^|;&]*-[a-zA-Z]*r)/;
 const writesView = (ps, resolvedOnly = false, cwd = null) => {
   const dirs = cdDirs(ps);
   return ps.map((p, i) => {
     const whole = !p.inert || /^[\s({!]*(cd|pushd|popd|for|select|case|while|until|if|export|local|declare|typeset|readonly|read|touch|mkdir)\b|^[\s({!]*\w+=/.test(p.core);
     const view = resolvedOnly ? "" : (dirs[i] === CD_STEP && !dirs.unread) || !whole ? p.targets.map(t => `> ${t}`).join(" ") : p.text;
-    const d = typeof dirs[i] === "string" ? dirs[i] : null, abs = d && cwd && !/^[/~$]/.test(d) ? posix.join(cwd, d) : null;
+    const d = typeof dirs[i] === "string" ? dirs[i] : null;
+    const abs = !cwd ? null : d === null ? (dirs[i] === null ? cwd : null) : !/^[/~$]/.test(d) ? posix.join(cwd, d) : null;
     // Inside the checkout its relative paths are judged as written (setup/…, gate.mjs), as without a cd.
     const inside = cwd && (cwd + "/").startsWith(HERE + "/");
-    const at = d && cdWatched(d) ? d : abs && cdWatched(abs) ? (inside ? d : abs) : null;
+    // A relative cd into the Reflex data or config directory (cd reflex from ~/.local/state) is resolved.
+    const at = abs && !inside && ownDir(abs) ? abs : d && cdWatched(d) ? d : abs && cdWatched(abs) ? (inside ? d : abs) : null;
     if (!at) return view;
     // the arguments of each command in the pipeline (not its name, not a URL) and the redirect targets
     const words = whole ? [...p.text.split("|").flatMap(s => s.replace(/[<>&;(){}]/g, " ").trim().split(/\s+/).slice(1)), ...p.targets]
       .flatMap(w => [w, w.replace(/^[^=]*=/, "")]).filter(w => !w.includes("://")) : p.targets;
-    // a command run there that names no file (make, ./install.sh, vim) is marked by the directory itself
-    return `${view}\n${whole ? `> ${at}/ ` : ""}${words.map(w => w.replace(/["'\\]/g, "")).filter(w => w && !/^[-/~$]/.test(w)).map(w => `> ${posix.join(at, w)}`).join(" ")}\n`;
+    // a command run there that names no file (make, ./install.sh, vim) is marked by the directory itself;
+    // one that names it (cp -r x/. ., rsync x/ ./) or unpacks an archive into it names it without the slash
+    const into = whole && EXTRACT.test(p.core) ? ` > ${at}` : "";
+    return `${view}\n${whole ? `> ${at}/ ` : ""}${words.map(w => w.replace(/["'\\]/g, "")).filter(w => w && !/^[-/~$]/.test(w))
+      .map(w => `> ${/^\.\/?$/.test(w) ? at : posix.join(at, w)}`).join(" ")}${into}\n`;
   }).filter(Boolean).join(" ; ");
 };
 // The directory each pipeline runs in, as far as the command line itself changes it: after
@@ -1458,7 +1467,8 @@ function cdDirs(ps) {
     if (/^\s*(export\s+)?\w+=/.test(p.core))
       for (const [, n, v] of p.core.matchAll(/(?:^|\s)(\w+)=(\S*)/g)) if (/^[\w./~@%+:,-]*$/.test(v) && n !== "HOME") vars[n] = v; else delete vars[n];
     const m = maskQuotes(p.text, "_"), count = re => (m.match(re) ?? []).length;
-    for (let k = (m.match(/^[\s!{]*(\(\s*)+/)?.[0].match(/\(/g) ?? []).length; k > 0; k--) scopes.push([dir, old, stack.length]);
+    const opened = (m.match(/^[\s!{]*(\(\s*)+/)?.[0].match(/\(/g) ?? []).length;
+    for (let k = opened; k > 0; k--) scopes.push([dir, old, stack.length]);
     const cmd = p.core.replace(/^[\s({!]+|[\s)}]+$/g, "").replace(/^((do|then|else)\s+)+/, "").replace(/^(builtin|command)\s+/, "")
       .match(/^(cd|pushd|popd)((?:\s+-[LPe@+-]*(?=\s))*)(?:\s+--)?(?:\s+(\S+))?$/);
     let here = dir;
@@ -1469,16 +1479,67 @@ function cdDirs(ps) {
       if ((cmd[1] === "pushd" && arg === undefined) || (cmd[1] !== "cd" && /^[+-]\d+$/.test(arg ?? "")) || (cmd[1] === "popd" && arg !== undefined)) unread = true;
       else if (cmd[1] === "popd") [old, dir] = [dir, stack.pop() ?? null];
       else if (cmd[1] === "pushd") { stack.push(dir); if (arg !== undefined) go(arg); }
-      else if (arg === "-") [dir, old] = [old, dir];
+      else if (arg === "-" || arg === "~-") [dir, old] = [old, dir];
+      else if (arg === "~+") old = dir;
       else go(arg ?? "~");
     } else if (/^[\s({!]*(builtin\s+|command\s+)?(cd|pushd|popd)\b/.test(p.core)) unread = true;   // unread: kept whole
-    const closes = count(/\)/g) - count(/\(/g);
+    // the parentheses this pipeline opened count too: (cd /tmp) opens and closes its own scope
+    const closes = count(/\)/g) - (count(/\(/g) - opened);
     for (let k = 0; k < closes && scopes.length; k++) { const s = scopes.pop(); [dir, old] = s; stack.length = Math.min(stack.length, s[2]); }
     return here;
   });
   out.unread = unread;
   return out;
 }
+// What a command changes, as the tamper check reads it (writesView), quotes and backslashes dropped.
+const writesOf = (command, cwd, ps = pipelines(command)) =>
+  (ps ? writesView(ps, false, cwd) : `${command} ; ${writesView(roughPipelines(command), true, cwd)}`).replace(/["'\\]/g, "");
+// The checkout, the Reflex data directory or its config directory, named in the text. ~ and $HOME
+// are the home directory: ~/src/x/gate.mjs names the checkout wherever it was cloned.
+const homeOf = text => text.replace(/(^|[\s=:>])(~|\$HOME|\$\{HOME\})(?=\/|\s|$)/g, (m, p) => p + homedir());
+const namesOwn = text => {
+  const home = homeOf(text);
+  // the directory itself or a path in it, not a sibling that starts with its name (reflex-old)
+  const at = (s, p) => { for (let i = s.indexOf(p); i > -1; i = s.indexOf(p, i + 1)) if (!/[\w.-]/.test(s[i + p.length] ?? "")) return true; return false; };
+  return [HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => at(text, p) || at(home, p));
+};
+// The same directories as path words, spelled any way the shell or the file system accepts: . and
+// .. and // in them, another case (macOS), a symlinked spelling (/tmp for /private/tmp), a glob
+// (refle?, [r]eflex), a climb from `cwd` (../state/reflex). Also the parent of the data or config
+// directory named as a word (tar -C ~/.local/state, cp -r x/. . or tar -xf run there), unless that
+// parent is a directory everything happens in (home, /, the temp directory). ponytail: an unknown
+// program run in the parent that writes reflex/ without naming it is not caught.
+const real = p => { try { return realpathSync(p); } catch { return p; } };
+const BROAD = () => new Set([homedir(), "/", tmpdir(), real(tmpdir()), "/tmp", "/private/tmp"].map(p => p.replace(/\/$/, "").toLowerCase() || "/"));
+const globPart = g => new RegExp(`^${g.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".").replace(/\[!/g, "[^")}$`, "i");
+function pathsOwn(writes, cwd) {
+  const own = [...new Set([HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].flatMap(p => [p, real(p)]).map(p => p.toLowerCase()))];
+  const broad = BROAD(), parents = [CONFIG.data, dirname(USER_CONFIG_FILE)].flatMap(p => [dirname(p), dirname(real(p))])
+    .map(p => p.toLowerCase()).filter(p => !broad.has(p));
+  for (let t of homeOf(writes).split(/[\s=:>,;&|()<]+/)) {
+    if (cwd && /^\.\.(\/|$)/.test(t)) t = posix.join(cwd, t);
+    if (!t.startsWith("/")) continue;
+    // the parent as a word of its own; with a trailing slash it is the mark of a command run there
+    const named = !t.endsWith("/");
+    t = posix.normalize(t).replace(/(.)\/$/, "$1").toLowerCase();
+    if (named && parents.includes(t)) return true;
+    for (const p of own) {
+      if (t === p || t.startsWith(p + "/")) return true;
+      if (!/[*?[]/.test(t)) continue;
+      const tc = t.split("/"), pc = p.split("/");
+      if (tc.length >= pc.length && pc.every((c, k) => c === tc[k] || (/[*?[]/.test(tc[k]) && globPart(tc[k]).test(c)))) return true;
+    }
+  }
+  return false;
+}
+// A Reflex file written under a variable the command does not set ($D/trace.jsonl, ${D}feedback.jsonl,
+// cd "$X" && tee q-1.json): where it points is unknown, so it counts as the data or config directory.
+// $HOME, $PWD and the temp directory variables are known. ponytail: by file name; a bare $F or a
+// generic name (config.json) under a variable is not caught.
+const OWN_UNDER_VAR = /\$[^\s;&|<>]*?(?<=[/}])(reflex(\/|\s|$)|(trace|feedback|judge|guard|context|instructions|subgoals)(\.\d+)?\.jsonl\b|q-[\w-]+\.json\b|(queue|taint|runaway)\/[\w-]+\.json\b|(envelopes|cache|judge-cache|judge-budget|fastlane)\.json\b|laya\.token\b)/;
+const knownVars = (s, cwd) => s.replace(/\$HOME\b|\$\{HOME\}/g, homedir()).replace(/\$(TMPDIR|TMP|TEMP)\b|\$\{(TMPDIR|TMP|TEMP)\}/g, tmpdir())
+  .replace(/\$PWD\b|\$\{PWD\}/g, cwd ?? "$PWD");
+const touchesOwn = (writes, cwd) => { const w = knownVars(writes, cwd); return namesOwn(w) || pathsOwn(w, cwd) || OWN_UNDER_VAR.test(w); };
 // Only inert pipelines writing notes (Markdown, text, logs, CSV) or nothing: there is no shell
 // command in it for a "shell" rule to find, whatever its quoted text says (echo '… rm -rf / …' >> MEMORY.md).
 const NOTES = /^(\/dev\/(null|stdout|stderr)|[^\s;&|<>]*\.(md|markdown|txt|rst|adoc|log|csv|tsv))$/i;
@@ -2118,13 +2179,11 @@ function precheckAs(command, cwd, env, run, alt = false) {
   // Quotes and backslashes are dropped, as the shell drops them: ~/.claude/'settings.json' is the file.
   // When the text hides what runs (a $, a heredoc), the whole command counts, plus the paths a cd
   // in it points relative ones at (cd "$HOME/.claude" && tee settings.json).
-  const ps = pipelines(command), writes = (ps ? writesView(ps, false, cwd) : `${bare} ; ${writesView(roughPipelines(bare), true, cwd)}`).replace(/["'\\]/g, "");
+  const ps = pipelines(command), writes = writesOf(bare, cwd, ps);
   // The checkout itself is protected wherever it was cloned, not only under a directory named reflex.
   // A git worktree or clone nested inside it is another checkout, unless the command climbs out (..).
   const nested = cwd && nestedCheckout(cwd), inRepo = cwd && (cwd + "/").startsWith(HERE + "/") && !(nested && staysNested(command, cwd, nested, run));
-  // ~ and $HOME are the home directory: ~/src/x/gate.mjs names the checkout wherever it was cloned
-  const home = writes.replace(/(^|[\s=:>])(~|\$HOME|\$\{HOME\})(?=\/|\s|$)/g, (m, p) => p + homedir());
-  if ([HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].some(p => writes.includes(p) || home.includes(p)) ||
+  if (touchesOwn(writes, cwd) ||
       // an agent must not answer its own queue item, widen its own envelope or rewind the tree
       reflexChanges(command) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
@@ -2154,7 +2213,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
   const late = () => Date.now() > run.scan;
   for (const s of localScripts(command, cwd).filter(s => s.body && !run.scripts.has(s.path))) {
     run.scripts.add(s.path);
-    if (s.body.includes(HERE) || s.body.includes(CONFIG.data) || TEAM_TAMPER.test(s.body.replace(/["'\\]/g, "")) || reflexChanges(s.body) || fastLaneEdit(s.body))
+    if (namesOwn(s.body) || touchesOwn(writesOf(s.body, cwd, pipelines(s.body, Infinity, run.scan)), cwd) || TEAM_TAMPER.test(s.body.replace(/["'\\]/g, "")) || reflexChanges(s.body) || fastLaneEdit(s.body))
       { hold(ruled({outcome: "ask", rule: `touches the Reflex gate, its setup or its logs (in ${s.path})`, id: "tamper"})); continue; }
     const {lines} = scriptLines(s.body), all = lines.join("\n");
     let sh = checkRules(all + ctx, whole, all);
@@ -3294,6 +3353,41 @@ async function selfcheck() {
     "cd /tmp/x && curl -sL https://example.com/reflex/hooks.md -o pm.md", "D=/tmp/logo; cd $D && python3 - <<'EOF'\nopen('a.svg', 'w').write('reflex')\nEOF",
     "rtk proxy grep -n x scripts/reflex; rtk proxy grep -n \"destructive-delete\\|\\\"prod\\\",\" setup/x.json"])
     ok(pw(c) !== "tamper", `not tamper, a read after cd: ${c}`);
+  // The Reflex data and config directories (reflex learn trusts their logs): a relative write after a
+  // cd into one or its parent, from a cwd there, or under a variable, wherever they are.
+  { const D = CONFIG.data, C = dirname(USER_CONFIG_FILE), dn = basename(D), cn = basename(C);
+    for (const c of ["cd ~/.local/state && echo x >> reflex/trace.jsonl", "cd ~/.local/state && echo x >> reflex/queue.json",
+      "cd ~/.local/state && echo x >> reflex/feedback.jsonl", "cd ~/.config && echo '{}' > reflex/config.json",
+      `cd ${dirname(D)} && echo x >> ${dn}/trace.jsonl`, `cd ${dirname(D)} && echo x >> ${dn}/queue/q-1.json`, `cd ${dirname(D)}; echo x >> ${dn}/feedback.jsonl`,
+      `cd ${dirname(C)} && echo '{}' > ${cn}/config.json`, `cd ${D} && tee -a trace.jsonl < /tmp/x`, `cd ${dirname(D)} && sed -i '' s/denied/approved/ ${dn}/feedback.jsonl`,
+      `cd ${dirname(D)} && cp /tmp/x ${dn}/trace.jsonl`, `cd ${dirname(D)} && mv /tmp/x ${dn}/queue/q-1.json`, `cd ${dirname(C)} && dd if=/tmp/x of=${cn}/config.json`,
+      `P=${dirname(D)}; cd $P && echo x >> ${dn}/trace.jsonl`, `F=${D}/feedback.jsonl; echo x >> $F`, `cd ${D}/queue && cd .. && echo x >> trace.jsonl`,
+      `cd ${D}/queue && echo x >> ../feedback.jsonl`, "echo x >> $UNSET/trace.jsonl", `cd "$X" && tee -a queue/q-1.json < /tmp/x`,
+      "echo '{}' > ${XDG_CONFIG_HOME:-$HOME/.config}/reflex/config.json"])
+      ok(pw(c) === "tamper", `tamper, the data or config directory: ${c}`);
+    for (const [c, at] of [["echo x >> trace.jsonl", D], [`echo x >> ${dn}/queue/q-1.json`, dirname(D)], ["cd .. && echo x >> feedback.jsonl", join(D, "queue")],
+      ["echo x >> ../trace.jsonl", join(D, "queue")], ["echo '{}' > config.json", C], [`tee ${cn}/config.json < /tmp/x`, dirname(C)]])
+      ok(pw(c, at) === "tamper", `tamper, the data or config directory from its cwd: ${c} (in ${at})`);
+    // review: a relative cd from the parent, globs, other spellings, a climb, the parent itself, subshells, ~-
+    for (const [c, at = "/w"] of [[`cd ${dn} && echo x >> trace.jsonl`, dirname(D)], [`cd ./${dn}/queue && echo '{}' > q-1.json`, dirname(D)],
+      [`cd ${cn} && cp /tmp/x config.json`, dirname(C)], [`echo x >> ${dirname(D)}/${dn.slice(0, -1)}?/trace.jsonl`], [`echo x >> ${dirname(D)}/${dn[0]}*/feedback.jsonl`],
+      [`echo x >> ${dirname(D)}/[${dn[0]}]${dn.slice(1)}/trace.jsonl`], [`cd ${dirname(D)} && tee ${dn[0]}*/trace.jsonl < /tmp/x`], [`echo x >> ${dirname(D)}/./${dn}/trace.jsonl`],
+      [`echo x >> ${dirname(D)}//${dn}/trace.jsonl`], [`echo x >> ${D.toUpperCase()}/trace.jsonl`], [`echo x >> ../..${D}/trace.jsonl`, "/w/proj"],
+      ["tar -xf /tmp/t.tar", dirname(D)], ["unzip -o /tmp/z.zip", dirname(D)], ["rsync -a /tmp/x/ ./", dirname(D)], ["cp -r /tmp/x/. .", dirname(C)],
+      [`tar -xf /tmp/t.tar -C ${dirname(D)}`], ["echo x >> ${D}trace.jsonl"], ["cd $Q && echo x > q-1.json"], ["mv /tmp/x $Q/q-1.json"], ["echo '{}' > $D/cache.json"],
+      [`(cd /tmp) && echo x >> ${dn}/trace.jsonl`, dirname(D)], [`(cd /tmp); echo x >> ${dn}/trace.jsonl`, dirname(D)], [`cd /tmp && cd ~- && echo x >> ${dn}/trace.jsonl`, dirname(D)]])
+      ok(pw(c, at) === "tamper", `tamper, another spelling of the data or config directory: ${c} (in ${at})`);
+    for (const [c, at = "/w"] of [["mkdir -p $OUT/queue/ && cp job.json $OUT/queue/"], ["echo x > $TMPDIR/trace.jsonl"], ["npm run build -- --outDir $DIST/queue/"],
+      ["docker run -v $PWD/queue/:/q img"], ["cd reflex && npm test"], ["make", homedir()], ["tar xf x.tar", tmpdir()], [`du -sh ${dirname(D)} > /tmp/du`], [`ls ${dirname(D)}`], ["tar cz src | ssh h x", dirname(D)], ["tar -cf fix.tar dir", dirname(D)]])
+      ok(pw(c, at) !== "tamper", `not tamper, near the data directory or a variable naming something else: ${c} (in ${at})`);
+    for (const [c, at = "/w"] of [[`cat ${D}/trace.jsonl | tail`, "/w"], ["cat ~/.local/state/reflex/trace.jsonl | tail"], [`cd ${dirname(D)} && cat ${dn}/trace.jsonl | tail`],
+      ["tail -n 5 trace.jsonl", D], [`grep -c ask ${dn}/trace.jsonl`, dirname(D)], ["git status", homedir()], ["echo x > notes.txt", homedir()], ["echo x > $TMPDIR/trace.json"], ["echo x > $TMPDIR/trace.jsonl"]])
+      ok(pw(c, at) !== "tamper", `not tamper, a read of the data directory or a write elsewhere: ${c} (in ${at})`);
+    const S = join(tmpdir(), `reflex-selfcheck-own-${process.pid}`);
+    try { mkdirSync(S, {recursive: true}); writeFileSync(join(S, "fake.sh"), `cd ${dirname(D)}\necho x >> ${dn}/trace.jsonl\n`);
+      writeFileSync(join(S, "cfg.sh"), `echo '{}' > ${C}/config.json\n`); writeFileSync(join(S, "up.sh"), `echo x >> ${posix.relative(S, D)}/trace.jsonl\n`);
+      ok(pw("bash fake.sh", S) === "tamper" && pw("bash cfg.sh", S) === "tamper" && pw("bash up.sh", S) === "tamper", "tamper: a script that writes the data or config directory"); }
+    finally { rmSync(S, {recursive: true, force: true}); } }
   // ssh options after the host, timeout options, ip prefixes per iproute2 first match, a remote find
   for (const c of ["ssh -J a h -J b uptime", "ssh h -J b uptime", "ssh h -J b 'uptime'", "timeout -k1 5 ssh h uptime", "timeout -k 1 5 ssh h uptime",
     "timeout --signal=KILL 5 ssh h uptime", "ip n g 10.0.0.1 dev eth0", "ip ne s", "ip l l", "ip li ls", "ip r g 1.1.1.1", "ip neighbou show", "ip ru s", "ip addre l"])
@@ -3613,7 +3707,8 @@ async function selfcheck() {
     ok(/not from an allow gate/.test((await D("prettier --write m")).reason), "allow: a default outcome of allow never allows");
     CONFIG.setup = saved.setup;
     // Jev sees the script it runs, the cache follows its content, and a part-seen script never allows
-    const proj = join(scratch, "proj"), states = [];
+    // outside the data directory: a command run inside it is a tamper ask
+    const proj = `${scratch}-proj`, states = [];
     mkdirSync(proj, {recursive: true});
     const spy = async state => { states.push(state); return {answers: SAFE, usage: {}, error: null, latency_s: 0}; };
     writeFileSync(join(proj, "gen.sh"), "mkdir -p build\necho ok > build/out.txt\n");
@@ -3751,7 +3846,7 @@ async function selfcheck() {
       .concat([0, 1, 2].map(i => JSON.stringify({ts: later, event: "prompted", session_id: "R", key: promptKey(`npm run gen${i}`)})))
       .concat(JSON.stringify({ts: new Date(Date.parse(old) - 1000).toISOString(), event: "prompted", session_id: "earlier", key: "x"})).join("\n") + "\n");
     ok(/not enough data: 3 labelled/.test(rep(["--calibration"])), "report: allowlisted passes (no PermissionRequest) are not approvals");
-  } finally { Object.assign(CONFIG, saved); rmSync(scratch, {recursive: true, force: true}); }
+  } finally { Object.assign(CONFIG, saved); for (const d of [scratch, `${scratch}-proj`]) rmSync(d, {recursive: true, force: true}); }
   // adapters
   const cc = claudeCall({tool_name: "Agent", tool_input: {prompt: "Find X", description: "find", subagent_type: "Explore"}, session_id: "s"});
   ok(cc.subgoal === "agent: Explore\nfind\nFind X" && !cc.command && claudeCall({tool_name: "Task", tool_input: {prompt: "p"}}).subgoal === "p" &&

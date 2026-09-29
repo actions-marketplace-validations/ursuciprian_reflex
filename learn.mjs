@@ -7,6 +7,9 @@
 // unanswered, and is not production, always-human or a denied word. It writes nothing on its own:
 // replay.mjs's `reflex learn --write` appends to fastlane.json after a human confirms. CLI only; the
 // Claude Code plugin does not ship this file.
+// The logs are trusted only as far as the tamper check protects them (gate.mjs: a shell or file write
+// into CONFIG.data or the config directory asks a human). There is no second record out of a shell's
+// reach to check them against.
 import {createHash} from "node:crypto";
 import {readFileSync, readdirSync} from "node:fs";
 import {join} from "node:path";
