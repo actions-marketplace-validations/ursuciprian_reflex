@@ -1,5 +1,5 @@
 name: Reflex policy check
-description: Validate a Reflex team policy (.reflex/policy.json), judge a list of commands with reflex check and fail on deny, and optionally run the golden set.
+description: "Check AI coding agent commands in CI: validate a Reflex team policy and fail when a command would be denied."
 author: Ciprian Ursu
 branding:
   icon: shield

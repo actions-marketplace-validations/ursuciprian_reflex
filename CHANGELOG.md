@@ -6,6 +6,10 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `action.yml` description is under 125 characters, as the GitHub Marketplace requires, and a test keeps it there.
+
 ### Added
 
 - OpenTofu AI agent guardrails: `tofu apply <planfile>` goes through the plan gate like terraform,
