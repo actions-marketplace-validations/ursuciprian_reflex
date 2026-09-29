@@ -94,12 +94,16 @@ export function mcpJudge(t, {spec, team = [], tier = {prod: false}, precheck = (
   if (best) return best;
   // read-like: the tool name starts with a read verb, a SQL argument is SELECT only, a shell argument is read-only
   const sql = strs.filter(([k, v]) => SQL_KEYS.test(k) && SQL_START.test(v));
-  // without a server name (Hermes mcp_<server>_<tool>, opencode <server>_<tool>) the verb can be any of the first three words
-  const verb = tool.split("_").slice(0, t.server ? 1 : 3).find(w => spec.read.includes(w)) ?? tool.split("_")[0], read = spec.read.includes(verb);
+  // the verb is one of the first two words (aws___search_documentation, user_info), three without a
+  // server name (Hermes mcp_<server>_<tool>, opencode <server>_<tool>)
+  const verb = tool.split("_").slice(0, t.server ? 2 : 3).find(w => spec.read.includes(w)) ?? tool.split("_")[0], read = spec.read.includes(verb);
   const sqlVerb = new RegExp(`(^|_)(${(spec.sql_verbs ?? []).join("|")})(_|$)`).test(tool);
   if (commands.length) return shell.every(([, r]) => r?.source === "read-only") ? {outcome: "pass", rule: "read-only (MCP shell argument)", source: "read-only"} : null;
   if (sql.length && (sqlVerb || read)) return sql.every(([, v]) => selectOnly(v)) ? {outcome: "pass", rule: "read-only (MCP query, SELECT only)", source: "read-only"} : null;
-  return read ? {outcome: "pass", rule: `read-only (MCP tool ${verb})`, source: "read-only"} : null;
+  if (read) return {outcome: "pass", rule: `read-only (MCP tool ${verb})`, source: "read-only"};
+  // tools that only move a browser around, write to local agent memory, or send an HTTP GET (mcp.json `pass`)
+  const quiet = (spec.pass ?? []).map(compileRule).find(r => hitRule(r, t, text));
+  return !sql.length && quiet ? {outcome: "pass", rule: `${quiet.rule} (${label})`, source: "read-only"} : null;
 }
 const compiled = new WeakMap();
 function compileRule(r) {

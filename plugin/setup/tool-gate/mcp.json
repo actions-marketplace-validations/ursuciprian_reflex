@@ -51,6 +51,29 @@
     "run",
     "statement"
   ],
+  "pass_note": "`pass`: calls that pass like a read once no rule asked: browser navigation (not fill, type, upload or scripts, which can carry data out), local agent memory, an HTTP GET. Measured on 30 days of Claude Code transcripts, these were most of the calls left unknown.",
+  "pass": [
+    {
+      "rule": "browser navigation",
+      "server": "chrome|browser|playwright|puppeteer",
+      "tool": "^(navigate|click|hover|scroll|resize|wait|new_page|new_tab|close_page|close_tab|select_page|switch|tabs|press_key|handle_dialog|emulate|find|get_page)"
+    },
+    {
+      "rule": "local agent memory",
+      "server": "memory|(^|[^a-z])mem([^a-z]|$)|cortex|deja|claude-mem",
+      "tool": "^(remember|store|save|add|create_entities|create_relations|add_observations|recall)"
+    },
+    {
+      "rule": "an HTTP GET",
+      "tool": "(^|_)(request|http|fetch|call_api|api)(_|$)",
+      "args": "\"method\"\\s*:\\s*\"(get|head|options)\""
+    },
+    {
+      "rule": "an HTTP GET (no method, no body)",
+      "tool": "(^|_)(request|http|fetch|call_api|api)(_|$)",
+      "args": "^(?![\\s\\S]*\"(method|body|data|payload|json|form)\"\\s*:)"
+    }
+  ],
   "rules": [
     {
       "id": "mcp-destructive",
