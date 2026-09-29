@@ -103,10 +103,13 @@ export function which(name, path = process.env.PATH ?? "") {
   return null;
 }
 // What terraform show gets: enough to find its plugins and data dir, no cloud credentials or tokens.
-const TF_KEEP = /^(PATH|HOME|TMPDIR|LANG|LC_\w+|USER|LOGNAME|TF_DATA_DIR|TF_PLUGIN_CACHE_DIR|TF_CLI_CONFIG_FILE)$/;
+// XDG_CONFIG_HOME and XDG_DATA_HOME: OpenTofu finds its tofurc there, and providersSafe checked that one.
+const TF_KEEP = /^(PATH|HOME|TMPDIR|LANG|LC_\w+|USER|LOGNAME|TF_DATA_DIR|TF_PLUGIN_CACHE_DIR|TF_CLI_CONFIG_FILE|XDG_CONFIG_HOME|XDG_DATA_HOME)$/;
 export const tfEnv = (env = process.env) => ({...Object.fromEntries(Object.entries(env).filter(([k]) => TF_KEEP.test(k))),
   CHECKPOINT_DISABLE: "1", TF_IN_AUTOMATION: "1", TF_INPUT: "0", NO_COLOR: "1"});
 
+// ponytail: the timeout SIGKILLs the child only; a grandchild (helm-diff under helm) can keep running
+// after the hook has asked. Upgrade path: an async spawn in its own process group, killed with -pid.
 const run = (bin, args, cwd, env, ms) => {
   const r = spawnSync(bin, args, {cwd, env, timeout: Math.max(1, ms), killSignal: "SIGKILL", encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024});
   return {status: r.status, out: r.stdout ?? "", err: r.stderr ?? "", timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL", error: r.error};
@@ -151,7 +154,8 @@ export function providersSafe(dir, cwd, planMtime, env = process.env) {
   // $XDG_CONFIG_HOME/opentofu/tofurc (and *.tfrc there). Both tools are checked against all of them.
   const cfg = env.TF_CLI_CONFIG_FILE;
   if (cfg && (!isAbsolute(cfg) || tree.some(t => insideOf(realOr(cfg) ?? cfg, t)))) return "TF_CLI_CONFIG_FILE is relative or inside the working tree";
-  const xdg = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : join(home, ".config");
+  if ([env.XDG_CONFIG_HOME, env.XDG_DATA_HOME].some(v => v && !isAbsolute(v))) return "a relative XDG_CONFIG_HOME or XDG_DATA_HOME";
+  const xdg = env.XDG_CONFIG_HOME || join(home, ".config");
   const rcs = d => { try { return readdirSync(d).filter(n => /\.tfrc(\.json)?$/.test(n)).map(n => join(d, n)); } catch { return []; } };
   let cli = "";
   for (const f of cfg ? [cfg] : [join(home, ".terraformrc"), join(home, ".tofurc"), join(xdg, "opentofu/tofurc"), ...rcs(join(home, ".terraform.d")), ...rcs(join(xdg, "opentofu"))]) try { cli += readFileSync(f, "utf8").slice(0, 256 * 1024) + "\n"; } catch { /* none */ }
@@ -195,6 +199,16 @@ export function providersSafe(dir, cwd, planMtime, env = process.env) {
   return walk(root, 0);
 }
 
+function encryptionIn(dir) {
+  let names = [];
+  try { names = readdirSync(dir); } catch { return "the directory is unreadable"; }
+  for (const n of names.filter(n => /\.(tf|tofu)(\.json)?$/.test(n))) {
+    let t;
+    try { if (statSync(join(dir, n)).size > 4 * 1024 * 1024) return `${n} is too large to check`; t = readFileSync(join(dir, n), "utf8"); } catch { return `${n} is unreadable`; }
+    if (/\b(encryption|key_provider)\b/.test(t)) return `encryption or a key provider in ${n}`;
+  }
+  return null;
+}
 /** Read one saved plan. {plan} or {why} (why the plan cannot be trusted). */
 export function readPlan(dir, file, {deadline, env = process.env, cwd = dir, tool = "terraform"} = {}) {
   const path = resolve(dir, file);
@@ -213,6 +227,9 @@ export function readPlan(dir, file, {deadline, env = process.env, cwd = dir, too
   if (stale) return {why: `stale: ${stale} changed after ${file} was written`};
   const bin = which(tool, env.PATH);
   if (!bin) return {why: `${tool} not found on PATH`};
+  // OpenTofu reads state and plan encryption from the root module in the directory, which the agent can
+  // write, and a key provider can run a program (external): not run when any config file mentions it
+  if (tool === "tofu") { const e = encryptionIn(dir); if (e) return {why: `tofu show not run: ${e}`}; }
   let unsafe;
   try { unsafe = providersSafe(dir, cwd, st.mtimeMs, env); } catch (e) { unsafe = `could not check the providers (${e.code ?? e.message})`; }
   if (unsafe) return {why: `${tool} show not run: ${unsafe}`};
@@ -441,18 +458,21 @@ export function helmPlugins(dir, cwd, env = process.env) {
   if ([env.HELM_PLUGINS, env.HELM_DATA_HOME, env.XDG_DATA_HOME].some(v => v && v.split(":").some(x => x && !isAbsolute(x)))) return {why: "a relative HELM_PLUGINS, HELM_DATA_HOME or XDG_DATA_HOME"};
   const data = env.HELM_DATA_HOME || join(env.XDG_DATA_HOME || (process.platform === "darwin" ? join(home, "Library") : join(home, ".local/share")), "helm");
   const roots = (env.HELM_PLUGINS ? env.HELM_PLUGINS.split(":") : [join(data, "plugins")]).filter(Boolean);
-  let plugin = null;
+  // every plugin: helm diff can start a downloader plugin too, and helm may resolve `diff` to another one
+  const plugins = [];
   for (const r of roots) {
     let names = [];
     try { names = readdirSync(r); } catch { continue; }
     for (const n of names) {
-      let y = null;
-      try { y = readFileSync(join(r, n, "plugin.yaml"), "utf8").slice(0, 64 * 1024); } catch { /* not a plugin */ }
-      if (y && /^name:\s*["']?diff["']?\s*$/m.test(y)) { plugin = {dir: join(r, n), yaml: y}; break; }
+      let st;
+      try { st = statSync(join(r, n, "plugin.yaml")); } catch { continue; }   // not a plugin
+      if (st.size > 64 * 1024) return {why: `a helm plugin.yaml too large to check (${n})`};
+      let y;
+      try { y = readFileSync(join(r, n, "plugin.yaml"), "utf8"); } catch { return {why: `an unreadable helm plugin.yaml (${n})`}; }
+      plugins.push({dir: join(r, n), yaml: y, diff: /^name:\s*["']?diff["']?\s*(#.*)?$/m.test(y)});
     }
-    if (plugin) break;
   }
-  if (!plugin) return null;
+  if (!plugins.some(p => p.diff)) return null;
   const tree = treeOf(dir, cwd, home);
   if (tree.some(t => insideOf(home, t))) return {why: "the working tree holds the home directory"};
   let mark;
@@ -476,11 +496,15 @@ export function helmPlugins(dir, cwd, env = process.env) {
     return null;
   };
   for (const r of roots) if (realOr(r)) { const w = walk(r, 0); if (w) return {why: w}; }
-  // what the diff plugin runs: ${HELM_PLUGIN_DIR}/..., in every entry that is not for Windows
-  const cmds = plugin.yaml.split(/^(?=\s*-\s)/m).filter(c => !/\bos:\s*["']?windows\b/.test(c))
-    .flatMap(c => [...c.matchAll(/\bcommand:\s*["']?([^"'\n#]*)/g)].map(m => m[1].trim()));
-  if (!cmds.length || cmds.some(c => !/^\$(\{HELM_PLUGIN_DIR\}|HELM_PLUGIN_DIR)\/[\w./-]+$/.test(c) || /(^|\/)\.\.(\/|$)/.test(c))) return {why: "the diff plugin runs a program outside its own directory"};
-  return {dir: plugin.dir};
+  // what each plugin runs (command, platformCommand, downloaders; not the install hooks): a program in
+  // its own directory, ${HELM_PLUGIN_DIR}/x or a relative x, with plain arguments, in every entry not for Windows
+  const own = /^(\$(\{HELM_PLUGIN_DIR\}|HELM_PLUGIN_DIR)\/)?(?!\/)[\w.-][\w./-]*( [\w./=-]+)*$/;
+  for (const p of plugins) {
+    const cmds = p.yaml.split(/^(?=\s*-\s)/m).filter(c => !/\bos:\s*["']?windows\b/.test(c))
+      .flatMap(c => [...c.matchAll(/\bcommand:\s*["']?([^"'\n#]*)/g)].map(m => m[1].trim()));
+    if ((p.diff && !cmds.length) || cmds.some(c => !own.test(c) || /(^|[\/ ])\.\.(\/|$| )/.test(c))) return {why: `the ${basename(p.dir)} plugin runs a program outside its own directory`};
+  }
+  return {dir: plugins.find(p => p.diff).dir};
 }
 
 /** What `helm diff upgrade --output structured` says: objects changed (added, modified, removed) and removed. null: not that output. */
@@ -505,6 +529,7 @@ export function countHelm(out) {
 // helm diff for one helm upgrade or install: null when it cannot speak to it (not on, not installed, a
 // flag or kubeconfig of the command's own), {why} when it should have and could not (unsafe plugins,
 // failed, timed out: the caller asks), else the counts.
+const HELM_KEEP = /^(PATH|HOME|TMPDIR|LANG|LC_\w+|USER|LOGNAME|KUBECONFIG|XDG_\w+|HELM_(PLUGINS|DATA_HOME|CONFIG_HOME|CACHE_HOME|NAMESPACE|KUBECONTEXT|REGISTRY_CONFIG|REPOSITORY_CONFIG|REPOSITORY_CACHE)|AWS_\w+|GOOGLE_\w+|CLOUDSDK_\w+|AZURE_\w+|(HTTPS?|NO)_PROXY|(https?|no)_proxy)$/;
 function helmCheck(h, dir, cwd, deadline, env) {
   const a = helmDiffArgs(h);
   if (!a || kubeconfigNear([dir, cwd], env)) return null;
@@ -514,8 +539,10 @@ function helmCheck(h, dir, cwd, deadline, env) {
   if (!p) return null;
   if (p.why) return {why: `helm diff not run: ${p.why}`};
   if (deadline - Date.now() < 50) return {why: "helm diff not run: out of time"};
-  // HELM_DIFF_* can name an external diff tool, a template file or another output: ours are the flags
-  const henv = Object.fromEntries(Object.entries(env).filter(([k]) => !/^HELM_DIFF_/.test(k)));
+  // an allowlist: what helm needs to find its plugins, config and cluster, and what an exec credential
+  // plugin (aws eks get-token, gke-gcloud-auth-plugin) needs. Not HELM_DIFF_* (an external diff tool,
+  // a template file, another output), HELM_KUBEAPISERVER, HELM_KUBETOKEN or other connection overrides.
+  const henv = Object.fromEntries(Object.entries(env).filter(([k]) => HELM_KEEP.test(k)));
   const r = run(bin, a, dir, henv, deadline - Date.now());
   if (r.timedOut) return {why: "helm diff timed out"};
   if (r.status !== 0) return {why: `helm diff failed (${(r.err.trim().split("\n").find(l => l.trim()) ?? `exit ${r.status}`).replace(/[^\x20-\x7e]/g, "").slice(0, 80)})`};
@@ -910,11 +937,25 @@ async function selfcheck() {
     writeFileSync(join(home, "xdg/opentofu/tofurc"), 'provider_installation { dev_overrides { "a/b" = "/x" } }');
     assert.match(gate("tofu apply tfplan", pv, {}, () => false, {...env, XDG_CONFIG_HOME: join(home, "xdg")}).rule, /dev_overrides/, "$XDG_CONFIG_HOME/opentofu/tofurc counts");
     rmSync(join(home, "xdg"), {recursive: true});
+    // review round 1: tofu gets XDG_CONFIG_HOME, so it reads the tofurc that was checked; a relative one is refused
+    gate("tofu apply tfplan", pv, {}, () => false, {...env, XDG_CONFIG_HOME: join(home, "xdg")});
+    writeFileSync(join(bin, "tofu"), readFileSync(join(bin, "tofu"), "utf8").replace("'^(AWS_", "'^(XDG_CONFIG_HOME|AWS_"));
+    gate("tofu apply tfplan", pv, {}, () => false, {...env, XDG_CONFIG_HOME: join(home, "xdg")});
+    assert.match(readFileSync(log, "utf8"), /env XDG_CONFIG_HOME=/, "XDG_CONFIG_HOME reaches tofu");
+    assert.match(gate("tofu apply tfplan", pv, {}, () => false, {...env, XDG_CONFIG_HOME: "rel"}).rule, /a relative XDG_CONFIG_HOME/);
+    // review round 1: OpenTofu encryption in the root module (a key provider can run a program): not run
+    writeFileSync(join(pv, "enc.tf"), 'terraform {\n  encryption {\n    key_provider "external" "x" { command = ["./x"] }\n  }\n}\n');
+    utimesSync(join(pv, "enc.tf"), 1e9, 1e9);
+    const logBefore = readFileSync(log, "utf8");
+    g = gate("tofu apply tfplan", pv);
+    assert.ok(g.outcome === "ask" && /tofu show not run: encryption or a key provider in enc.tf/.test(g.rule) && readFileSync(log, "utf8") === logBefore, `encryption config: not run: ${JSON.stringify(g)}`);
+    assert.equal(gate("terraform apply tfplan", pv).outcome, "pass", "terraform has no encryption block: unchanged");
+    rmSync(join(pv, "enc.tf"));
     const st2 = join(tmp, "stale-tofu");
     put(st2, "tfplan", fixture("clean"), old);
     writeFileSync(join(st2, "main.tofu"), "");
     assert.match(gate("tofu apply tfplan", st2).rule, /stale: main.tofu changed/, "a .tofu file newer than the plan");
-    const tcalls = readFileSync(log, "utf8").split("\n").filter(l => /^(tofu|terraform) /.test(l));
+    const tcalls = readFileSync(log, "utf8").split("\n").filter(l => /^tofu /.test(l));
     assert.ok(tcalls.length && tcalls.every(l => /^tofu show -json -no-color \//.test(l)), `only tofu show: ${tcalls.join(" | ")}`);
     assert.ok(!/never-passed/.test(readFileSync(log, "utf8")), "tofu: sanitized env");
 
@@ -950,7 +991,7 @@ async function selfcheck() {
       ["helm uninstall api -n web", "destroy"], ["helm delete api", "destroy"], ["helm rollback api 3 -n web", "destroy"], ["helm --kube-context prod-eu uninstall api", "prod-destroy"],
       ["helm rollback api 3 --kube-context production", "prod-destroy"], ["helm -n live uninstall api", "prod-destroy"], ["helm uninstall api -n=live", "prod-destroy"],
       ["helm uninstall api --namespace=live", "prod-destroy"], ["HELM_NAMESPACE=live helm uninstall api", "prod-destroy"], ["HELM_KUBECONTEXT=live helm rollback api 2", "prod-destroy"],
-      ["helm --debug --kube-context live delete api", "prod-destroy"], ["helm uninstall api --kube-context pre-prod", "destroy"]])
+      ["helm --debug --kube-context live delete api", "prod-destroy"], ["tofu -no-color -chdir=envs/prod destroy", "prod-destroy"], ["helm -nprod uninstall api", "prod-destroy"], ["kubectl -nlive delete pod x", "prod-destroy"], ["helm -nweb uninstall api", "destroy"], ["helm uninstall api --kube-context pre-prod", "destroy"]])
       assert.equal(ruleId(c), id, `rule for ${c}`);
     assert.equal(ruleId("helm uninstall api", {kube_context: "eks-live-1"}), "prod-destroy", "the current kube context");
     assert.equal(ruleId("tofu destroy", {tf_workspace: "live"}), "prod-destroy", "a tofu workspace in the context");
@@ -963,9 +1004,10 @@ async function selfcheck() {
 
     // helm: production upgrade asks with the release and namespace; helm diff only with helm_diff
     rmSync(log, {force: true});
-    // fake helm: `diff upgrade ...` prints FAKE_HELM_OUT (exit FAKE_HELM_EXIT), FAKE_HELM_SLEEP hangs it; anything else exits 7
-    writeFileSync(join(bin, "helm"), `#!/bin/sh\necho "helm $*" >> "${log}"\nenv | grep -E '^(HELM_DIFF_|AWS_SECRET)' | sed 's/^/  env /' >> "${log}"\n` +
-      `[ "$1 $2" = "diff upgrade" ] || exit 7\n[ -n "$FAKE_HELM_SLEEP" ] && sleep "$FAKE_HELM_SLEEP"\nprintf '%s' "$FAKE_HELM_OUT"\nexit \${FAKE_HELM_EXIT:-0}\n`);
+    // fake helm: `diff upgrade ...` prints FAKE_HELM_OUT (exit FAKE_HELM_EXIT), FAKE_HELM_SLEEP hangs it; anything else exits 7.
+    // helm gets an allowlisted environment, so the fake reads them from files next to it (hEnv writes them).
+    writeFileSync(join(bin, "helm"), `#!/bin/sh\necho "helm $*" >> "${log}"\nenv | grep -E '^(HELM_DIFF_|HELM_KUBETOKEN)' | sed 's/^/  env /' >> "${log}"\n` +
+      `[ "$1 $2" = "diff upgrade" ] || exit 7\n. "${bin}/helm.vars"\n[ -n "$FAKE_HELM_SLEEP" ] && sleep "$FAKE_HELM_SLEEP"\nprintf '%s' "$FAKE_HELM_OUT"\nexit \${FAKE_HELM_EXIT:-0}\n`);
     chmodSync(join(bin, "helm"), 0o755);
     const up = "helm upgrade --install api ./chart -n web --kube-context dev -f values.yaml --set image.tag=v2 --atomic --wait --timeout 5m";
     assert.equal(gate(up, w), null, "helm_diff off, not production: as before");
@@ -978,7 +1020,11 @@ async function selfcheck() {
     const hk = {helm_diff: true};
     const hconf = join(home, ".config/reflex");
     const pluginsDir = process.platform === "darwin" ? join(home, "Library/helm/plugins") : join(home, ".local/share/helm/plugins");
-    const hEnv = extra => ({...env, HELM_DIFF_TOOL: "/tmp/evil", HELM_DIFF_OUTPUT: "template", ...extra});
+    const q = v => `'${String(v).replace(/'/g, "'\\''")}'`;
+    const hEnv = ({FAKE_HELM_OUT = "", FAKE_HELM_EXIT = "", FAKE_HELM_SLEEP = "", ...extra}) => {
+      writeFileSync(join(bin, "helm.vars"), `FAKE_HELM_OUT=${q(FAKE_HELM_OUT)}\nFAKE_HELM_EXIT=${q(FAKE_HELM_EXIT)}\nFAKE_HELM_SLEEP=${q(FAKE_HELM_SLEEP)}\n`);
+      return {...env, HELM_DIFF_TOOL: "/tmp/evil", HELM_DIFF_OUTPUT: "template", HELM_KUBETOKEN: "never-passed", ...extra};
+    };
     assert.equal(gate(up, w, hk, () => false, hEnv({FAKE_HELM_OUT: "[]"})), null, "helm-diff not installed: as before");
     assert.ok(!existsSync(log), "not installed: helm is not run");
     // the plugin, then the mark (config.json) after it
@@ -1062,7 +1108,21 @@ async function selfcheck() {
     assert.equal(gate(up, w, hk, () => false, hEnv({FAKE_HELM_OUT: "[]"})).id, "helm-diff", "and back to safe");
     const hcalls = readFileSync(log, "utf8").split("\n").filter(l => l.startsWith("helm "));
     assert.ok(hcalls.length && hcalls.every(l => /^helm diff upgrade .* --output structured --no-color --suppress-secrets$/.test(l)), `only helm diff upgrade: ${hcalls.join(" | ")}`);
-    assert.ok(!/  env HELM_DIFF_/.test(readFileSync(log, "utf8")), "HELM_DIFF_TOOL and HELM_DIFF_OUTPUT are not passed");
+    assert.ok(!/  env HELM_(DIFF_|KUBETOKEN)/.test(readFileSync(log, "utf8")), "HELM_DIFF_TOOL, HELM_DIFF_OUTPUT and HELM_KUBETOKEN are not passed");
+    // review round 1: every plugin's command is checked, a plugin.yaml too large to read asks, a helm-s3 style downloader passes
+    mkdirSync(join(pluginsDir, "helm-s3"));
+    writeFileSync(join(pluginsDir, "helm-s3/plugin.yaml"), 'name: "s3"\ncommand: "$HELM_PLUGIN_DIR/bin/helm-s3"\ndownloaders:\n- command: "bin/helm-s3 download"\n  protocols:\n    - "s3"\nhooks:\n  install: "cd $HELM_PLUGIN_DIR; ./hack/install.sh"\n');
+    markAt(Date.now() / 1000 + 3600);
+    assert.equal(gate(up, w, hk, () => false, hEnv({FAKE_HELM_OUT: "[]"})).id, "helm-diff", "a downloader plugin that runs its own program");
+    writeFileSync(join(pluginsDir, "helm-s3/plugin.yaml"), 'name: "s3"\ndownloaders:\n- command: "/tmp/elsewhere/get"\n  protocols: ["s3"]\n');
+    markAt(Date.now() / 1000 + 3600);
+    planted("another plugin that runs a program outside its directory");
+    writeFileSync(join(pluginsDir, "helm-s3/plugin.yaml"), `name: s3\n#${"x".repeat(70 * 1024)}\ncommand: /tmp/elsewhere/get\n`);
+    markAt(Date.now() / 1000 + 3600);
+    planted("a plugin.yaml too large to check");
+    rmSync(join(pluginsDir, "helm-s3"), {recursive: true});
+    markAt(Date.now() / 1000 + 3600);
+    assert.equal(gate(up, w, hk, () => false, hEnv({FAKE_HELM_OUT: "[]"})).id, "helm-diff", "and back");
     assert.deepEqual(helmDiffArgs(helmChange(shellWords("helm install api ./c -nweb"))), ["diff", "upgrade", "api", "./c", "--namespace=web", "--allow-unreleased", "--output", "structured", "--no-color", "--suppress-secrets"]);
     assert.equal(helmChange(shellWords("helm uninstall api")), null, "uninstall is the rules'");
 

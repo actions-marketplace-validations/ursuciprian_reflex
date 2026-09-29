@@ -905,8 +905,12 @@ plan. The CLI config files it reads for `dev_overrides` and `plugin_cache_dir` i
 `TF_CLI_CONFIG_FILE`, else `~/.tofurc`, `$XDG_CONFIG_HOME/opentofu/tofurc` (and `*.tfrc` there),
 `~/.terraformrc` and `~/.terraform.d/*.tfrc`. A `.tofu` or `.tofu.json` file newer than the plan
 makes it stale. `tofu apply` without a plan file asks with the fix: "tofu apply without a saved
-plan: run `tofu plan -out=tfplan` and apply the plan file". An encrypted plan (OpenTofu state and
-plan encryption) is not a zip file, so it is not read and asks. `tofu destroy`, `tofu state rm`,
+plan: run `tofu plan -out=tfplan` and apply the plan file". OpenTofu reads state and plan
+encryption from the root module in the working directory, and a key provider can run a program, so
+`tofu show` is not run (the apply asks) when any `.tf`, `.tofu` or `.tf.json` file there mentions
+`encryption` or `key_provider`; an encrypted plan is not a zip file either. `tofu show` gets
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME`, so it reads the same `tofurc` the check read (a relative one
+asks). `tofu destroy`, `tofu state rm`,
 `tofu apply -destroy` and `-replace=` hit the destroy rules: ask, and deny in production. The
 `tofu` binary comes from an absolute `PATH` entry, and `./tofu` never passes.
 
@@ -957,15 +961,21 @@ It is not run at all, and the command is judged as before, when the command name
 `--kubeconfig`, `--kube-apiserver`, `--kube-token` or other connection flag, a `--post-renderer`,
 `--dry-run`, `--force`, `-o`, repository or registry config, or any flag this does not know; when
 `KUBECONFIG` is relative or inside the working directory; and when helm-diff is not installed.
-`HELM_DIFF_*` variables (an external diff tool, a template file, another output) are removed from its
-environment.
+Its environment is an allowlist: `PATH`, `HOME`, the locale, `KUBECONFIG`, `XDG_*`, helm's own
+directories, `HELM_NAMESPACE` and `HELM_KUBECONTEXT`, the proxy variables, and the cloud variables an
+exec credential plugin needs (`AWS_*`, `GOOGLE_*`, `CLOUDSDK_*`, `AZURE_*`). `HELM_DIFF_*` (an
+external diff tool, a template file, another output), `HELM_KUBEAPISERVER`, `HELM_KUBETOKEN` and the
+rest are left out. A chart from a repository or `oci://` registry is fetched with your helm
+credentials, as `helm diff` would; the timeout kills `helm`, but a helm-diff process under it can
+finish its API calls after the hook has asked.
 
 **The plugin check.** helm plugins are code on disk an agent's file tools could write, like the
 provider binaries. `helm diff` runs only when every helm plugin directory (`HELM_PLUGINS`, else
 `$HELM_DATA_HOME/plugins`, `$XDG_DATA_HOME/helm/plugins`, or `~/Library/helm/plugins` on macOS and
 `~/.local/share/helm/plugins` on Linux) is under your home directory and outside the working tree,
-nothing in it (through the links a local `helm plugin install` makes) points into the tree, the diff
-plugin's `plugin.yaml` runs only `${HELM_PLUGIN_DIR}/...`, and no file or link there changed after
+nothing in it (through the links a local `helm plugin install` makes) points into the tree, every
+plugin's `plugin.yaml` (64 KB at most) runs only a program in its own directory (`command`,
+`platformCommand` and `downloaders`; a downloader can run for a chart URL), and no file or link there changed after
 the trusted mark: your Reflex `config.json`. The change time counts as well as the modification time,
 so `touch -t` cannot hide a new file. After `helm plugin update diff`, save `config.json` again (you,
 not the agent: that is a tamper rule) to trust the new files. If unsure, keep `helm_diff` off:

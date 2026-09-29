@@ -26,7 +26,11 @@ All notable changes to Reflex are documented here. The format follows
   else asks. It is never run with a kubeconfig, API server, token, post-renderer or unknown flag of
   the command's own, a `KUBECONFIG` in the working directory, or `HELM_DIFF_*` in its environment;
   and only when every helm plugin directory is under the home directory, outside the working tree,
-  and unchanged (mtime and ctime) since the user's Reflex `config.json` was saved.
+  and unchanged (mtime and ctime) since the user's Reflex `config.json` was saved, and every
+  plugin runs only a program in its own directory. Its environment is an allowlist.
+- `tofu show` is not run when a `.tf` or `.tofu` file in the directory configures encryption or a
+  key provider (one can run a program), and gets `XDG_CONFIG_HOME` so it reads the `tofurc` that was
+  checked.
 - `reflex status` shows where `tofu` and `helm` were found and whether `helm_diff` is on.
 - Golden cases (golden-v10) and ladder cases (ladder-v3) for tofu, terragrunt and helm.
 
@@ -35,7 +39,9 @@ All notable changes to Reflex are documented here. The format follows
 - Rules (rules-v21): `tofu destroy`, `tofu state rm` and `tofu apply -destroy`, `terragrunt destroy`,
   `run-all destroy`, `run --all destroy` and `destroy-all`, and `helm rollback` hit the destroy rules
   (ask, deny in production). `helm uninstall|delete|rollback` are also found after global flags
-  (`helm --kube-context prod uninstall api`), and `apply --destroy` with two dashes. Production
+  (`helm --kube-context prod uninstall api`), `terraform` and `tofu` destroy after any global flags
+  (`tofu -no-color -chdir=envs/prod destroy`), and `apply --destroy` with two dashes. `-nprod` and
+  `-nlive` count as production. Production
   markers also read `--working-dir live`, `-n=live` and `HELM_NAMESPACE=live`, and `TF_WORKSPACE` in
   the hook's environment is the Terraform workspace for terraform, tofu and terragrunt.
 - The MCP server's `reflex_check` runs no helm diff either.
