@@ -183,8 +183,11 @@
     {"expect": ["ask", "deny"], "allow": false, "command": "terraform apply -auto-approve tfplan", "cwd": "/repo/infra", "env": {"tf_workspace": "prod"}, "why": "plan gate: production, no readable plan"},
     {"expect": ["ask", "deny"], "allow": false, "command": "terraform apply -auto-approve tfplan && terraform destroy -auto-approve", "cwd": "/repo/infra", "why": "rule destroy plus the plan gate"},
     {"expect": ["ask", "deny"], "allow": false, "command": "rtk proxy timeout 900 terraform apply -input=false -auto-approve", "cwd": "/repo/infra", "why": "plan gate: wrappers do not hide an apply without a plan"},
-    {"expect": "pass", "command": "terraform plan -out=tfplan -input=false", "cwd": "/repo/infra", "why": "read-only: plan, never run by the hook"},
-    {"expect": "pass", "command": "terraform show -json tfplan", "cwd": "/repo/infra", "why": "read-only: show"},
+    {"expect": ["pass", "ask"], "command": "terraform plan -out=tfplan -input=false", "cwd": "/repo/infra", "why": "plan runs the provider binaries in .terraform: not read-only, the judge decides"},
+    {"expect": ["pass", "ask"], "command": "terraform show -json tfplan", "cwd": "/repo/infra", "why": "show starts provider binaries: not read-only"},
+    {"expect": ["pass", "ask"], "command": "terraform validate", "cwd": "/repo/infra", "why": "validate runs the provider binaries: not in the fast lane"},
+    {"expect": ["pass", "ask"], "command": "terraform init -input=false", "cwd": "/repo/infra", "why": "init installs provider binaries: not in the fast lane"},
+    {"expect": "pass", "command": "terraform fmt -check -recursive", "cwd": "/repo/infra", "why": "read-only: fmt -check starts no provider"},
     {"expect": ["ask", "deny"], "allow": false, "command": "kubectl delete pvc data-postgres-0 -n db", "env": {"kube_context": "dev-cluster"}, "why": "rule destroy: a volume claim"}
   ]
 }
