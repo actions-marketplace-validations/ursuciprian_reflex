@@ -29,6 +29,10 @@ const GUARD = GATE.replace(/gate\.mjs$/, "guard.mjs");
 const HOOK = GATE.replace(/gate\.mjs$/, "hook.mjs");
 // Tools whose results are the user's own work, never third-party text: not sent to the guard.
 const LOCAL_TOOLS = new Set(["edit", "write", "grep", "find", "ls", "task", "todo", "todo_write", "goal", "ask"]);
+// pi's and omp's own tools; any other tool comes from an extension or an MCP server and goes to the tool gate.
+// ponytail: a list per pi and omp version; a built-in missing here is only logged as an unknown tool.
+const BUILTIN = new Set([...LOCAL_TOOLS, "bash", "read", "mcp", "fetch", "web_fetch", "web_search", "search", "python", "notebook", "lsp",
+  "browser", "calc", "exa", "multi_edit", "todo_read", "report_finding", "submit", "review"]);
 
 // pass and allow both run: pi and omp have no prompt of their own for bash to skip.
 type Decision = {effective: "pass" | "allow" | "ask" | "deny"; reason?: string};
@@ -143,13 +147,17 @@ export default function (pi: any) {
       }
       return;
     }
-    if (event.toolName !== "bash" || !event.input?.command) return;
+    // The tool gate: file writes (a protected path asks) and MCP calls: pi-mcp-adapter's mcp proxy and
+    // any tool that is not built in (its direct tools are named <server>_<tool>).
+    const tool = ["edit", "write", "mcp"].includes(event.toolName) || !BUILTIN.has(event.toolName);
+    if (!tool && (event.toolName !== "bash" || !event.input?.command)) return;
     let d: Decision;
     try {
-      d = JSON.parse(await gate("--decide", {
-        agent: AGENT, command: event.input.command, cwd: event.input.cwd ?? ctx.cwd,
-        call_id: event.toolCallId, session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx),
-      }, ctx.signal));
+      d = JSON.parse(await gate("--decide", tool
+        ? {agent: AGENT, tool: event.toolName, input: event.input ?? {}, mcp: !BUILTIN.has(event.toolName), cwd: ctx.cwd, call_id: event.toolCallId,
+           session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx)}
+        : {agent: AGENT, command: event.input.command, cwd: event.input.cwd ?? ctx.cwd,
+           call_id: event.toolCallId, session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx)}, ctx.signal));
     } catch {
       // No JSON answer (the gate did not start, was killed at the timeout, or crashed before hook.mjs
       // could answer): an ask, except in shadow and off, which never get in the way.
@@ -160,7 +168,8 @@ export default function (pi: any) {
     if (!["pass", "allow"].includes(d?.effective)) {   // ask, or an answer that is not a decision
       d = {effective: "ask", reason: d?.reason ?? "reflex error: the gate gave no decision; a human must review"};
       if (!ctx.hasUI) return {block: true, reason: `${d.reason}. Needs human approval and there is no UI to ask.`};
-      const ok = await ctx.ui.confirm("Reflex: run this command?", `${event.input.command}\n\n${d.reason}`);
+      const ok = tool ? await ctx.ui.confirm(`Reflex: run ${event.toolName}?`, `${JSON.stringify(event.input ?? {}).slice(0, 600)}\n\n${d.reason}`)
+        : await ctx.ui.confirm("Reflex: run this command?", `${event.input.command}\n\n${d.reason}`);
       if (!ok) {
         await gate("--record", {agent: AGENT, event: "denied", call_id: event.toolCallId, session_id: ctx.sessionManager?.getSessionId?.()});
         return {block: true, reason: `${d.reason}. The user declined.`};

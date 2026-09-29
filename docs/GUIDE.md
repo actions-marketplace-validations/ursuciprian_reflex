@@ -17,6 +17,8 @@
    - [Plan-aware terraform gate: stop AI agents from destroying infrastructure](#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure)
    - [OpenTofu and Terragrunt](#opentofu-and-terragrunt)
    - [helm guardrails for AI agents](#helm-guardrails-for-ai-agents)
+   - [Gate MCP tool calls](#gate-mcp-tool-calls)
+   - [Protected files](#protected-files)
    - [Change freeze for AI coding agents](#change-freeze-for-ai-coding-agents)
    - [Audit log for AI agent commands (SOC 2)](#audit-log-for-ai-agent-commands-soc-2)
 5. [Metrics](#metrics)
@@ -1155,6 +1157,139 @@ the trusted mark: your Reflex `config.json`. The change time counts as well as t
 so `touch -t` cannot hide a new file. After `helm plugin update diff`, save `config.json` again (you,
 not the agent: that is a tamper rule) to trust the new files. If unsure, keep `helm_diff` off:
 production upgrades still ask.
+
+## Gate MCP tool calls
+
+MCP server guardrails for AI coding agents: agents change infrastructure through MCP servers (AWS,
+Kubernetes, Terraform Cloud, databases, GitHub), not only through the shell. Reflex judges each MCP
+tool call before it runs, with the same ladder as a command, and blocks destructive MCP tool calls
+that point at production.
+
+**Where it runs.** Claude Code and Codex CLI (`mcp__<server>__<tool>`, the `PreToolUse` hook),
+opencode (`tool.execute.before`: every tool that is not built in), pi (pi-mcp-adapter's `mcp` proxy
+tool and `mcp_*` direct tools) and Hermes (`mcp_<server>_<tool>`, the `pre_tool_call` block `reflex
+setup --agent hermes` prints). `reflex setup` and the Claude Code and Codex plugins wire it; re-run
+`reflex setup` once to add it to an earlier install (`reflex doctor` says when a hook predates it).
+Until then the Claude Code and Codex plugins judge the MCP and file tools the older hook does not
+match, and stand down only for the tools it does.
+
+**How a call is decided** (`setup/tool-gate/mcp.json`, `tools.mjs`):
+
+1. A shell command in an argument (`command`, `cli_command`, `cmd`, `script`), as the AWS MCP
+   server's `call_aws` takes, goes through the shell rules as if the agent ran it:
+   `aws ec2 terminate-instances --profile prod` is denied, `aws s3 ls` passes.
+2. The rules, matched on the server, the tool name as words (`deleteStack`, `delete-stack` and
+   `delete_stack` are the same) and the arguments as JSON:
+
+   | Rule | Matches | Outcome |
+   |---|---|---|
+   | `mcp-destructive` | a tool name with delete, destroy, drop, terminate, remove, rm, purge, truncate, force, reset, rollback, uninstall, wipe, erase, revoke, detach, deregister, kill, flush, flushall, unlink, rmdir, overwrite or shutdown | ask |
+   | `mcp-scale-to-zero` | `scale_*` with replicas, desired count or size 0, `scale_to_zero` | ask |
+   | `mcp-bucket-policy` | `put_bucket_policy`, `put_bucket_acl`, `put_public_access_block` and similar | ask |
+   | `mcp-security-group` | `update_security_group*`, `authorize_security_group_ingress` and similar | ask |
+   | `mcp-iam` | `put_role_policy`, `attach_role_policy`, `create_access_key`, any put, attach, create or update on an IAM server | ask |
+   | `mcp-sql-destructive` | a statement in a `sql`, `query` or `statement` argument, comments stripped, that runs DROP, TRUNCATE, DELETE or ALTER (not on docs, search or memory tools) | ask |
+   | `mcp-http-delete` | an HTTP method of DELETE (`method`, `http_method`, `httpMethod` or any key naming a method or verb) | ask |
+   | `protected-path` | an MCP tool that writes files (write, edit, move, create and similar verbs) with a `path`, `destination` or similar argument on a [protected path](#protected-files) | ask |
+
+   Every one of them is denied instead when the arguments or the server point at production: the
+   `prod-destroy` markers (`prod`, `production`, `prd`, `live` paths) on each argument value
+   (a stack, cluster, context, profile, database, workspace or account name, a URL), on the server
+   name, and on the context that server kind reads (an AWS server the AWS profile and region, a
+   Kubernetes one the kube context, a Terraform one the workspace), plus a team policy's `prod`
+   list, where account ids belong.
+3. Read-like tools pass at once and are not logged, as a read-only command: a tool whose first word
+   is get, list, describe, search, read, query, fetch, find, show, view or another read verb in
+   `mcp.json` (after the server's own name when the tool repeats it, as `aws___search_documentation`
+   does; `update_status` and `resolve_incident` are not reads). A `sql` argument must then be SELECT
+   only: no write keyword outside strings and comments, one read statement after another. Browser
+   navigation (not fill, type, upload, scripts or dialogs), local agent memory and an HTTP GET (an
+   explicit GET, or no method and no body) pass the same way (`mcp.json` `pass`).
+4. Anything else is an unknown MCP tool. Keyless (engine `local`) it passes and is logged in the
+   trace, so `reflex report` and `reflex audit` show it. With Jev it goes to the engine: shadow
+   judges it in the background, enforce waits for Jev, which gets a typed state with the server,
+   the tool, the redacted arguments and the production tier. `"mcp": {"unknown": "ask"}` in
+   `config.json` makes every unknown MCP tool ask instead.
+
+A change freeze, the approval queue, the runaway guard, the trace, the audit export and the decision
+webhook apply to MCP decisions as to commands; the trace records a call as
+`mcp <server>/<tool> {redacted arguments} (input <hash>)`, and a queue approval covers that exact
+call. The gate never allows an MCP call: a pass leaves the agent's own permission prompt in charge.
+The injection guard still scans MCP results after they run.
+
+**Measured on real sessions.** 30 days of one engineer's Claude Code transcripts (1,630 files,
+475 MCP tool calls across Grafana, Chrome DevTools, the AWS MCP server, Cloudflare, Claude in Chrome,
+Context7 and memory servers): no call asked or was denied, 315 (66 %) passed at once as reads and
+160 (34 %) were unknown tools that passed and were logged. With `mcp.unknown: "ask"` those 160 would
+have asked; most were Grafana alert rule and dashboard updates, page scripts and AWS `run_script`.
+The golden set, `setup/tool-gate/golden-mcp.json` (83 cases), runs with `npm run eval-mcp`:
+83 of 83 keyless and with Jev, no miss. The hook adds about 50 ms per call.
+
+**Change the rules.** A copy of `mcp.json` in `~/.config/reflex/tool-gate/` replaces the bundled
+one (a tamper rule asks before an agent edits it). A team policy adds rules, stricter only:
+
+```json
+{"version": 1,
+ "mcp": [{"id": "no-prod-writes", "outcome": "deny", "rule": "no writes to the billing database",
+          "server": "postgres", "args": "billing"}],
+ "prod": ["\\b123456789012\\b"]}
+```
+
+`server`, `tool` and `args` are case-insensitive patterns (at least one), held to the team policy's
+linear-time check like its other patterns; `outcome` is ask or deny, nothing looser.
+
+**Limits.** A rule reads a tool's name and arguments, not what the server does with them: an MCP
+tool named `apply_run` or `update_function_code` is unknown to the rules, so keyless it only logs,
+and only Jev (or `mcp.unknown: "ask"`) stops a production apply there. opencode and Hermes do not
+say which server a tool belongs to, so a `server` pattern reads the whole tool name. opencode and
+Codex cannot show an approval dialog for a tool call: an ask blocks with a reason that tells the
+agent to have the user make the change.
+
+## Protected files
+
+The shell rules already ask before a command writes the gate, agent settings or a team policy.
+File tools write too, so Reflex also judges the file writes of Edit, Write, MultiEdit and
+NotebookEdit (Claude Code), `apply_patch` (Codex, opencode), `write`, `edit` and `apply_patch`
+(opencode), `edit` and `write` (pi) and `write_file` and `patch` (Hermes). A write to a protected
+path asks; any other write passes at once and is not logged.
+
+The default set (`setup/tool-gate/protected.json`):
+
+| Path | Why |
+|---|---|
+| `.github/workflows/**`, `.github/actions/**`, `.gitlab-ci.yml` | a CI pipeline runs with the repository's secrets |
+| `**/envs/prod/**`, `**/prod/**/*.tf` | production environment configuration and Terraform |
+| `**/*.tf`, `**/*.tfvars`, `**/Dockerfile*` in a production path | production Terraform, variables and images (a `prod`, `production`, `prd` or `live` marker in the path within the repository, or a team policy prod marker) |
+| `**/.reflex/**` | a team policy: a human edits it |
+| `**/.git/hooks/**`, `**/.git/config`, `**/.husky/**`, `~/.gitconfig`, `~/.config/git/**` | git hooks and git config (`core.hooksPath`, `fsmonitor`) run code on git commands |
+| `**/.mcp.json`, `**/.envrc`, `**/.vscode/tasks.json` | a new MCP server, a direnv file or an editor task runs code |
+| `~/.ssh/**`, `~/Library/LaunchAgents/**`, `~/.config/systemd/user/**` | SSH keys and config, login services |
+| `.claude/settings*.json`, `.claude/hooks/**`, `~/.claude/plugins/**`, `~/.claude/agents/**`, `~/.claude.json`, `.codex/hooks.json`, `~/.codex/config.toml`, `~/.codex/rules/**`, `~/.config/opencode/**`, `.opencode/plugin*/**`, `~/.pi/agent/**`, `~/.omp/agent/**`, `~/.hermes/**` | agent settings, hooks and plugins |
+| `~/.bashrc`, `~/.zshrc`, `~/.profile` and the other shell startup files | a shell startup file runs in every new shell |
+| the Reflex checkout, its logs and `~/.config/reflex` | always, whatever the file says (a git checkout nested in the Reflex checkout is not the gate, as for the tamper rule) |
+
+A glob that starts with `~/` or `/` is anchored there; any other matches at any depth, as in
+`.gitignore`. Symlinks are resolved, so a link into `.github/workflows` is the workflow, and on
+macOS and Windows globs ignore case, as those file systems do (`.GitHub/Workflows` is the same
+directory). A write whose files cannot be read (a patch in a shape Reflex does not parse) asks. An
+MCP filesystem server's write to a protected path asks too. The reason
+names the path and why it is protected:
+
+```
+reflex (rule): writes a protected path (.github/workflows/deploy.yml): a CI workflow runs with the repository's secrets
+```
+
+The decision takes the same ladder as a rule's ask: a human answers it (in the autonomous profile
+it is always-human, never System 2), a change freeze on production turns it into a deny, and the
+trace records `<tool> <path> (input <hash>)`, never the content. In the Claude Code plugin the hook
+only asks or denies; it never allows and never rewrites the input.
+
+**Configure it.** `"protected": ["docs/runbooks/**", "k8s/overlays/prod/**"]` in `config.json` adds
+globs; a copy of `protected.json` in `~/.config/reflex/tool-gate/` replaces the default set. A team
+policy adds globs, stricter only: `"protected": ["docs/runbooks/**"]`. Measured on the same 30 days
+of transcripts (edits of the Reflex checkout the replay ran from left out), 40 of 3,288 file writes
+(1.2 %) would have asked: 32 CI workflow and action edits, the rest team policy files, `.mcp.json`,
+agent settings and one production path.
 
 ## Change freeze for AI coding agents
 

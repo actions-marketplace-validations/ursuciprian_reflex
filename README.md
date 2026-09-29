@@ -74,7 +74,7 @@ Or from your shell: `claude plugin marketplace add ursuciprian/reflex`, then
 `claude plugin install reflex@reflex`. Restart the session (or run `/reload-plugins`).
 
 The plugin adds the same Claude Code hooks as `reflex setup` (the `PreToolUse` command gate on
-`Bash|Task|Agent`, the post-tool and permission records, conditional instructions and the prompt
+`Bash|Task|Agent`, MCP tools and file writes, the post-tool and permission records, conditional instructions and the prompt
 injection guard), plus read-only commands: `/reflex:status`, `/reflex:check <command>`,
 `/reflex:report`, `/reflex:replay`, `/reflex:queue` and `/reflex:suggest`. `reflex` is on the Bash
 `PATH` while the plugin is enabled. It needs Node.js 18+ as `node` on the `PATH` Claude Code runs
@@ -247,6 +247,18 @@ in Codex CLI, opencode, pi and Hermes:
   coding agents in a committed `.reflex/policy.json` (extra rules, always-human patterns, prod
   markers, freezes, a mode floor, stricter `infra` settings), applied by every teammate's Reflex in
   Claude Code, Codex and the other agents. It only tightens; its fast lane needs `reflex trust .`.
+- [MCP server guardrails](docs/GUIDE.md#gate-mcp-tool-calls): AWS MCP safety and the same for
+  Kubernetes, Terraform Cloud, database and GitHub MCP servers. Reflex blocks destructive MCP tool
+  calls before they run: a tool named delete, destroy, drop, terminate, purge, rollback, uninstall
+  and the like, a scale to zero, a bucket policy, security group or IAM change, destructive SQL or
+  an HTTP DELETE asks, and is denied when an argument or the server points at production. A shell
+  command in an argument (the AWS MCP server's `call_aws`) goes through the shell rules. Reads pass;
+  an unknown tool is logged keyless and judged by Jev with a key. Claude Code, Codex, opencode, pi
+  and Hermes.
+- [Protected files](docs/GUIDE.md#protected-files): an Edit, Write, `apply_patch` or other file tool
+  write to `.github/workflows/`, `.gitlab-ci.yml`, `envs/prod/`, production Terraform, tfvars and
+  Dockerfiles, `.reflex/`, agent settings and hooks or shell startup files asks, and the reason names
+  the path. Configurable; a team policy can add paths.
 - [Change freeze](docs/GUIDE.md#change-freeze-for-ai-coding-agents): a deploy freeze or change
   window for AI coding agents (`{"days": ["fri"], "after": "15:00", "tz": "Europe/Bucharest"}` or a
   date range). During it, a production command that is not read-only asks or is denied, in shadow
@@ -945,7 +957,7 @@ The full list: [GUIDE: safety properties and limits](docs/GUIDE.md#safety-proper
 
 ## FAQ
 
-Short answers; the full list of 28 questions is in [docs/FAQ.md](docs/FAQ.md).
+Short answers; the full list of 30 questions is in [docs/FAQ.md](docs/FAQ.md).
 
 ### How do I stop Claude Code from running dangerous commands?
 
@@ -954,6 +966,13 @@ checks every Bash command before it runs. Its rules deny `rm -rf ~`, destructive
 production and force pushes to `main`, and ask before reads of private keys and credential files,
 in shadow mode too. After a shadow period, `reflex setup --mode enforce` also puts the engine's
 judgments in front of the agent. See the [real-world scenarios](#real-world-scenarios-with-outputs).
+
+### Can Reflex block destructive MCP tool calls?
+
+Yes. The same `PreToolUse` hook judges MCP tool calls (`mcp__<server>__<tool>`): a destructive verb
+in the tool name, a scale to zero, an IAM, bucket policy or security group change, destructive SQL
+or an HTTP DELETE asks, and is denied when the arguments or the server point at production. Reads
+pass without a prompt. See [Gate MCP tool calls](docs/GUIDE.md#gate-mcp-tool-calls).
 
 ### How does Reflex handle terraform apply?
 

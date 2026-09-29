@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(Bash|spawn_agent)$",
+        "matcher": "^(Bash|spawn_agent|apply_patch)$|^mcp__",
         "hooks": [
           {
             "type": "command",

@@ -1424,6 +1424,131 @@ try {
     assert.equal(snapshot(), s0, "audit writes nothing");
     console.log("freeze, notify and audit checks OK");
   }
+  // The tool gate (tools.mjs): MCP tool calls and protected file writes, per agent, from each agent's
+  // own hook payload. Keyless and shadow: rules ask and deny in every mode, reads pass, an unknown MCP
+  // tool passes and is logged.
+  {
+    const tdir = join(scratch, "toolgate"), repo = join(tdir, "repo"), data = join(tdir, "data"), cfg = join(tdir, "config");
+    mkdirSync(join(repo, ".git"), {recursive: true});
+    mkdirSync(join(cfg, "reflex"), {recursive: true});
+    const tenv = (extra = {}) => ({...clean, HOME: tdir, XDG_CONFIG_HOME: cfg, REFLEX_DATA_DIR: data, REFLEX_ENGINE: "local", REFLEX_MODE: "shadow",
+      KUBECONFIG: "/dev/null", ...extra});
+    const setConfig = c => writeFileSync(join(cfg, "reflex/config.json"), JSON.stringify(c));
+    const hook = (flag, input, extra = {}, dir = root) => {
+      const r = spawnSync(process.execPath, [join(dir, "hook.mjs"), join(dir, "gate.mjs"), ...flag.split(" ")], {encoding: "utf8", input: JSON.stringify(input), env: tenv(extra), timeout: 30000});
+      assert.equal(r.status, 0, `${flag}: ${r.stderr}`);
+      return r.stdout.trim() ? JSON.parse(r.stdout) : {};
+    };
+    const traced = () => existsSync(join(data, "trace.jsonl")) ? readFileSync(join(data, "trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)) : [];
+    // per agent: how a call is sent, and the verdict it got as pass | ask | deny
+    const claude = (tool_name, tool_input, extra) => { const o = hook("--claude", {tool_name, tool_input, cwd: repo, session_id: "tg"}, extra).hookSpecificOutput;
+      return [o?.permissionDecision ?? "pass", o?.permissionDecisionReason ?? ""]; };
+    const codex = (tool_name, tool_input, extra) => { const o = hook("--codex", {tool_name, tool_input, cwd: repo, session_id: "tg"}, extra).hookSpecificOutput;
+      return [!o ? "pass" : /cannot open an approval dialog/.test(o.permissionDecisionReason) ? "ask" : o.permissionDecision, o?.permissionDecisionReason ?? ""]; };
+    const hermes = (tool_name, tool_input, extra) => { const o = hook("--hermes", {tool_name, tool_input, cwd: repo, session_id: "tg"}, extra);
+      return [o.action === "block" ? "deny" : o.action === "approve" ? "ask" : "pass", o.message ?? ""]; };
+    const decide = agent => (tool, input, extra, mcp) => { const d = hook("--decide", {agent, tool, input, mcp, cwd: repo, session_id: "tg"}, extra);
+      return [d.effective, d.reason ?? ""]; };
+    const agents = {claude: [claude, n => `mcp__aws__${n}`], codex: [codex, n => `mcp__aws__${n}`], hermes: [hermes, n => `mcp_aws_${n}`],
+      opencode: [(t, i, e) => decide("opencode")(t, i, e, true), n => `aws_${n}`], pi: [(t, i, e) => decide("pi")("mcp", {tool: t, server: "aws", args: i}, e), n => n]};
+    for (const [agent, [send, name]] of Object.entries(agents)) {
+      let [v, why] = send(name("delete_stack"), {StackName: "prod-api"});
+      assert.ok(v === "deny" && /destructive MCP tool call .*on production/.test(why), `${agent}: destructive on prod denies: ${v} ${why}`);
+      [v, why] = send(name("delete_stack"), {StackName: "dev-api"});
+      assert.ok(v === "ask" && /destructive MCP tool call/.test(why), `${agent}: destructive asks: ${v} ${why}`);
+      assert.equal(send(name("describe_stacks"), {StackName: "prod-api"})[0], "pass", `${agent}: a read passes`);
+      const before = traced().length;
+      assert.equal(send(name("start_build"), {project: "web"})[0], "pass", `${agent}: an unknown tool passes in shadow`);
+      const row = traced().slice(before).find(r => r.rule_id === "mcp-unknown");
+      assert.ok(row && row.decision === "pass" && row.emitted === null && /start_build/.test(row.state.call.command), `${agent}: the unknown tool is logged: ${JSON.stringify(traced().slice(before))}`);
+    }
+    // a shell command in an argument goes through the shell rules; SQL passes only when SELECT only
+    assert.equal(claude("mcp__aws-mcp__call_aws", {cli_command: "aws ec2 terminate-instances --instance-ids i-1 --profile prod"})[0], "deny", "call_aws: the shell rules see the command");
+    assert.equal(claude("mcp__aws-mcp__call_aws", {cli_command: "aws s3 ls"})[0], "pass", "call_aws: a read-only command passes");
+    assert.equal(claude("mcp__pg__query", {sql: "SELECT id FROM users LIMIT 5"})[0], "pass", "SQL: SELECT only passes");
+    assert.equal(claude("mcp__pg__query", {sql: "DROP TABLE users"})[0], "ask", "SQL: DROP asks");
+    assert.equal(claude("mcp__pg__query", {sql: "DELETE FROM users", database: "prod"})[0], "deny", "SQL: DELETE on prod denies");
+    assert.equal(claude("mcp__k8s__scale_deployment", {name: "api", replicas: 0})[0], "ask", "scale to zero asks");
+    assert.equal(claude("mcp__aws__put_bucket_policy", {Bucket: "b"})[0], "ask", "a bucket policy asks");
+    assert.equal(claude("mcp__iam__attach_role_policy", {RoleName: "r"})[0], "ask", "an IAM attach asks");
+    // protected writes, per tool name
+    const wf = join(repo, ".github/workflows/ci.yml");
+    const patch = "*** Begin Patch\n*** Update File: .github/workflows/ci.yml\n@@\n-a\n+b\n*** End Patch\n";
+    for (const [agent, send, tool, input] of [["claude", claude, "Edit", {file_path: wf, old_string: "a", new_string: "b"}], ["claude", claude, "Write", {file_path: wf, content: "x"}],
+      ["claude", claude, "MultiEdit", {file_path: wf, edits: []}], ["claude", claude, "NotebookEdit", {notebook_path: join(repo, ".reflex/n.ipynb"), new_source: "x"}],
+      ["codex", codex, "apply_patch", {command: patch}], ["hermes", hermes, "write_file", {path: wf, content: "x"}], ["hermes", hermes, "patch", {path: wf, old_string: "a", new_string: "b"}],
+      ["opencode", decide("opencode"), "write", {filePath: wf, content: "x"}], ["opencode", decide("opencode"), "edit", {filePath: wf, oldString: "a", newString: "b"}],
+      ["opencode", decide("opencode"), "apply_patch", {patchText: patch}], ["pi", decide("pi"), "edit", {path: wf, oldText: "a", newText: "b"}], ["pi", decide("pi"), "write", {path: "~/.zshrc", content: "x"}]]) {
+      const [v, why] = send(tool, input);
+      assert.ok(v === "ask" && /writes a protected path \(.+\): /.test(why), `${agent} ${tool}: a protected write asks: ${v} ${why}`);
+    }
+    assert.equal(claude("Write", {file_path: join(repo, "src/app.js"), content: "x"})[0], "pass", "an ordinary write passes");
+    assert.equal(codex("apply_patch", {command: "*** Begin Patch\n*** Update File: src/app.js\n@@\n-a\n+b\n*** End Patch\n"})[0], "pass", "an ordinary patch passes");
+    assert.equal(codex("apply_patch", {command: "garbled patch text"})[0], "ask", "a patch whose files cannot be read asks");
+    assert.equal(claude("Write", {file_path: join(repo, "envs/prod/main.tfvars"), content: "x"})[0], "ask", "a production tfvars asks");
+    assert.equal(claude("Write", {file_path: join(repo, "envs/dev/main.tfvars"), content: "x"})[0], "pass", "a dev tfvars passes");
+    assert.equal(claude("Write", {file_path: join(repo, "Dockerfile"), content: "x"})[0], "pass", "a Dockerfile outside production passes");
+    assert.equal(claude("Write", {file_path: join(repo, "deploy/production/Dockerfile"), content: "x"})[0], "ask", "a production Dockerfile asks");
+    assert.equal(claude("Edit", {file_path: join(tdir, ".claude/settings.json"), old_string: "a", new_string: "b"})[0], "ask", "agent settings ask");
+    // team policy: stricter only, MCP rules and protected globs
+    mkdirSync(join(repo, ".reflex"), {recursive: true});
+    writeFileSync(join(repo, ".reflex/policy.json"), JSON.stringify({version: 1, mcp: [{id: "no-issues", outcome: "deny", rule: "no issues from agents", server: "github", tool: "^create_issue$"}],
+      protected: ["docs/runbooks/**"]}));
+    let [v, why] = claude("mcp__github__create_issue", {title: "x"});
+    assert.ok(v === "deny" && /no issues from agents \(team policy\)/.test(why), `team: an MCP rule denies: ${v} ${why}`);
+    [v, why] = claude("Write", {file_path: join(repo, "docs/runbooks/db.md"), content: "x"});
+    assert.ok(v === "ask" && /protected by the team policy/.test(why), `team: a protected glob asks: ${v} ${why}`);
+    writeFileSync(join(repo, ".reflex/policy.json"), JSON.stringify({version: 1, mcp: [{id: "x", outcome: "pass", rule: "loosen", tool: "delete"}]}));
+    assert.equal(claude("mcp__aws__delete_stack", {StackName: "dev"})[0], "ask", "team: an invalid MCP rule cannot loosen");
+    rmSync(join(repo, ".reflex"), {recursive: true, force: true});
+    // config: mcp.unknown ask; a freeze asks for an unknown or mutating MCP call, never a read; a bad setting asks
+    setConfig({mcp: {unknown: "ask"}});
+    assert.equal(claude("mcp__ci__start_build", {project: "web"})[0], "ask", "mcp.unknown ask");
+    setConfig({freeze: [{from: "2000-01-01", outcome: "ask", applies_to: "all"}]});
+    [v, why] = claude("mcp__ci__start_build", {project: "web"});
+    assert.ok(v === "ask" && /change freeze/.test(why), `freeze: an unknown MCP call asks: ${why}`);
+    assert.equal(claude("mcp__ci__get_build", {id: 1})[0], "pass", "freeze: a read passes");
+    setConfig({freeze: [{from: "2000-01-01", outcome: "deny"}]});
+    assert.equal(claude("mcp__aws__delete_stack", {StackName: "prod-api"})[0], "deny", "freeze: production denies");
+    setConfig({protected: ["notes/**"]});
+    assert.equal(claude("Write", {file_path: join(repo, "notes/a.md"), content: "x"})[0], "ask", "config.json protected adds a glob");
+    setConfig({mcp: {unknown: "allow"}});
+    assert.ok(/mcp takes only/.test(claude("mcp__ci__start_build", {})[1]), "an invalid mcp setting asks");
+    setConfig({});
+    // plugin mode (Claude Code): the same asks and denies, never an allow, never a rewritten input
+    for (const [tool, input, want] of [["mcp__aws__delete_stack", {StackName: "dev"}, "ask"], ["mcp__aws__delete_stack", {StackName: "prod"}, "deny"],
+      ["Write", {file_path: wf, content: "x"}, "ask"], ["mcp__aws__list_stacks", {}, undefined]]) {
+      const o = hook("--claude --plugin", {tool_name: tool, tool_input: input, cwd: repo, session_id: "tp"});
+      assert.equal(o.hookSpecificOutput?.permissionDecision, want, `plugin: ${tool} ${JSON.stringify(o)}`);
+      assert.ok(!("updatedInput" in (o.hookSpecificOutput ?? {})), "plugin: the input is never rewritten");
+    }
+    // review: a noun after the verb is not the verb (resolve_incident is not a read); it is logged as unknown
+    const n0 = traced().length;
+    assert.equal(claude("mcp__pd__resolve_incident", {id: 1})[0], "pass");
+    assert.ok(traced().slice(n0).some(r => r.rule_id === "mcp-unknown"), "resolve_incident is unknown, not a read");
+    if (["darwin", "win32"].includes(process.platform))
+      assert.equal(claude("Write", {file_path: ".GitHub/Workflows/ci.yml", content: "x"})[0], "ask", "a case-insensitive file system: .GitHub/Workflows is protected");
+    // review: a `reflex setup` hook from before the tool gate (Bash|Task|Agent) makes the plugin stand down for Bash only
+    mkdirSync(join(tdir, ".claude"), {recursive: true});
+    writeFileSync(join(tdir, ".claude/settings.json"), JSON.stringify({hooks: {PreToolUse: [{matcher: "Bash|Task|Agent",
+      hooks: [{type: "command", command: `node "${join(root, "gate.mjs")}" --claude --mode shadow --allow off`}]}]}}));
+    assert.equal(hook("--claude --plugin", {tool_name: "mcp__aws__delete_stack", tool_input: {StackName: "dev"}, cwd: repo, session_id: "ps"}).hookSpecificOutput?.permissionDecision, "ask",
+      "plugin: an older settings hook does not cover MCP tools, so the plugin still judges them");
+    assert.deepEqual(hook("--claude --plugin", {tool_name: "Bash", tool_input: {command: "git push --force origin main"}, cwd: repo, session_id: "ps"}), {},
+      "plugin: the settings hook covers Bash, so the plugin stands down");
+    rmSync(join(tdir, ".claude"), {recursive: true, force: true});
+    // the parsers
+    const {patchPaths, selectOnly, toolOf, words} = await import(join(root, "tools.mjs"));
+    assert.deepEqual(patchPaths("*** Begin Patch\n*** Add File: a/b.txt\n*** Update File: c.tf\n*** Move to: d.tf\n*** Delete File: e\n*** End Patch"), ["a/b.txt", "c.tf", "d.tf", "e"]);
+    assert.deepEqual(patchPaths("--- a/x.yml\n+++ b/x.yml\n"), ["x.yml"]);
+    assert.ok(selectOnly("select 1; SELECT * FROM t WHERE note = 'drop table x'") && !selectOnly("select 1; drop table t") &&
+      !selectOnly("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d") && !selectOnly("SELECT * INTO backup FROM t") && !selectOnly(""), "selectOnly");
+    assert.equal(words("deleteStack-now"), "delete_stack_now");
+    assert.deepEqual(toolOf("mcp__plugin_x_y__query-docs", {a: 1}), {kind: "mcp", name: "mcp__plugin_x_y__query-docs", server: "plugin_x_y", tool: "query-docs", args: {a: 1}});
+    assert.equal(toolOf("Read", {file_path: "x"}), null);
+    assert.equal(toolOf("mcp", {search: "x"}), null, "pi's mcp proxy: a search is not a call");
+    console.log("tool gate (MCP and protected files) checks OK");
+  }
   // Reflex fails closed (hook.mjs, failsafe.mjs): an error while a hook loads, or an unhandled
   // rejection, answers each agent in its own contract. The pre-execution gate asks (Codex: deny with
   // exit 2), shadow logs and passes, off passes without loading, and the other hooks only warn.
@@ -1590,6 +1715,19 @@ async function claudePluginChecks(proot) {
   })])]));
   const installed = read(join(home, ".claude/settings.json")).hooks;
   assert.deepEqual(shape(hooks), shape(installed), "hooks.json events, matchers, flags and timeouts match install.mjs");
+  {
+    // the tool gate in this plugin: MCP and protected writes ask or deny, a read passes, nothing is allowed or rewritten
+    const th = join(scratch, `plugin-tools-${proot === root ? "src" : "bundle"}`), repo = join(th, "repo");
+    mkdirSync(join(repo, ".git"), {recursive: true});
+    const tenv = {...clean, HOME: th, XDG_CONFIG_HOME: join(th, ".config"), XDG_STATE_HOME: join(th, "state"), KUBECONFIG: "/dev/null"};
+    for (const [tool_name, tool_input, want] of [["mcp__aws__delete_stack", {StackName: "dev-api"}, "ask"], ["mcp__aws__delete_stack", {StackName: "prod-api"}, "deny"],
+      ["Write", {file_path: join(repo, ".github/workflows/ci.yml"), content: "x"}, "ask"], ["mcp__aws__list_stacks", {}, undefined], ["mcp__ci__start_build", {}, undefined]]) {
+      const r = spawnSync(process.execPath, [join(proot, "hook.mjs"), join(proot, "gate.mjs"), "--claude", "--plugin"], {encoding: "utf8", env: tenv, timeout: 20000,
+        input: JSON.stringify({hook_event_name: "PreToolUse", tool_name, tool_input, cwd: repo, session_id: "pt"})});
+      const o = r.stdout.trim() ? JSON.parse(r.stdout).hookSpecificOutput : undefined;
+      assert.ok(r.status === 0 && o?.permissionDecision === want && !("updatedInput" in (o ?? {})), `plugin tool gate: ${tool_name} ${r.stdout} ${r.stderr}`);
+    }
+  }
   for (const h of Object.values(hooks).flat().flatMap(g => g.hooks)) {
     assert.match(h.command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hook\.mjs" "\$\{CLAUDE_PLUGIN_ROOT\}\/(gate|guard|instructions)\.mjs" --[\w-]+ --plugin$/, h.command);
     for (const [, f] of h.command.matchAll(/\}\/(\w+\.mjs)/g)) assert.ok(existsSync(join(proot, f)), f);

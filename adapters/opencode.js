@@ -51,7 +51,8 @@ const selected = new Map();   // sessionID -> injected text. ponytail: never pru
 // Built-in tools: those that only touch the user's own work are not sent to the guard; any tool
 // not built in is an MCP (or plugin) tool. ponytail: a list per opencode version.
 const LOCAL_TOOLS = new Set(["edit", "write", "apply_patch", "grep", "glob", "todowrite", "task", "skill", "lsp", "invalid", "question", "plan_exit"]);
-const BUILTIN = new Set([...LOCAL_TOOLS, "bash", "read", "webfetch", "websearch", "codesearch"]);
+const BUILTIN = new Set([...LOCAL_TOOLS, "bash", "read", "webfetch", "websearch", "codesearch", "list", "multiedit", "patch", "todoread"]);
+const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "apply_patch", "patch"]);
 // A subagent (task) runs in a child session. Taint and decisions are kept under the root session,
 // so a child that read an injection makes its parent stricter and a tainted parent's children
 // start strict. ponytail: never pruned; one short string per session.
@@ -131,11 +132,16 @@ export const Reflex = async ({directory, client}) => !FILLED && setupPluginLive(
       if (d.effective === "deny") throw new Error(d.reason);
       return;
     }
-    if (input.tool !== "bash") return;
+    // The tool gate: file writes (a protected path asks) and MCP tools (any tool not built in).
+    const tool = WRITE_TOOLS.has(input.tool) || !BUILTIN.has(input.tool);
+    if (input.tool !== "bash" && !tool) return;
     let d;
     try {
-      d = JSON.parse(gate("--decide", {agent: "opencode", command: output.args?.command,
-        cwd: output.args?.workdir || directory, session_id: await rootOf(client, input.sessionID), call_id: input.callID}));
+      d = JSON.parse(gate("--decide", tool
+        ? {agent: "opencode", tool: input.tool, input: output.args ?? {}, mcp: !BUILTIN.has(input.tool), cwd: directory,
+           session_id: await rootOf(client, input.sessionID), call_id: input.callID}
+        : {agent: "opencode", command: output.args?.command,
+           cwd: output.args?.workdir || directory, session_id: await rootOf(client, input.sessionID), call_id: input.callID}));
     } catch {
       // No JSON answer (the gate did not start, timed out or crashed before hook.mjs could answer): an
       // ask, except in shadow and off, which never get in the way.
@@ -144,7 +150,9 @@ export const Reflex = async ({directory, client}) => !FILLED && setupPluginLive(
     }
     // pass and allow both run: opencode has no prompt of its own here to skip. Anything else asks.
     if (d?.effective === "deny") throw new Error(d.reason);
-    if (!["pass", "allow"].includes(d?.effective)) throw new Error(`${d?.reason ?? "reflex error: the gate gave no decision; a human must review"}. This plugin cannot open an approval dialog. The user can review and run the exact command with reflex run in their own terminal (include --cwd). A chat confirmation does not unblock this plugin; do not retry or disable it.`);
+    if (!["pass", "allow"].includes(d?.effective)) throw new Error(`${d?.reason ?? "reflex error: the gate gave no decision; a human must review"}. This plugin cannot open an approval dialog. ${tool
+      ? "The user can make this change or run this tool themselves."
+      : "The user can review and run the exact command with reflex run in their own terminal (include --cwd)."} A chat confirmation does not unblock this plugin; do not retry or disable it.`);
   },
   "tool.execute.after": async (input, output) => {
     // A task that ran is a launched subgoal: dedup offers only those.

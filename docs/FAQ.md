@@ -8,6 +8,7 @@ docs. The short version of this page is the [FAQ section of the README](../READM
 - [How do I install Reflex as a Claude Code plugin?](#how-do-i-install-reflex-as-a-claude-code-plugin)
 - [How do I install Reflex as a Codex CLI plugin?](#how-do-i-install-reflex-as-a-codex-cli-plugin)
 - [How do I install Reflex as an opencode plugin?](#how-do-i-install-reflex-as-an-opencode-plugin)
+- [How do I block destructive MCP tool calls, like an AWS MCP server deleting production?](#how-do-i-block-destructive-mcp-tool-calls-like-an-aws-mcp-server-deleting-production)
 - [How is Reflex different from Claude Code permission prompts and allowlists?](#how-is-reflex-different-from-claude-code-permission-prompts-and-allowlists)
 - [Can I use Reflex with --dangerously-skip-permissions?](#can-i-use-reflex-with---dangerously-skip-permissions)
 - [Do I still need a devcontainer or a sandbox if I use Reflex?](#do-i-still-need-a-devcontainer-or-a-sandbox-if-i-use-reflex)
@@ -114,6 +115,23 @@ outside the working tree and older than the plan. The hook never runs `terraform
 `terraform apply` itself. For kubectl, the optional `infra.kubectl_diff` setting adds a `kubectl diff`
 or server dry run that flags deletes of namespaces, PVCs, statefulsets and CRDs. See
 [GUIDE: plan-aware terraform gate](GUIDE.md#plan-aware-terraform-gate-stop-ai-agents-from-destroying-infrastructure).
+
+## How do I block destructive MCP tool calls, like an AWS MCP server deleting production?
+
+Reflex gates MCP tool calls as well as shell commands (MCP server guardrails, AWS MCP safety). In
+Claude Code, Codex CLI, opencode, pi and Hermes, each MCP tool call goes through
+`setup/tool-gate/mcp.json` before it runs: a tool whose name says delete, destroy, drop, terminate,
+remove, purge, truncate, force, reset, rollback or uninstall asks, and so do a scale to zero, a
+bucket policy, security group or IAM change, destructive SQL and an HTTP DELETE. Any of them is
+denied when an argument (a stack, cluster, context, profile, database or account name) or the
+server name points at production, by the same markers the shell rules use and a team policy's
+`prod` list. A shell command passed to an MCP tool, such as the AWS MCP server's `call_aws`, goes
+through the shell rules. Read-like tools (get, list, describe, search, a SELECT-only query) pass
+without a prompt. An unknown tool is logged keyless and judged by Jev with a key, or asks with
+`"mcp": {"unknown": "ask"}`. On 30 days of real Claude Code sessions, none of 475 MCP calls asked.
+File tools are gated too: a write to `.github/workflows/`, production Terraform, agent settings or
+shell startup files asks. See [Gate MCP tool calls](GUIDE.md#gate-mcp-tool-calls) and
+[Protected files](GUIDE.md#protected-files).
 
 ## How is Reflex different from Claude Code permission prompts and allowlists?
 
