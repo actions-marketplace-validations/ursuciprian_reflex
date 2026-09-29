@@ -129,21 +129,22 @@ hook (see the table in the README). Each adapter turns the agent's event into th
 `{agent, command, cwd, session_id, call_id, intent}`, and gets back
 `{effective, decision, reason, source}`. The first step that reaches a decision wins:
 
-1. **Read-only**: a command that only reads passes. By default (`"readonly": "simple"`) this is
-   a small allowlist, not a shell parser: one simple command or a pipeline of them, each program
-   and each flag on an explicit list (`ls`, `cat`, `grep`, `git status`, `git log`, `kubectl get`,
-   `aws … describe-*`, `jq`, `gh pr view`, `ssh host '<read-only>'`, see
-   [Read-only allowlist](#read-only-allowlist)). Anything else is not read-only and goes on to the
-   next steps: a `;` or `&&` chain, a redirect other than `2>/dev/null` and `2>&1`, `$`, globs,
-   braces, subshells, an unknown program, subcommand or flag. The simple check runs **after** the
-   rules, the tamper check and the local scripts below, just before the fast lane, so no rule is
-   ever skipped because a command looked like a read. → **pass**, not logged.
-   `"readonly": "legacy"` in `config.json` (or `REFLEX_READONLY=legacy`) brings back the old
-   `readOnlyLegacy()` parser for one release: it passes chains, loops, `$(…)` and many more
-   spellings, and runs before the rules except `secret-read`, `secret-file-read` and
-   `ssh-local-command`. Five security reviews found about 50 ways to fool it, which is why it is
-   no longer the default. In a session that read a suspected prompt injection a read-only `ssh`
-   is still egress and asks.
+1. **Read-only**: a command that only reads passes. By default (`"readonly": "legacy"`) this is
+   `readOnlyLegacy()`, a shell parser that passes chains, loops, `$(…)` and many more spellings,
+   and runs before the rules except `secret-read`, `secret-file-read` and `ssh-local-command`.
+   Five security reviews found about 50 ways to fool it. `"readonly": "simple"` in `config.json`
+   (or `REFLEX_READONLY=simple`) turns on the stricter check instead: a small allowlist, not a
+   shell parser. Simple commands and pipelines of them, joined by `;`, `&&`, `||` or a newline,
+   with `cd <path>` between them, each program and each flag on an explicit list (`ls`, `cat`,
+   `grep`, `git status`, `git log`, `kubectl get`, `aws … describe-*`, `jq`, `gh pr view`,
+   `ssh host '<read-only>'`, see [Read-only allowlist](#read-only-allowlist)). Anything else is
+   not read-only and goes on to the next steps: `&`, a redirect other than `2>/dev/null` and
+   `2>&1`, `$`, globs, braces, subshells, an unknown program, subcommand or flag. The simple check
+   runs **after** the rules, the tamper check and the local scripts below, just before the fast
+   lane, so no rule is ever skipped because a command looked like a read. It is not the default
+   yet because it still sends more commands to a human (68.1 per 100 against 54.7 on the author's
+   last 7 days of Claude Code sessions). → **pass**, not logged. In a session that read a suspected
+   prompt injection a read-only `ssh` is still egress and asks.
 2. **Rules** (`rules.json`): regular expressions over the command plus its context
    (`cwd=`, `aws_profile=`, `kube_context=`, `tf_workspace=`, `git_branch=`). A rule fires when all
    of its patterns match. Rules are **enforced in shadow and enforce modes**, with off disabling the entire gate.
@@ -634,11 +635,16 @@ only read? It answers yes only when it can see the whole command, and no otherwi
 shell parser to fool: a command it does not fully recognise is judged by the rules and the engine
 like any other, which costs a prompt or a Jev call, never safety.
 
-**The shape.** One simple command, or a pipeline of them joined by `|`. Words are letters, digits
+It is opt-in: `"readonly": "simple"` in `config.json`, or `REFLEX_READONLY=simple`. The default is
+still `readOnlyLegacy()` (see [How a command is decided](#how-a-command-is-decided)).
+
+**The shape.** Simple commands, or pipelines of them joined by `|`, and these joined by `;`, `&&`,
+`||` or a newline: `ls; pwd`, `git log -1 && git diff --stat`, `cd repo && git status`. Each part
+must be read-only on its own. Words are letters, digits
 and `_ @ % + = : , . / -`, a `~` only at the start of a word before `/` (zsh with `EXTENDED_GLOB`
 reads `^` and a later `~` as glob operators, so `HEAD~3` must be quoted), single-quoted text, or double-quoted text without `$`, backticks,
 `!` or an escaping backslash. The only redirects are `2>/dev/null` and `2>&1`. Not read-only:
-`;`, `&&`, `||`, `&`, a newline, any other redirect, `$` in any form (variables, `$(…)`, `$'…'`),
+`&` (background), `|&`, an empty part (`ls;;pwd`), any other redirect, `$` in any form (variables, `$(…)`, `$'…'`),
 backticks, `( ) { }`, unquoted globs (`* ? [ ]`), heredocs, `#` and backslash escapes (the one
 exception is `\'` between single-quoted parts, which `/reflex:check` writes). A word is judged as
 the shell passes it, quotes removed, so `'-'X` is the flag `-X`. A word naming a secret file or directory (a
@@ -647,6 +653,17 @@ private key, `~/.ssh`, `~/.aws`, `.kube/config`, `.env`, `.pgpass`, `.git-creden
 read-only, even before the `secret-file-read` rule sees it. Before the program, only unquoted
 `AWS_PROFILE=`, `AWS_REGION=` and `AWS_DEFAULT_REGION=` with a plain value are allowed, and
 `rtk proxy` is transparent (not `rtk grep` and the other rtk subcommands, which re-implement tools).
+
+**`cd`.** A part of its own may be `cd` and one literal path: no `-` or `+` (the previous or a
+stacked directory), no option, no `$`, backtick, backslash, glob or brace character, and `~` only as
+the home directory (`~user` is refused). It is not a part of a pipeline (`cd x | ls`), and a
+command of only `cd` is not read-only. A word after a `cd` is also checked as a path from that
+directory, so `cd ~/.ssh && ls` and `cd ~ && cat .ssh/id_rsa` are secret reads, not read-only.
+The tamper check still sees the `cd` and runs first: `cd .. && sed -i … gate.mjs` from inside the
+checkout asks. A `CDPATH` in the agent's environment (not in the command, where tamper catches it)
+can send a relative `cd` elsewhere; each part after it is still only a read. A fast lane pattern
+applies only to a command that is one pipeline: `cd x && npm test` and `ls; go test ./...` are
+judged, not passed.
 
 **The programs.** Each has its own flag list; a flag not on it means not read-only. Flags are
 allowlisted, never denylisted, and the list leaves out every flag that writes, runs a program or
@@ -673,7 +690,8 @@ reads a secret.
 | `node`, `npm`, `python3`, `git`, `docker`, `aws`, `terraform`, `kubectl`, `helm`, `jq`, `rg`, `gh`, `uv`, `brew`, `make` | `--version` alone | `go`, `cargo`, `pnpm`, `yarn` (may fetch and run a toolchain the project names) |
 
 The remote command of `ssh` is the words after the host joined by spaces, which is what the remote
-shell reads, and it must be read-only by these same rules.
+shell reads, and it must be read-only by these same rules, chains and `cd` included:
+`ssh h 'uptime; df -h'` and `ssh h 'cd /var/log && tail -n 5 syslog'` are read-only.
 
 A repository's own configuration still applies to what runs: a `diff.external` or `core.fsmonitor`
 set in `.git/config` runs for `git diff` and `git status` as it would for any git command, and
@@ -690,11 +708,12 @@ Keep those under review.
   harmful variant to the selfcheck lists (`simple, read-only` and `simple, not read-only`). Only
   add a program whose allowed flags cannot write, run code or read a secret; list its flags, do
   not try to list the dangerous ones. Measure with
-  `REFLEX_READONLY=legacy node bin/reflex replay claude --since 7d` against the default.
+  `REFLEX_READONLY=simple node scripts/reflex replay claude --since 7d` against the default.
 - **For one repository:** a `fastlane` entry in the team policy (`.reflex/policy.json`). It applies
   only for a teammate who trusted that exact file with `reflex trust .`, and a change to the file
   drops the trust. In the simple mode each fast lane entry is one more allowed segment of the same
-  shape: it can never add `;`, `&&`, a redirect or `$`, and it still runs after every rule.
+  shape, in a command that is one pipeline: it can never add `;`, `&&`, a redirect or `$`, and it
+  still runs after every rule.
 - **For yourself:** the same entry in `~/.config/reflex/fastlane.json`, or `reflex suggest`.
 
 ### Team policy: share Reflex rules across a repo
@@ -1343,8 +1362,9 @@ non-zero exit.
   hook can pin the file it approved, so treat allow for scripts as "Jev read this version", and
   keep `REFLEX_ALLOW` off where scripts can change under you. Symlinks are followed to their
   target; a FIFO or device is never opened.
-- Rules are pattern matching, not a shell parser, and the read-only list is an allowlist of
-  programs and flags over plain words. They are designed to fail towards "ask Jev", not towards "pass", and the self-checks pin the known bypasses, but
+- Rules are pattern matching, not a shell parser. The read-only pass is a shell parser by default
+  (`"readonly": "legacy"`), or with `"readonly": "simple"` an allowlist of programs and flags over
+  plain words. They are designed to fail towards "ask Jev", not towards "pass", and the self-checks pin the known bypasses, but
   treat them as a strong filter, not a sandbox. Keep IAM, network controls, and least-privilege
   credentials: Reflex supplements them.
 - Claude Code does not report a Bash exit code to hooks; Reflex records `ran` (exit 0) or
