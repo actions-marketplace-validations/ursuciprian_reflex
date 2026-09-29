@@ -201,6 +201,9 @@ const reply = (id, result) => { if (!cancelled.delete(id)) write({jsonrpc: "2.0"
 const fail = (id, code, message, data) => { if (!cancelled.delete(id)) write({jsonrpc: "2.0", id, error: {code, message, ...(data !== undefined && {data})}}); };
 const meta = {"io.modelcontextprotocol/serverInfo": SERVER_INFO};
 const done = r => ({resultType: "complete", ...r, _meta: meta});
+// Cacheable results (server/discover, tools/list) must carry a TTL hint and scope in 2026-07-28;
+// neither holds user data, and the list only changes with the package version.
+const CACHE = {ttlMs: 3600000, cacheScope: "public"};
 
 function callChild(name, args) {
   return new Promise(resolve => {
@@ -262,9 +265,9 @@ export async function handle(msg) {
       return reply(id, {protocolVersion: LEGACY.includes(asked) ? asked : LEGACY[0], capabilities: {tools: {listChanged: false}}, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS});
     }
     case "server/discover":
-      return reply(id, done({supportedVersions: [...MODERN, ...LEGACY], capabilities: {tools: {listChanged: false}}, instructions: INSTRUCTIONS}));
+      return reply(id, done({supportedVersions: [...MODERN, ...LEGACY], capabilities: {tools: {listChanged: false}}, instructions: INSTRUCTIONS, ...CACHE}));
     case "ping": return reply(id, done({}));
-    case "tools/list": return reply(id, done({tools: TOOLS}));
+    case "tools/list": return reply(id, done({tools: TOOLS, ...CACHE}));
     case "tools/call": pending.add(id); return toolsCall(id, params).finally(() => { pending.delete(id); cancelled.delete(id); });
     default: return fail(id, -32601, `Method not found: ${msg.method}`);
   }
@@ -326,6 +329,7 @@ async function selfcheck() {
     send({jsonrpc: "2.0", method: "notifications/initialized"});
     send({jsonrpc: "2.0", id: 2, method: "tools/list"});
     const {tools} = (await wait(2)).result;
+    assert.ok(got.get(2).result.ttlMs >= 0 && got.get(2).result.cacheScope === "public", "tools/list is a CacheableResult");
     assert.deepEqual(tools.map(t => t.name), ["reflex_check", "reflex_scan", "reflex_status", "reflex_audit", "reflex_explain"]);
     for (const t of tools) {
       assert.ok(/advisory/i.test(t.description) && /cannot stop a client/.test(t.description), `${t.name} says it is advisory`);
@@ -386,7 +390,7 @@ async function selfcheck() {
     assert.equal((await wait(20)).error.code, -32602);
     assert.deepEqual((await wait(21)).error.data.requested, "1900-01-01"); assert.equal(got.get(21).error.code, -32022);
     assert.equal((await wait(22)).error.code, -32602);
-    assert.ok((await wait(23)).result.supportedVersions.includes("2026-07-28") && got.get(23).result.resultType === "complete");
+    assert.ok((await wait(23)).result.supportedVersions.includes("2026-07-28") && got.get(23).result.resultType === "complete" && got.get(23).result.cacheScope === "public");
     assert.equal((await wait(24)).result.resultType, "complete");
     assert.ok(!raw.some(l => JSON.parse(l).method), "the server sends no requests or notifications");
     server.stdin.end();
