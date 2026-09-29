@@ -922,8 +922,9 @@ trust or verify a native approval dialog; run a harmless command in a fresh agen
 
 ## Limits
 
-- Rules are pattern matching, not a shell parser, and the read-only list is an allowlist of
-  programs and flags over plain words (one command or a pipeline, no `;`, `&&`, `$` or redirects).
+- Rules are pattern matching, not a shell parser. The read-only pass is a shell parser by
+  default (`"readonly": "legacy"`), or with `"readonly": "simple"` an allowlist of programs and
+  flags over plain words (commands and pipelines joined by `;`, `&&` or `||`, no `$`, globs or redirects).
   They are designed to fail towards asking, and the self-checks pin known bypasses, but treat them
   as a strong filter.
 - Only shell tools (and subagent spawns) are gated. File edits, MCP calls, omp's `eval` and Hermes'
