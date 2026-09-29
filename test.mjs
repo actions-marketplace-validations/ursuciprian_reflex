@@ -1400,6 +1400,21 @@ async function claudePluginChecks(proot) {
   assert.equal(plugin.version, pkg.version, "plugin/.claude-plugin/plugin.json version matches package.json");
   assert.equal(read(join(root, "plugin/package.json")).version, pkg.version, "plugin/package.json version matches package.json");
   assert.ok(!existsSync(join(root, ".claude-plugin/plugin.json")), "no second plugin at the repo root");
+  {
+    // The bundle run without --plugin has no key source (stripped): it must never call the provider.
+    const {createServer} = await import("node:http");
+    let hits = 0;
+    const srv = createServer((q, r) => { hits++; r.end("{}"); });
+    await new Promise(r => srv.listen(0, "127.0.0.1", r));
+    const h = mkdtempSync(join(tmpdir(), "reflex-nokey-"));
+    const r = spawnSync(process.execPath, [join(root, "plugin/gate.mjs"), "--decide"], {encoding: "utf8", timeout: 20000,
+      input: JSON.stringify({command: "python3 tools/build.py", cwd: h, agent: "test"}),
+      env: {PATH: process.env.PATH, HOME: h, XDG_CONFIG_HOME: join(h, "c"), XDG_STATE_HOME: join(h, "s"), REFLEX_ENGINE: "jev",
+        REFLEX_PROVIDER: "compatible", JEV_API_BASE_URL: `http://127.0.0.1:${srv.address().port}/v1/systemone`, REFLEX_MODE: "enforce"}});
+    await new Promise(res => setTimeout(res, 300));
+    srv.close();
+    assert.ok(hits === 0 && /"effective":"ask"/.test(r.stdout), `bundle gate without --plugin and no key asks and sends nothing (hits ${hits}): ${r.stdout.slice(0, 200)}`);
+  }
   assert.deepEqual(read(join(root, "plugin/hooks/hooks.json")), read(join(root, "hooks/hooks.json")), "the bundle's hooks.json is the checkout's");
   assert.equal(plugin.license, pkg.license);
   assert.ok(/^https:\/\//.test(plugin.homepage) && plugin.author?.name && plugin.keywords?.length, "plugin.json metadata");
@@ -1411,7 +1426,9 @@ async function claudePluginChecks(proot) {
     assert.ok(KEY_VAR.test(n) || n.startsWith("JEV_"), `plugin mode scrubs ${n}`);
   assert.ok(!market.plugins[0].version || market.plugins[0].version === pkg.version, "marketplace entry version, when set, matches");
   assert.deepEqual(Object.keys(pkg.dependencies ?? {}), [], "no runtime dependencies: the plugin runs from a plain clone");
-  for (const f of [".claude-plugin/", "hooks/", "commands/", "skills/"]) assert.ok(pkg.files.includes(f), `npm files include ${f}`);
+  for (const f of ["hooks/", "commands/", "skills/"]) assert.ok(pkg.files.includes(f), `npm files include ${f}`);
+  // the marketplace installs plugin/ from git; npm does not ship a marketplace entry pointing at a folder it lacks
+  assert.ok(!pkg.files.includes(".claude-plugin/"), "npm files leave out .claude-plugin/");
   // What install.mjs writes (no System 2: the default timeouts), reduced to event -> matcher, script, flag, timeout.
   const home = join(scratch, "plugin-home");
   mkdirSync(join(home, ".claude"), {recursive: true});
@@ -1602,7 +1619,7 @@ async function claudePluginChecks(proot) {
   await new Promise(r => stub.close(r));
   // What npx and `npm install -g` need: the CLI under scripts/, no top-level bin/ (claude.ai and Cowork refuse it).
   const packed = JSON.parse(success(spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {cwd: root, encoding: "utf8", env: clean})))[0].files.map(f => f.path);
-  for (const f of ["scripts/reflex", "scripts/reflex-sh", "scripts/reflex-review", "plugin.mjs", "gate.mjs", "hook.mjs", ".claude-plugin/marketplace.json", ".mcp.json"])
+  for (const f of ["scripts/reflex", "scripts/reflex-sh", "scripts/reflex-review", "plugin.mjs", "gate.mjs", "hook.mjs", ".mcp.json"])
     assert.ok(packed.includes(f), `npm pack includes ${f}`);
   assert.ok(!packed.some(f => f.startsWith("bin/")) && !existsSync(join(root, "bin")), "no top-level bin/");
   assert.equal(pkg.bin.reflex, "scripts/reflex");

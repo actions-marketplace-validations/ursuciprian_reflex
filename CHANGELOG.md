@@ -6,6 +6,11 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Plugin bundle: the stripped gate, run without `--plugin` and with no key source, no longer calls the Jev provider without a key; it asks. A test checks that no request is sent.
+- The npm package no longer ships `.claude-plugin/marketplace.json`, which points at `plugin/` (installed from git, not npm).
+
 ## [0.16.0] - 2026-09-29
 
 ### Changed

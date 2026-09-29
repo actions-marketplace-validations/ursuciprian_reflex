@@ -2119,6 +2119,8 @@ function apiKey() {
   }
   throw new Error(`no API key for ${CONFIG.provider}: set ${p.env.join(" or ")} or keychain item "${item}"`);
   // @reflex:setup-only end
+  // Reached only in the plugin bundle run without --plugin: no key source there, so never call the provider.
+  throw new Error(`no API key for ${CONFIG.provider}`);
 }
 
 // Each provider's key goes to that provider's host only, checked on every call (keyRouteError):
