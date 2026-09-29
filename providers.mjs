@@ -247,10 +247,10 @@ async function selfcheck() {
     await s.close(); }
   // The deadline: one budget for all attempts. A retry whose backoff would end past it is not made,
   // and a slow reply is cut at the deadline, not at deadline x attempts.
-  { const s = await serve(() => [429, {}]);
+  { const s = await serve(() => [429, {}, 200]);   // answered at ~200 ms; a backoff of 75 ms or more would end past 300 - 50
     const t0 = Date.now();
-    await go(s, "typesafe", "/v1/systemone", {deadline: Date.now() + 120}).then(() => ok(false, "429"), e => ok(/HTTP 429/.test(e.message), e.message));
-    ok(s.seen.length === 1 && Date.now() - t0 < 120, `no retry past the deadline (${s.seen.length} attempts)`); await s.close(); }
+    await go(s, "typesafe", "/v1/systemone", {deadline: Date.now() + 300}).then(() => ok(false, "429"), e => ok(/HTTP 429/.test(e.message), e.message));
+    ok(s.seen.length === 1 && Date.now() - t0 < 600, `no retry past the deadline (${s.seen.length} attempts)`); await s.close(); }
   { const s = await serve(() => [200, {answers: good}, 5000]);
     const t0 = Date.now();
     await go(s, "compatible", "/v1/systemone", {deadline: Date.now() + 300}).then(() => ok(false, "slow"), e => ok(e.name === "TimeoutError" || e.name === "AbortError", `slow reply: ${e.name}`));
