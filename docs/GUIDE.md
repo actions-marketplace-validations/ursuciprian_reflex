@@ -830,7 +830,7 @@ well, and the command asks.
 
 ```json
 {"effective": "deny", "decision": "deny", "reason": "reflex (rule): plan destroys 1: aws_instance.old", "source": "rule",
- "policy": "rules-v19", "plan": {"kind": "terraform", "create": 1, "update": 0, "delete": 1, "replace": 0, "stateful": [], "digest": "..."}}
+ "policy": "rules-v20", "plan": {"kind": "terraform", "create": 1, "update": 0, "delete": 1, "replace": 0, "stateful": [], "digest": "..."}}
 ```
 
 The `digest` (of the plan JSON) is also part of the approval queue key and the Jev cache key, so an
@@ -1509,7 +1509,7 @@ the plugin, and use the MCP tools as a way for the agent to check before it trie
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `reflex_check` | `command`, `cwd?` | `decision` (`pass`, `allow`, `ask`, `deny`), `reason`, `rule` (rule or gate id), `source`, `mode`, `enforced` (whether the hooks would apply it in this mode), plan counts when a terraform or kubectl plan was read. Nothing runs. |
+| `reflex_check` | `command`, `cwd?` | `decision` (`pass`, `allow`, `ask`, `deny`), `reason`, `rule` (rule or gate id), `source`, `mode`, `enforced` (whether the hooks would apply it in this mode). It runs nothing: not the command, no `terraform show` and no `kubectl` dry run, even with `infra.terraform_show` or `infra.kubectl_diff` on, so a saved plan is not read. |
 | `reflex_scan` | `text`, `source?` (`web`, `mcp`, `file`, `shell`, `cli`) | The injection guard's `verdict` (`pass`, `warn`, `block`), `reason`, `gate`, `signals`, and `cleaned_text` when the verdict is block. Like `reflex scan`. |
 | `reflex_status` | `cwd?` | Profile, engine, mode (after a team policy mode floor), guard mode, allow setting, whether a change freeze is in force, the team policy's trust state and counts, and how many items wait in the approval queue. |
 | `reflex_audit` | `since?` (`7d`), `prod_only?`, `limit?` (20, at most 100) | Counts by decision, source, rule and environment tier, and the latest rows, like `reflex audit`. |
@@ -1534,7 +1534,9 @@ What it guarantees:
   production marker's value (`env_tier` stays). `reflex_status` reports settings by name (engine,
   mode), never URLs, key names, webhook targets or file paths.
 - `reflex_check` runs the same judgment as `reflex check`: the local rules, a change freeze, the
-  team policy of `cwd`, and then the engine in your config. With engine `jev` or `laya` the redacted
+  team policy of `cwd`, and then the engine in your config, without the plan gate's external
+  programs (`terraform show`, the `kubectl` server dry run), so the hooks can decide a
+  `terraform apply tfplan` differently. With engine `jev` or `laya` the redacted
   command goes to that engine, exactly as a hook would send it. Nothing is cached or logged, so a
   check never shows up in `reflex audit`.
 - Each call runs in a short-lived child process that reads your config fresh, so a change made with

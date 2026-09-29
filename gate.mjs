@@ -1282,7 +1282,7 @@ function scriptLines(body) {
   const expand = s => s.replace(/\$\{?(\w+)\}?/g, (v, name) => vars[name] ?? v);
   for (let pass = 0; pass < 3; pass++) for (const k in vars) vars[k] = expand(vars[k]);
   // and each line with the quoted parts of its words joined, as the shell joins them (m''ain)
-  const joined = l => [...new Set([l, joinQuotes(l) ?? l, gitPlain(joinQuotes(l) ?? l)])];
+  const joined = l => [...new Set([l, joinQuotes(l) ?? l, plain(joinQuotes(l) ?? l)])];
   return {lines: lines.map(expand).flatMap(joined), skipped: lines.length < all.length};
 }
 
@@ -1368,11 +1368,24 @@ const GIT_GLOBAL = new RegExp(String.raw`\bgit((?:\s+(?:-[cC]\s*${GIT_VALUE}|--(
   String.raw`--(?:exec-path|list-cmds)=${GIT_VALUE}|-[pP]|--(?:no-pager|paginate|bare|exec-path|no-replace-objects|no-lazy-fetch|no-optional-locks|no-advice|` +
   String.raw`literal-pathspecs|glob-pathspecs|noglob-pathspecs|icase-pathspecs)(?=\s)))+)(?=\s)`, "g");
 export const gitPlain = s => s.replace(GIT_GLOBAL, "git");
-// checkRules on the command as written and with git's global options dropped (git -C x push is git
-// push): for the checks outside precheck (always-human, fast-lane candidates).
-export const rulesHit = (haystack, rules, bare = haystack) => checkRules(haystack, rules, bare) ?? checkRules(gitPlain(haystack), rules, gitPlain(bare));
+// aws's global options before the service (--profile prod, --region x, --no-cli-pager …) move behind
+// the service and operation, where the CLI reads them too: `aws --profile prod rds delete-db-instance`
+// is `aws rds delete-db-instance --profile prod` to every aws rule, and the profile stays in the text.
+const AWS_GLOBAL = new RegExp(String.raw`\baws((?:\s+(?:--(?:profile|region|output|endpoint-url|query|color|ca-bundle|cli-read-timeout|cli-connect-timeout|` +
+  String.raw`cli-binary-format)(?:=|\s+)${GIT_VALUE}|--(?:debug|no-verify-ssl|no-paginate|no-sign-request|no-cli-pager|cli-auto-prompt|no-cli-auto-prompt)(?=\s)))+)` +
+  String.raw`(\s+[\w.-]+)(\s+[\w.-]+)?`, "g");
+export const awsPlain = s => s.replace(AWS_GLOBAL, "aws$2$3$1");
+// `--profile name` on an aws command is its profile when the environment names none: the aws_profile
+// context the prod markers and a team policy read. ponytail: the first one only.
+const AWS_PROFILE_FLAG = new RegExp(String.raw`\baws\s(?:[^;&|\n]*?\s)?--profile(?:=|\s+)['"]?([\w.@:+/-]+)`);
+export const withAwsProfile = (command, env) => env.aws_profile ? env
+  : (p => p ? {...env, aws_profile: p} : env)(String(command ?? "").match(AWS_PROFILE_FLAG)?.[1]);
+// checkRules on the command as written and with git's and aws's global options moved (git -C x push
+// is git push): for the checks outside precheck (always-human, fast-lane candidates).
+const plain = s => awsPlain(gitPlain(s));
+export const rulesHit = (haystack, rules, bare = haystack) => checkRules(haystack, rules, bare) ?? checkRules(plain(haystack), rules, plain(bare));
 const ruleSpelling = s => {
-  const v = gitPlain((joinQuotes(s) ?? s).replace(/(^|[\s;&|(`]|\$\()\/(usr\/)?bin\/(?=[\w.-]+(\s|$))/g, "$1").replace(TIMEOUT_OPTS, "timeout"));
+  const v = plain((joinQuotes(s) ?? s).replace(/(^|[\s;&|(`]|\$\()\/(usr\/)?bin\/(?=[\w.-]+(\s|$))/g, "$1").replace(TIMEOUT_OPTS, "timeout"));
   return v !== s ? v : null;
 };
 const SEVERITY = {deny: 2, ask: 1};
@@ -1388,6 +1401,7 @@ const COMMAND_BYTES = 32 * 1024, PRECHECK_MS = 3000;
 // Granting trust in a team policy (team.mjs), by the CLI or by its file or function.
 const TEAM_TAMPER = /\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b|\bteam\.mjs\b|\btrusted\.json\b|\btrustRepo\b/;
 export function precheck(command, cwd, env, depth = 0, run = {deadline: Date.now() + PRECHECK_MS, scan: Date.now() + SCAN_MS, scripts: new Set()}) {
+  env = withAwsProfile(command, env);
   const size = n => ({outcome: "ask", rule: `command too large to check (${n})`, id: "command-size", source: "rule", policy_version: load("rules.json").version});
   if (command.length > COMMAND_BYTES) return largeDeny(command, cwd, env, run.deadline) ?? size(`over ${COMMAND_BYTES / 1024} KB`);
   const c = command.replace(/\\\n/g, ""), own = precheckAs(command, cwd, env, run, depth > 0);
@@ -1411,6 +1425,7 @@ export function prodTier(command, cwd, env) {
   const c = String(command ?? "").replace(/\\\n/g, "");
   if (c.length > COMMAND_BYTES) return {prod: true, by: "command", why: "command too large to check"};
   if (onlyNotes(pipelines(c))) return {prod: false};
+  env = withAwsProfile(c, env);
   const marker = load("rules.json").rules.find(r => r.id === "prod-destroy")?.all[0];
   const team = teamPolicy(cwd)?.rules.filter(r => r.id === "team:prod") ?? [];
   const parts = [[`cwd`, `cwd=${cwd ?? ""}`], ...Object.entries(env).map(([k, v]) => [k, `${k}=${v}`]), ["command", stripDataHeredocs(c, true)]];
@@ -1745,11 +1760,12 @@ export async function jevJudge({command, cwd, env, session = {}, useCache = true
           state, questions, gate: d.path?.at(-1)?.outcome === "yes" ? d.path.at(-1).gate : null, allow_guard: allowGuard, qset: spec.version, policy_version: policy.version, ...res};
 }
 
-/** The whole gate for one command, as eval.mjs and the hook see it. */
-export async function judge({command, cwd, env = envContext(cwd), session = {}, useCache = true, asker}) {
+/** The whole gate for one command, as eval.mjs and the hook see it. noExec: the plan gate runs no
+ * terraform show or kubectl dry run (the MCP server's reflex_check runs nothing). */
+export async function judge({command, cwd, env = envContext(cwd), session = {}, useCache = true, asker, noExec = false}) {
   if (configurationError()) return {outcome: "ask", rule: configurationError(), source: "error"};
   const pre = precheck(command, cwd, env);
-  const {quick, plan, floor} = infraJudge(command, cwd, env, frozen(pre, cwd, pre?.source === "read-only" ? {prod: false} : prodTier(command, cwd, env)));
+  const {quick, plan, floor} = infraJudge(command, cwd, env, frozen(pre, cwd, pre?.source === "read-only" ? {prod: false} : prodTier(command, cwd, env)), {noExec});
   if (quick) return quick;
   if (CONFIG.engine === "local") return floor ?? localJudgment();
   return askFloor(await jevJudge({command, cwd, env, session: plan ? {...session, plan} : session, useCache, asker}), floor);
@@ -1764,7 +1780,7 @@ export const askFloor = (j, floor) => !floor || j.outcome === "deny" ? j
 // its state (keyless, it passes). {quick, plan, floor}: the precheck result to use, the counts, and a
 // plan's ask when nothing else decided yet (askFloor: the judge still runs under it).
 const INFRA_LATE_MS = Number(ENV.REFLEX_INFRA_LATE_MS ?? 5000);
-export function infraJudge(command, cwd, env, quick) {
+export function infraJudge(command, cwd, env, quick, {noExec = false} = {}) {
   if (quick?.source === "rule" && quick.outcome === "deny") return {quick, plan: null};
   // production: by the markers prodTier reads, in the directory the command runs in or the one it started in
   const prod = dir => prodTier(command, dir || cwd, env).prod || prodTier(command, cwd, env).prod;
@@ -1772,7 +1788,8 @@ export function infraJudge(command, cwd, env, quick) {
   const settingsAt = dir => { const a = infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), b = infraSettings(USER_CONFIG.infra, teamPolicy(dir)?.infra);
     return {...a, destroy: a.destroy === "deny" || b.destroy === "deny" ? "deny" : "ask", require_plan_in_prod: a.require_plan_in_prod || b.require_plan_in_prod}; };
   let g;
-  try { g = planGate({command, cwd, settings: infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra), settingsAt, prod, pipelines, shellWords}); }
+  const settings = infraSettings(USER_CONFIG.infra, teamPolicy(cwd)?.infra);
+  try { g = planGate({command, cwd, settings: noExec ? {...settings, terraform_show: false, kubectl_diff: false} : settings, settingsAt, prod, pipelines, shellWords}); }
   catch (e) { g = {outcome: "ask", id: "infra-error", rule: `the plan gate failed (${String(e.message).slice(0, 80)})`}; }   // closed, in shadow too
   if (!g) return {quick, plan: null};
   const plan = g.plan ?? null, version = teamRules(load("rules.json"), cwd).version, withPlan = q => q && plan ? {...q, plan} : q;
@@ -2086,9 +2103,10 @@ function trace(j, call, effective) {
     agent: call.agent ?? null, session_id: call.session_id ?? null, call_id: call.call_id ?? null,
     permission_mode: call.permission_mode ?? null, ...(j.plan && {plan: j.plan}), ...(j.ladder && {ladder: j.ladder}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway}),
     ...(j.id && {rule_id: j.id}), ...(call.tier && {tier: call.tier}), cwd: call.cwd ?? null});
-  // the decision webhook (notify.mjs): redacted, detached, never waited for; a trusted team policy may add one
+  // the decision webhook (notify.mjs): redacted, detached, never waited for; a trusted team policy may add one.
+  // REFLEX_NOTIFY=off sends nothing (doctor's probes set it).
   const targets = [CONFIG.notify.target, teamPolicy(call.cwd)?.notify].filter(Boolean);
-  if (targets.length) notifyLater(targets, {ts: new Date().toISOString(), agent: call.agent ?? null, session_id: call.session_id ?? null,
+  if (targets.length && process.env.REFLEX_NOTIFY !== "off") notifyLater(targets, {ts: new Date().toISOString(), agent: call.agent ?? null, session_id: call.session_id ?? null,
     cwd: tilde(redact(call.cwd ?? "")), prod: !!call.tier?.prod, prod_by: call.tier?.prod ? call.tier.by : null, command: cmd.slice(0, 500),
     decision: effective === "pass" || !effective ? "pass" : effective, judged: j.outcome, mode: CONFIG.mode, source: j.source, rule_id: j.id ?? null,
     reason: redact(j.rule ?? "").slice(0, 300)});
@@ -2433,6 +2451,14 @@ async function selfcheck() {
   ok(rule("aws rds delete-db-instance --db-instance-identifier prod-orders") === "prod-destroy", "prod rds delete");
   ok(rule("aws rds delete-db-instance --db-instance-identifier x", "aws_profile=production") === "prod-destroy", "prod via profile");
   ok(rule("aws rds delete-db-instance --db-instance-identifier x", "aws_profile=dev") === "destroy", "nonprod delete asks");
+  // aws global options before the service: moved behind the operation, and --profile is the aws_profile context
+  ok(awsPlain("aws --profile prod --region eu-west-1 --no-cli-pager rds delete-db-instance --db-instance-identifier x") ===
+     "aws rds delete-db-instance --profile prod --region eu-west-1 --no-cli-pager --db-instance-identifier x" && awsPlain("aws s3 ls") === "aws s3 ls", "awsPlain");
+  ok(precheck("aws --profile prod rds delete-db-instance --db-instance-identifier x", "/w", {})?.id === "prod-destroy" &&
+     precheck("aws --output json --profile=dev ec2 terminate-instances --instance-ids i-1", "/w", {})?.id === "destroy" &&
+     precheck("aws --profile dev s3 ls", "/w", {})?.source === "read-only", "aws global options before the service");
+  ok(withAwsProfile("aws --region x --profile acme-main s3 rm s3://b --recursive", {}).aws_profile === "acme-main" &&
+     withAwsProfile("aws --profile a s3 ls", {aws_profile: "b"}).aws_profile === "b" && !withAwsProfile("ls --profile x", {}).aws_profile, "--profile as the aws_profile context");
   ok(rule("terraform destroy", "cwd=/infra/envs/prod") === "prod-destroy", "prod via cwd");
   ok(rule("aws s3 delete-object --bucket product-images --key a") === "destroy", "'product' is not prod");
   ok(rule("git push --force origin main") === "force-push-main", "force push main");

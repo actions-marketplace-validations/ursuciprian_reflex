@@ -173,6 +173,16 @@ try {
       "--agents", "claude", "--dry-run"], {cwd: root, env: {...noUrl, REFLEX_PREFIX: join(scratch, "provider-prefix")}, encoding: "utf8", timeout: 30000});
     assert.match(preview.stdout, /Jev provider cloudflare \(api\.cloudflare\.com\)/, `setup --provider: ${preview.stdout}${preview.stderr}`);
     assert.ok(!preview.stdout.includes(key) && !existsSync(join(scratch, "provider-prefix")), "setup preview: no key printed, nothing installed");
+    // a pick that needed --cloudflare-account or --provider-url (no --provider) is saved with it: the hooks never see the flags
+    for (const [flag, value, keyVar, name, field] of [["--cloudflare-account", "0123456789abcdef0123456789abcdef", "JEV_CLOUDFLARE_API_TOKEN", "cloudflare", "cloudflare_account_id"],
+      ["--provider-url", "https://jev.example.test/v1/systemone", "JEV_API_KEY", "compatible", "provider_url"]]) {
+      const home = join(scratch, `flag-${name}`), {REFLEX_API_URL: _u, ...base} = env;
+      const fenv = {...base, HOME: home, XDG_CONFIG_HOME: join(home, "config"), XDG_STATE_HOME: join(home, "state"), REFLEX_PREFIX: join(home, "prefix"), PATH: "/usr/bin:/bin", [keyVar]: key};
+      const r = spawnSync(process.execPath, ["bin/reflex", "setup", "--engine", "jev", flag, value, "--agents", "opencode"], {cwd: root, env: fenv, encoding: "utf8", timeout: 30000});
+      assert.equal(r.status, 0, `setup ${flag}: ${r.stdout}${r.stderr}`);
+      const saved = read(join(home, "config/reflex/config.json"));
+      assert.ok(saved.provider === name && saved[field] === value && !JSON.stringify(saved).includes(key), `setup ${flag} saves the provider and ${field}: ${JSON.stringify(saved)}`);
+    }
     await new Promise(r => stub.close(r));
   }
   // Start a genuinely fresh installation; the selfchecks above keep their own scratch state.
@@ -1213,10 +1223,17 @@ try {
       assert.ok(!listed.includes("/team") && listed.includes("127.0.0.1"), "reflex policy shows the webhook host, never its path");
       setTeam({});
       // doctor --notify-test: one dry-run message, only when asked
-      setConfig({notify: {url: url("/ok")}});
+      // with an installed agent, so the probes run (their deny would notify); spawn, not spawnSync, so this
+      // process can serve a stray post, and a wait long enough for the detached child to send it
+      setConfig({});
+      success(invoke("install.mjs", ["--agent", "opencode"], {env: fenv}));
+      setConfig({notify: {url: url("/ok")}, agents: read(join(cfg, "reflex/config.json")).agents});
       const before = got.length;
-      invoke("status.mjs", ["--doctor", "--json"], {env: fenv, cwd: devDir});
-      assert.equal(got.length, before, "doctor sends nothing without --notify-test");
+      const probed = JSON.parse(await new Promise(res => { let o = ""; const p = spawn(process.execPath, [join(root, "status.mjs"), "--doctor", "--json"], {cwd: devDir, env: fenv});
+        p.stdout.on("data", c => o += c); p.on("close", () => res(o)); }));
+      assert.ok(probed.agents.some(a => a.checks.some(c => c.expected === "deny" && c.ok)), `doctor ran its deny probe: ${JSON.stringify(probed.agents)}`);
+      assert.ok(!await until(() => got.length > before, 1500), "doctor sends nothing without --notify-test");
+      setConfig({notify: {url: url("/ok")}});
       // spawn, not spawnSync: this process serves the webhook while doctor waits on it
       st = JSON.parse(await new Promise(res => { let o = ""; const p = spawn(process.execPath, [join(root, "status.mjs"), "--doctor", "--notify-test", "--json"], {cwd: devDir, env: fenv});
         p.stdout.on("data", c => o += c); p.on("close", () => res(o)); }));
@@ -1292,6 +1309,12 @@ try {
       // mode off: nothing is loaded, so nothing can crash
       const off = hookRun("gate.mjs", [flag, "--mode", "off"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: crash}, input);
       assert.ok(off.status === 0 && !/ask|deny|approve|error/.test(off.stdout), `off passes: ${flag} ${off.stdout}`);
+    }
+    // A throw with no string form (Object.create(null)) is not simulated: shadow does not block a pre hook, and a post hook warns.
+    for (const [flag, input, check] of pre) check(hookRun("gate.mjs", [flag, "--mode", "shadow"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "unprintable"}, input), false);
+    for (const [script, flag] of [["gate.mjs", "--claude-post"], ["guard.mjs", "--claude"]]) {
+      const r = hookRun(script, [flag, "--mode", "enforce"], {REFLEX_TEST: "1", REFLEX_TEST_CRASH: "unprintable"});
+      assert.ok(r.status === 0 && /reflex error .*cannot be printed/.test(parse(r).systemMessage), `${script} ${flag} with an unprintable throw: ${r.status} ${r.stdout}`);
     }
     // Without REFLEX_TEST=1 the switch does nothing.
     assert.equal(hookRun("gate.mjs", ["--decide", "--mode", "enforce"], {REFLEX_TEST_CRASH: "load"}, {agent: "pi", command: "git status", cwd: fdir}).stdout.includes('"source":"error"'), false);

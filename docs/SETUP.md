@@ -489,6 +489,7 @@ All optional.
 | `REFLEX_DATA_DIR` | `~/.local/state/reflex` | Trace, feedback, cache, eval results |
 | `REFLEX_KEYCHAIN_SERVICE` | `typesafe-api-key` | macOS Keychain item holding the key |
 | `REFLEX_API_URL` | TypeSafe System One endpoint | Override for a proxy |
+| `REFLEX_NOTIFY` | unset | `off` sends no decision webhook for this session (`reflex doctor` sets it for its probes) |
 | `REFLEX_GUARD` | `"guard"` in `config.json`, else the gate's mode | Injection guard mode: `off` · `shadow` (log only) · `enforce` (warn, rewrite, taint, block credential prompts) |
 | `REFLEX_GUARD_TIMEOUT_MS` | `8000` | Budget for the guard's one Jev request per result; on timeout the detectors decide |
 | `REFLEX_INJECTION_DIR` | `./setup/injection` | Directory with the guard's detectors / questions / policy / golden; a file missing there comes from the next place |
