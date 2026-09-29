@@ -129,7 +129,7 @@ hook (see the table in the README). Each adapter turns the agent's event into th
 `{agent, command, cwd, session_id, call_id, intent}`, and gets back
 `{effective, decision, reason, source}`. The first step that reaches a decision wins:
 
-1. **Read-only**: a command that only reads passes. By default (`"readonly": "simple"`) this is
+1. **Read-only**: a command that only reads passes. With `"readonly": "simple"` (opt-in in 0.16.0) this is
    a small allowlist, not a shell parser: one simple command or a pipeline of them, each program
    and each flag on an explicit list (`ls`, `cat`, `grep`, `git status`, `git log`, `kubectl get`,
    `aws … describe-*`, `jq`, `gh pr view`, `ssh host '<read-only>'`, see
@@ -138,11 +138,12 @@ hook (see the table in the README). Each adapter turns the agent's event into th
    braces, subshells, an unknown program, subcommand or flag. The simple check runs **after** the
    rules, the tamper check and the local scripts below, just before the fast lane, so no rule is
    ever skipped because a command looked like a read. → **pass**, not logged.
-   `"readonly": "legacy"` in `config.json` (or `REFLEX_READONLY=legacy`) brings back the old
-   `readOnlyLegacy()` parser for one release: it passes chains, loops, `$(…)` and many more
-   spellings, and runs before the rules except `secret-read`, `secret-file-read` and
-   `ssh-local-command`. Five security reviews found about 50 ways to fool it, which is why it is
-   no longer the default. In a session that read a suspected prompt injection a read-only `ssh`
+   The default in 0.16.0 is still `"readonly": "legacy"`, the `readOnlyLegacy()` parser: it
+   passes chains, loops, `$(…)` and many more spellings, and runs before the rules except
+   `secret-read`, `secret-file-read` and `ssh-local-command`. Five security reviews found about 50
+   ways to fool it, so the allowlist replaces it as the default once chains of allowlisted
+   commands (`;`, `&&`, `cd dir && …`) are accepted: without that, a week of real history sent 88.9
+   of 100 commands to a human against 54.8. In a session that read a suspected prompt injection a read-only `ssh`
    is still egress and asks.
 2. **Rules** (`rules.json`): regular expressions over the command plus its context
    (`cwd=`, `aws_profile=`, `kube_context=`, `tf_workspace=`, `git_branch=`). A rule fires when all
