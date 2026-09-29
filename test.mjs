@@ -936,6 +936,7 @@ try {
     // URL and h1; every link into the site lands on a page and an anchor there; valid JSON-LD.
     const {build, PAGES, SITE} = await import("./site/build.mjs");
     assert.equal(SITE, pkg.homepage, "the site URL is the package homepage");
+    assert.throws(() => build(join(root, "docs")), /refusing to replace/, "the build never deletes a directory that holds no earlier build");
     const out = build(join(scratch, "site")), base = new URL(SITE).pathname, seen = new Set();
     const pages = new Map(PAGES.map(p => [p.path, readFileSync(join(out, p.path, "index.html"), "utf8")]));
     const ld = html => [...html.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)].map(m => JSON.parse(m[1]));

@@ -4,7 +4,7 @@
 // Every page is static HTML: the four docs as they are, a landing page, and one page per search
 // intent assembled from sections of those docs (by heading), with its own title, description and intro.
 // Links between the docs point at the site; links to other repository files point at GitHub.
-import {cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync} from "node:fs";
+import {cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync} from "node:fs";
 import {dirname, join, posix} from "node:path";
 import {fileURLToPath} from "node:url";
 
@@ -209,7 +209,7 @@ export const PAGES = [
    description: "Open-source pre-execution gate and prompt injection guard for Claude Code, Codex CLI, opencode and pi, with terraform checks, change freezes and audit export.",
    intro: "Reflex hooks into your coding agent and decides, for every shell command, whether it runs, needs a human's approval, or is blocked. It also scans what the agent reads for prompt injection. It starts keyless, with local rules in shadow mode."},
   {path: "claude-code-hooks/", title: "Claude Code hooks for production safety", h1: "Claude Code hooks for production safety",
-   description: "A Claude Code PreToolUse hook that checks every Bash command before it runs, with deny rules for destructive production operations and AWS and kube context.",
+   description: "A Claude Code PreToolUse hook that checks each Bash command before it runs and denies destructive production changes, using the AWS profile and kube context.",
    intro: "Reflex installs as a Claude Code plugin or through its setup command and adds a PreToolUse hook that checks every Bash command before it runs. Its deterministic rules block destructive production operations and force pushes to main, and it knows the AWS profile, kube context, Terraform workspace and git branch a command runs in.",
    sources: [["docs/FAQ.md", "How do I stop Claude Code from running dangerous commands?"], ["docs/FAQ.md", "How do I install Reflex as a Claude Code plugin?"],
      ["docs/SETUP.md", "Claude Code plugin"], ["README.md", "Supported agents: Claude Code hooks, Codex hooks and more"]],
@@ -250,7 +250,7 @@ export const PAGES = [
    related: ["soc2-audit-log/", "terraform-guardrails/", "kubectl-delete/", "claude-code-hooks/"]},
   {path: "jev/", title: "TypeSafe Jev (System One) as a pre-execution gate", h1: "Jev (TypeSafe System One) as a pre-execution gate",
    description: "How Reflex uses TypeSafe Jev, a System One model, to judge shell commands the local rules do not settle, with your policy turning answers into pass, ask, deny.",
-   intro: "Rules settle what they cover without any API call. For the rest, Reflex can send one request to TypeSafe Jev, a small System One model that answers typed questions about the command, and your policy.json turns the answers into pass, ask or deny. The local engine needs no key; Jev is opt-in with reflex setup --engine jev.",
+   intro: "Rules settle what they cover without any API call. For the rest, Reflex can send one request to TypeSafe Jev, a small System One model that answers typed questions about the command, and your policy.json turns the answers into pass, ask or deny. The local engine needs no key; Jev is used after reflex setup --engine jev, or when a TypeSafe key is present.",
    sources: [["docs/FAQ.md", "What is TypeSafe Jev (System One)?"], ["docs/FAQ.md", "Jev vs Laya: which engine should I use?"],
      ["README.md", "Engines: local rules and TypeSafe Jev (System One)"], ["docs/GUIDE.md", "Local and hosted operation"],
      ["docs/SETUP.md", "1. Start locally, or enable hosted classification"]],
@@ -310,7 +310,8 @@ function render(page) {
   let body;
   if (page.full) {
     const lines = read(page.file).split("\n");
-    body = blocks(page.skipFirst ? lines.slice(1) : lines, {...ctx, link: linker(page.file, page)});
+    // the README line that links to this site is left out of the site itself
+    body = blocks((page.skipFirst ? lines.slice(1) : lines).filter(l => !l.startsWith("Documentation website: ")), {...ctx, link: linker(page.file, page)});
   } else {
     body = page.sources.map(s => {
       const c = {...ctx, link: linker(s.file ?? s[0], page)};
@@ -381,6 +382,8 @@ export function faqEntries() {
 }
 
 export function build(out = join(ROOT, "site/dist")) {
+  // only an earlier build (it has a sitemap.xml) or an empty directory is replaced, so --out . cannot delete a checkout
+  if (existsSync(out) && readdirSync(out).length && !existsSync(join(out, "sitemap.xml"))) throw new Error(`${out} is not empty and holds no earlier build; refusing to replace it`);
   rmSync(out, {recursive: true, force: true});
   mkdirSync(out, {recursive: true});
   for (const p of PAGES) {
@@ -390,6 +393,7 @@ export function build(out = join(ROOT, "site/dist")) {
   writeFileSync(join(out, "style.css"), CSS + "\n");
   cpSync(join(ROOT, "assets"), join(out, "assets"), {recursive: true});
   for (const f of ["llms.txt", "llms-full.txt"]) cpSync(join(ROOT, f), join(out, f));
+  // crawlers read robots.txt at a host root only: on a project site (/reflex/) it takes effect with a custom domain
   writeFileSync(join(out, "robots.txt"), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}sitemap.xml\n`);
   writeFileSync(join(out, "sitemap.xml"), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
     PAGES.map(p => `  <url><loc>${url(p)}</loc></url>`).join("\n") + "\n</urlset>\n");
