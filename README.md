@@ -28,7 +28,8 @@ What it adds to the agents' built-in permission rules:
   a dev context and is denied in a prod one.
 - **One policy across agents.** A committed `.reflex/policy.json` gives every teammate the same
   extra rules, production markers, always-human patterns and freezes in Claude Code, Codex CLI,
-  opencode, pi and Hermes. It can only tighten.
+  opencode, pi and Hermes. It can only tighten; its fast lane and webhook apply only after each
+  teammate runs `reflex trust .`.
 - **Change freeze.** A window such as Friday after 15:00 in `Europe/Bucharest`, or a date range,
   makes production commands that are not read-only ask or be denied, in shadow and enforce mode.
 - **Audit export and webhook.** `reflex audit` writes one row per decision (agent, cwd, production
@@ -857,7 +858,7 @@ For infra work, the difference by capability:
 | Production context | Rules match the command text only | Limits what a command can reach, not which account or cluster it targets | AWS profile, kube context, Terraform workspace, git branch and prod paths in every decision |
 | Change freeze | Not built in | Not built in | Time or date windows that ask or deny production commands, from `config.json` or the team policy |
 | Audit export | Each agent's own logs and telemetry, in its own format | Not in scope | `reflex audit`: one csv, json or jsonl row per decision for SOC 2 and ISO 27001 evidence, plus a webhook |
-| Cross-agent policy | One settings file per agent, in that agent's format | Per container image | One committed `.reflex/policy.json` applied in Claude Code, Codex CLI, opencode, pi and Hermes |
+| Cross-agent policy | Each agent's own settings files, in that agent's format | Per container image | One committed `.reflex/policy.json` applied in Claude Code, Codex CLI, opencode, pi and Hermes |
 
 Keep IAM, network controls and least-privilege credentials, and use Reflex for the decisions a
 sandbox cannot make.
@@ -949,7 +950,8 @@ hook never runs `plan` or `apply` itself. See
 
 Yes. `terraform destroy`, `apply -destroy` and `apply -replace=` hit the destroy rules: they ask, and
 are denied in production (a prod working directory, AWS profile, kube context, Terraform workspace
-or git branch). Rule outcomes hold in shadow mode too, and in the autonomous profile no model can approve
+or git branch, or a prod name in the command such as `-chdir=envs/prod`). A team policy's `prod`
+markers make them ask, not deny. Rule outcomes hold in shadow mode too, and in the autonomous profile no model can approve
 them. See [real-world scenarios](#real-world-scenarios-with-outputs).
 
 ### How is Reflex different from Claude Code permission prompts and allowlists?
