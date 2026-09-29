@@ -1373,6 +1373,21 @@ try {
       assert.equal(o.hookSpecificOutput?.permissionDecision, want, `plugin: ${tool} ${JSON.stringify(o)}`);
       assert.ok(!("updatedInput" in (o.hookSpecificOutput ?? {})), "plugin: the input is never rewritten");
     }
+    // review: a noun after the verb is not the verb (resolve_incident is not a read); it is logged as unknown
+    const n0 = traced().length;
+    assert.equal(claude("mcp__pd__resolve_incident", {id: 1})[0], "pass");
+    assert.ok(traced().slice(n0).some(r => r.rule_id === "mcp-unknown"), "resolve_incident is unknown, not a read");
+    if (["darwin", "win32"].includes(process.platform))
+      assert.equal(claude("Write", {file_path: ".GitHub/Workflows/ci.yml", content: "x"})[0], "ask", "a case-insensitive file system: .GitHub/Workflows is protected");
+    // review: a `reflex setup` hook from before the tool gate (Bash|Task|Agent) makes the plugin stand down for Bash only
+    mkdirSync(join(tdir, ".claude"), {recursive: true});
+    writeFileSync(join(tdir, ".claude/settings.json"), JSON.stringify({hooks: {PreToolUse: [{matcher: "Bash|Task|Agent",
+      hooks: [{type: "command", command: `node "${join(root, "gate.mjs")}" --claude --mode shadow --allow off`}]}]}}));
+    assert.equal(hook("--claude --plugin", {tool_name: "mcp__aws__delete_stack", tool_input: {StackName: "dev"}, cwd: repo, session_id: "ps"}).hookSpecificOutput?.permissionDecision, "ask",
+      "plugin: an older settings hook does not cover MCP tools, so the plugin still judges them");
+    assert.deepEqual(hook("--claude --plugin", {tool_name: "Bash", tool_input: {command: "git push --force origin main"}, cwd: repo, session_id: "ps"}), {},
+      "plugin: the settings hook covers Bash, so the plugin stands down");
+    rmSync(join(tdir, ".claude"), {recursive: true, force: true});
     // the parsers
     const {patchPaths, selectOnly, toolOf, words} = await import(join(root, "tools.mjs"));
     assert.deepEqual(patchPaths("*** Begin Patch\n*** Add File: a/b.txt\n*** Update File: c.tf\n*** Move to: d.tf\n*** Delete File: e\n*** End Patch"), ["a/b.txt", "c.tf", "d.tf", "e"]);

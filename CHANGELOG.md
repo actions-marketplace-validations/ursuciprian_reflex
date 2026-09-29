@@ -10,7 +10,7 @@ All notable changes to Reflex are documented here. The format follows
 
 - MCP server guardrails: the gate judges MCP tool calls before they run, in Claude Code and Codex (`mcp__<server>__<tool>`), opencode, pi and Hermes. Rules in `setup/tool-gate/mcp.json` ask on a destructive verb in the tool name (delete, destroy, drop, terminate, remove, purge, truncate, force, reset, rollback, uninstall and more), a scale to zero, a bucket policy, security group or IAM change, destructive SQL and an HTTP DELETE, and deny when an argument or the server points at production. A shell command in an argument goes through the shell rules. Read-like tools pass unlogged; an unknown tool is logged keyless, judged by Jev with a key, or asks with `"mcp": {"unknown": "ask"}`. The freeze, queue, runaway guard, trace, audit and webhook apply. A team policy can add `mcp` rules, stricter only.
 - Protected files: a write by Edit, Write, MultiEdit, NotebookEdit, `apply_patch` or the opencode, pi and Hermes file tools to `.github/workflows/`, `.gitlab-ci.yml`, production paths, production Terraform, tfvars and Dockerfiles, `.reflex/`, agent settings and hooks, `.mcp.json`, git hooks or shell startup files asks, with the path and why in the reason (`setup/tool-gate/protected.json`). `config.json` `protected` and a team policy `protected` list add globs.
-- `npm run eval-mcp`: 69 golden MCP and file-write cases (`setup/tool-gate/golden-mcp.json`), keyless or with Jev.
+- `npm run eval-mcp`: 83 golden MCP and file-write cases (`setup/tool-gate/golden-mcp.json`), keyless or with Jev.
 
 ### Fixed
 

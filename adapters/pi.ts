@@ -29,6 +29,10 @@ const GUARD = GATE.replace(/gate\.mjs$/, "guard.mjs");
 const HOOK = GATE.replace(/gate\.mjs$/, "hook.mjs");
 // Tools whose results are the user's own work, never third-party text: not sent to the guard.
 const LOCAL_TOOLS = new Set(["edit", "write", "grep", "find", "ls", "task", "todo", "todo_write", "goal", "ask"]);
+// pi's and omp's own tools; any other tool comes from an extension or an MCP server and goes to the tool gate.
+// ponytail: a list per pi and omp version; a built-in missing here is only logged as an unknown tool.
+const BUILTIN = new Set([...LOCAL_TOOLS, "bash", "read", "mcp", "fetch", "web_fetch", "web_search", "search", "python", "notebook", "lsp",
+  "browser", "calc", "exa", "multi_edit", "todo_read", "report_finding", "submit", "review"]);
 
 // pass and allow both run: pi and omp have no prompt of their own for bash to skip.
 type Decision = {effective: "pass" | "allow" | "ask" | "deny"; reason?: string};
@@ -143,13 +147,14 @@ export default function (pi: any) {
       }
       return;
     }
-    // The tool gate: file writes (a protected path asks) and MCP calls (pi-mcp-adapter's mcp proxy, mcp_* tools).
-    const tool = ["edit", "write"].includes(event.toolName) || event.toolName === "mcp" || /^mcp[_:.]/.test(event.toolName);
+    // The tool gate: file writes (a protected path asks) and MCP calls: pi-mcp-adapter's mcp proxy and
+    // any tool that is not built in (its direct tools are named <server>_<tool>).
+    const tool = ["edit", "write", "mcp"].includes(event.toolName) || !BUILTIN.has(event.toolName);
     if (!tool && (event.toolName !== "bash" || !event.input?.command)) return;
     let d: Decision;
     try {
       d = JSON.parse(await gate("--decide", tool
-        ? {agent: AGENT, tool: event.toolName, input: event.input ?? {}, cwd: ctx.cwd, call_id: event.toolCallId,
+        ? {agent: AGENT, tool: event.toolName, input: event.input ?? {}, mcp: !BUILTIN.has(event.toolName), cwd: ctx.cwd, call_id: event.toolCallId,
            session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx)}
         : {agent: AGENT, command: event.input.command, cwd: event.input.cwd ?? ctx.cwd,
            call_id: event.toolCallId, session_id: ctx.sessionManager?.getSessionId?.(), intent: lastAssistantText(ctx)}, ctx.signal));

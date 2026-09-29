@@ -16,7 +16,6 @@
     "count",
     "inspect",
     "explain",
-    "resolve",
     "preview",
     "diff",
     "validate",
@@ -39,7 +38,6 @@
     "stat",
     "estimate",
     "compare",
-    "take",
     "wait",
     "screenshot"
   ],
@@ -56,7 +54,12 @@
     {
       "rule": "browser navigation",
       "server": "chrome|browser|playwright|puppeteer",
-      "tool": "^(navigate|click|hover|scroll|resize|wait|new_page|new_tab|close_page|close_tab|select_page|switch|tabs|press_key|handle_dialog|emulate|find|get_page)"
+      "tool": "^(navigate|click|hover|scroll|resize|wait|new_page|new_tab|close_page|close_tab|select_page|switch|tabs|press_key|emulate|find|get_page|take_screenshot|take_snapshot)"
+    },
+    {
+      "rule": "library docs",
+      "server": "context7|docs",
+      "tool": "^resolve_library_id$"
     },
     {
       "rule": "local agent memory",
@@ -71,7 +74,7 @@
     {
       "rule": "an HTTP GET (no method, no body)",
       "tool": "(^|_)(request|http|fetch|call_api|api)(_|$)",
-      "args": "^(?![\\s\\S]*\"(method|body|data|payload|json|form)\"\\s*:)"
+      "args": "^(?![\\s\\S]*\"[^\"]*(method|verb)[^\"]*\"\\s*:)(?![\\s\\S]*\"(body|data|payload|json|form)\"\\s*:)"
     }
   ],
   "rules": [
@@ -80,7 +83,7 @@
       "outcome": "ask",
       "prod": "deny",
       "rule": "destructive MCP tool call",
-      "tool": "(^|_)(delete|destroy|drop|terminate|remove|rm|purge|truncate|force|reset|rollback|uninstall|wipe|erase|revoke|detach|deregister|kill)(_|$)"
+      "tool": "(^|_)(delete|destroy|drop|terminate|remove|rm|purge|truncate|force|reset|rollback|uninstall|wipe|erase|revoke|detach|deregister|kill|flush|flushall|flushdb|unlink|rmdir|overwrite|shutdown)(_|$)"
     },
     {
       "id": "mcp-scale-to-zero",
@@ -131,15 +134,14 @@
       "outcome": "ask",
       "prod": "deny",
       "rule": "runs destructive SQL through MCP",
-      "tool": "^(?!(.*_)?(docs?|documentation|search|help|guide|ask|library)(_|$))",
-      "args": "\"(sql|query|statement|stmt)\"\\s*:\\s*\"([^\"]*;)?\\s*(drop|truncate|delete|alter)\\b"
+      "sql": "^[\\s(]*(drop|truncate|delete|alter)\\b|\\bdelete\\s+from\\b|\\bdrop\\s+(table|database|schema)\\b"
     },
     {
       "id": "mcp-http-delete",
       "outcome": "ask",
       "prod": "deny",
       "rule": "sends an HTTP DELETE through MCP",
-      "args": "\"method\"\\s*:\\s*\"delete\""
+      "args": "\"[^\"]*(method|verb)[^\"]*\"\\s*:\\s*\"delete\""
     }
   ]
 }

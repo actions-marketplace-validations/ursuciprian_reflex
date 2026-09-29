@@ -36,7 +36,7 @@ import {compile} from "./policy.mjs";
 import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
 import {userFastPass} from "./fastlane.mjs";
 import {globsReflex, repoRoot, teamMode, teamPolicy, teamRules} from "./team.mjs";
-import {argStrings, mcpCommand, mcpJudge, protectedPath, toolOf} from "./tools.mjs";
+import {argStrings, mcpCommand, mcpJudge, mcpWritePaths, protectedPath, toolOf} from "./tools.mjs";
 import {infraError, infraSettings, planGate} from "./infra.mjs";
 import {activeFreeze, inWindow, parseFreeze} from "./freeze.mjs";
 import {notifyLater, notifyTarget} from "./notify.mjs";
@@ -118,11 +118,30 @@ export function settingsHooks(file = CLAUDE_SETTINGS, agent = "claude") {
 export const settingsHooksInstalled = (file, agent) => settingsHooks(file, agent).live.length > 0;
 export const PLUGIN = PLUGIN_FLAG;
 const CODEX_PLUGIN = PLUGIN && process.argv.some(a => /^--codex(-|$)/.test(a));
+// The PreToolUse matchers of the live Reflex gate hooks in an agent's hooks file, and whether one
+// of them covers a tool: a hook `reflex setup` wrote before the tool gate matched Bash|Task|Agent
+// only, so the plugin must still judge MCP tools and file writes for it.
+export function settingsCovers(file, agent, tool) {
+  const hook = reflexHook(agent);
+  try {
+    return (JSON.parse(readFileSync(file, "utf8")).hooks?.PreToolUse ?? []).some(g => (g?.hooks ?? []).some(h => {
+      const m = typeof h?.command === "string" && !/\s--plugin(\s|$)/.test(h.command) && h.command.match(hook);
+      return m && !/--\w+-(post|prompted|prompt)\b/.test(m[0]) && existsSync(m[1]?.replace(/\\(.)/g, "$1") ?? m[2] ?? m[3]);
+    }) && matcherCovers(g.matcher, tool));
+  } catch { return false; }
+}
+// Claude Code and Codex: no matcher, "" or "*" match every tool, a list of names matches exactly, anything else is a regex.
+const matcherCovers = (m, tool) => !m || m === "*" || (/^[\w|]+$/.test(m) ? m.split("|").includes(tool) : (() => { try { return new RegExp(m).test(tool); } catch { return false; } })());
 // Standing down, read the input first: an agent writing a large tool result must not get EPIPE.
+// The PreToolUse gate stands down only when the settings hook covers this tool; the input it read is kept for it.
+let STDIN = null;
 if (PLUGIN && process.argv.some(a => /^--(claude|codex)(-|$)/.test(a)) && (CODEX_PLUGIN ? settingsHooksInstalled(CODEX_HOOKS, "codex") : settingsHooksInstalled())) {
   // isatty, not process.stdin.isTTY: touching process.stdin makes a pipe non-blocking and the read fails with EAGAIN
-  if (!isatty(0)) try { readFileSync(0); } catch { /* nothing to read */ }
-  process.exit(0);
+  if (!isatty(0)) try { STDIN = readFileSync(0, "utf8"); } catch { /* nothing to read */ }
+  const pre = process.argv.some(a => a === "--claude" || a === "--codex");
+  let tool = null;
+  try { tool = JSON.parse(STDIN ?? "{}").tool_name ?? null; } catch { /* not JSON: the hook's own parse answers */ }
+  if (!pre || !tool || settingsCovers(CODEX_PLUGIN ? CODEX_HOOKS : CLAUDE_SETTINGS, CODEX_PLUGIN ? "codex" : "claude", tool)) process.exit(0);
 }
 // With no saved engine the gate starts where a fresh `reflex setup` does: local, no key needed, or
 // Jev when a TypeSafe key is in the environment, or a Keychain item or an earlier install is
@@ -2342,7 +2361,7 @@ const localJudgment = () => ({outcome: "ask", source: "local", rule: "not covere
 export async function decide(call, {background = false, asker, judger} = {}) {
   const subgoals = call.command ? [] : [call.subgoals ?? call.subgoal].flat().filter(s => typeof s === "string" && s.trim());
   if (CONFIG.mode === "off" || !(call.command || subgoals.length || call.tool)) return {effective: "pass", decision: "pass", reason: "reflex off", source: "off"};
-  if (!call.command && call.tool) return toolDecide(call, {background, asker, judger});
+  if (call.tool) return toolDecide(call, {background, asker, judger});
   if (subgoals.length) {
     if (CONFIG.engine === "local") return view({outcome: "pass", source: "local", rule: "subgoal classification is disabled"}, "pass");
     if (CONFIG.mode !== "enforce" && !background) return inBackground(call);
@@ -2423,7 +2442,7 @@ export async function decide(call, {background = false, asker, judger} = {}) {
 // filled in; `quiet` when the gate has nothing to say (not a gated tool, a write outside the protected
 // paths, a read-like MCP tool). quick null: an unknown MCP tool.
 function toolRules(call, env) {
-  const t = toolOf(call.tool, call.input, call.mcp === true), digest = sha(call.input ?? {}).slice(0, 8);
+  const t = toolOf(call.tool, call.input, call.mcp === true), digest = createHash("sha256").update(JSON.stringify(call.input ?? {})).digest("hex").slice(0, 16);
   if (!t) return {quiet: {outcome: "pass", source: "tool", rule: "not a gated tool"}};
   if (t.kind === "write" && t.unreadable)
     return {t, call: {...call, command: `${t.name} (unreadable patch, input ${digest})`, tier: {prod: false}},
@@ -2435,7 +2454,11 @@ function toolRules(call, env) {
             quick: {outcome: hit.outcome, rule: `writes a protected path (${hit.path}): ${hit.why}`, id: "protected-path", source: "rule", policy_version: hit.version}};
   }
   const tier = mcpTier(t, call.cwd, env);
-  const quick = mcpJudge(t, {spec: load("mcp.json"), team: teamPolicy(call.cwd)?.mcp ?? [], tier, precheck: c => precheck(c, call.cwd, env)});
+  let quick = mcpJudge(t, {spec: load("mcp.json"), team: teamPolicy(call.cwd)?.mcp ?? [], tier, precheck: c => precheck(c, call.cwd, env)});
+  // an MCP tool that writes files (a filesystem server) is held to the protected paths too
+  const wp = mcpWritePaths(t), hit = wp.length ? protectedWrite(wp, call.cwd) : null;
+  if (hit && !(quick?.source === "rule" && (SEVERITY[quick.outcome] ?? 0) >= (SEVERITY[hit.outcome] ?? 0)))
+    quick = {outcome: hit.outcome, rule: `MCP ${t.server ? `${t.server}/` : ""}${t.tool} writes a protected path (${hit.path}): ${hit.why}`, id: "protected-path", source: "rule", policy_version: hit.version};
   if (quick?.source === "read-only") return {quiet: quick};
   return {t, quick, call: {...call, command: `${mcpCommand(t, redact)} (input ${digest})`, tier,
     mcp: {server: t.server, tool: t.tool, arguments: redact(JSON.stringify(t.args ?? {})).slice(0, 2000), prod: tier.prod}}};
@@ -3731,7 +3754,7 @@ async function selfcheck() {
   ok(cx.subgoal === "agent: explorer\nfind_x\nFind X" && !cx.command &&
      codexCall({tool_name: "spawn_agent", tool_input: {items: [{type: "text", text: "Do Y"}]}}).subgoal === "Do Y" &&
      codexCall({tool_name: "spawn_agent", tool_input: {}}) === null && codexCall({tool_name: "Bash", tool_input: {command: "ls"}}).command === "ls" &&
-     codexCall({tool_name: "apply_patch", tool_input: {}}) === null, "codex: spawn_agent is a subgoal, Bash a command");
+     codexCall({tool_name: "apply_patch", tool_input: {}}).tool === "apply_patch", "codex: spawn_agent is a subgoal, Bash a command, apply_patch a tool call");
   ok(hermesSubgoals({tasks: [{goal: "A", context: "ctx"}, {goal: "B"}]}).join("|") === "A\ncontext: ctx|B" && hermesSubgoals({goal: "L"})[0] === "L" &&
      hermesSubgoals({action: "list"}).length === 0 && hermesSubgoals({action: "steer", message: "m"}).length === 0, "hermes: each delegated task is a subgoal; control actions are not");
   const dA = {effective: "allow", reason: "r"};
@@ -3800,7 +3823,7 @@ async function selfcheck() {
 }
 // @reflex:setup-only end
 
-const readStdin = () => JSON.parse(readFileSync(0, "utf8"));
+const readStdin = () => JSON.parse(STDIN ?? readFileSync(0, "utf8"));
 // ask needs a human: read y/N from the controlling terminal; no terminal means no approval.
 function confirmOnTty(command, reason) {
   try {
