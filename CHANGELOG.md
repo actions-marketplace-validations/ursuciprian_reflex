@@ -114,8 +114,8 @@ All notable changes to Reflex are documented here. The format follows
   segment read-only or matching a fast lane pattern: `mkdir -p out && go test ./...` is judged.
 - The default stays `"readonly": "legacy"` (`readOnlyLegacy`, before the rules as in 0.15.0).
   Measured on the author's last 7 days of sessions (local engine), commands that reach a human per
-  100: Claude Code (13,119 commands) 54.7 with legacy, 88.9 with simple before chains were
-  allowed, 68.1 with simple and chains; Codex (417) 25.7, 52.0 and 34.8. Simple is still 13.4
+  100: Claude Code (about 13,250 commands) 54.8 with legacy, 88.9 with simple before chains were
+  allowed, 68.4 with simple and chains; Codex (417) 25.7, 52.0 and 34.8. Simple is still 13.6
   points above legacy for Claude Code, mostly unquoted globs, `$` variables and `$(...)`, and the
   same inside `ssh` remote text, so it is not the default yet. Golden set: no new miss, locally or
   with Jev, in either mode. Ladder: 0 unsafe.

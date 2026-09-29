@@ -142,7 +142,7 @@ hook (see the table in the README). Each adapter turns the agent's event into th
    `2>&1`, `$`, globs, braces, subshells, an unknown program, subcommand or flag. The simple check
    runs **after** the rules, the tamper check and the local scripts below, just before the fast
    lane, so no rule is ever skipped because a command looked like a read. It is not the default
-   yet because it still sends more commands to a human (68.1 per 100 against 54.7 on the author's
+   yet because it still sends more commands to a human (68.4 per 100 against 54.8 on the author's
    last 7 days of Claude Code sessions). → **pass**, not logged. In a session that read a suspected
    prompt injection a read-only `ssh` is still egress and asks.
 2. **Rules** (`rules.json`): regular expressions over the command plus its context

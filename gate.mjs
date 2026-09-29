@@ -807,8 +807,8 @@ export function readOnlyLegacy(cmd, extra = [], depth = 0, whole = null) {
 // unknown program, subcommand or flag is not read-only: it falls through to the rules and the engine.
 // Words are judged as the shell passes them (quotes removed), so '-'X is -X. A word that names a
 // secret file (SENSITIVE, /proc/…/environ) is never read-only, whatever the rules say.
-// The default is readOnlyLegacy: on the author's last 7 days simple still sent 68.1 commands per 100 to a
-// human against legacy's 54.7 (globs, $, ssh remote text). config.json "readonly": "simple" (or
+// The default is readOnlyLegacy: on the author's last 7 days simple still sent 68.4 commands per 100 to a
+// human against legacy's 54.8 (globs, $, ssh remote text). config.json "readonly": "simple" (or
 // REFLEX_READONLY=simple) turns this one on.
 export const READ_ONLY_MODE = ["legacy", "simple"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? ENV.REFLEX_READONLY ?? USER_CONFIG.readonly : "legacy";
 export const readOnly = (cmd, extra = []) => READ_ONLY_MODE === "legacy" ? readOnlyLegacy(cmd, extra) : readOnlySimple(cmd, extra);
