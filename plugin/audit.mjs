@@ -8,11 +8,14 @@ import {readdirSync, readFileSync} from "node:fs";
 import {join} from "node:path";
 import {CONFIG, jsonLines, redact} from "./gate.mjs";
 import {listItems} from "./autonomy.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const argv = process.argv.slice(2);
 const die = s => { console.error(`reflex audit: ${s}`); process.exit(2); };
 const opt = (n, d) => { const i = argv.indexOf(n); if (i < 0) return d; if (argv[i + 1] === undefined || argv[i + 1].startsWith("--")) die(`${n} needs a value`); return argv[i + 1]; };
 const known = new Set(["--since", "--format", "--agent", "--prod-only"]);
+// The script itself runs only when started (node audit.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 for (const [i, a] of argv.entries()) if (a.startsWith("--") && !known.has(a)) die(`unknown option ${a}`); else if (!a.startsWith("--") && !["--since", "--format", "--agent"].includes(argv[i - 1])) die(`unexpected ${a}`);
 const window = opt("--since", "7d"), m = /^(\d+)([dhm])?$/.exec(window);
 if (!m) die("--since takes a number and d, h or m (7d, 12h, 30m)");
@@ -63,3 +66,4 @@ const COLUMNS = ["time", "agent", "session", "cwd", "env_tier", "env_reason", "c
 if (format === "json") console.log(JSON.stringify(rows, null, 1));
 else if (format === "jsonl") for (const r of rows) console.log(JSON.stringify(r));
 else console.log([COLUMNS.join(","), ...rows.map(r => COLUMNS.map(c => cell(r[c])).join(","))].join("\n"));
+}

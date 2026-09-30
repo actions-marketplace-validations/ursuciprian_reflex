@@ -199,5 +199,13 @@ export async function run() {
   } catch (e) { hookFailure(e, {simulated: e?.simulated === true}); }
 }
 
+/** Was the module with this import.meta started as the script (node x.mjs, a symlink to it, or
+ * hook.mjs, which sets argv[1] to its target)? Every Reflex script does its work only then, so an
+ * import (a test, a review agent reading the code) runs nothing, writes nothing, spawns nothing. */
+export function isMain(meta) {
+  if (meta.main === true) return true;
+  try { return !!process.argv[1] && realpathSync(fileURLToPath(meta.url)) === realpathSync(process.argv[1]); } catch { return false; }
+}
+
 if (hookOf(process.argv)) install();   // imported first by a script started as a hook the old way
 

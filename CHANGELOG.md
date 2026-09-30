@@ -59,6 +59,25 @@ All notable changes to Reflex are documented here. The format follows
   generic file name such as `config.json` under a variable, or an unknown program run in the parent
   that writes `reflex/` without naming it. `reflex learn` trusts these logs as far as this check
   protects them; the GUIDE says so.
+- Importing a Reflex file no longer does anything. `install.mjs`, `eval.mjs`, `eval-ladder.mjs`,
+  `eval-compare.mjs`, `eval-instructions.mjs`, `status.mjs`, `report.mjs`, `audit.mjs`, `replay.mjs`,
+  `test.mjs`, `hook.mjs`, `scripts/reflex`, `scripts/reflex-review` and `scripts/build-plugin.mjs`
+  ran their work at the top level, so an `import("./install.mjs")` (a review agent reading the code)
+  rewrote a real `~/.claude/settings.json`. Every script now runs only when started directly
+  (`isMain` in `failsafe.mjs`: the real path of `import.meta.url` against the real path of
+  `process.argv[1]`, so a symlinked `reflex` still runs). `node install.mjs ...`, `reflex setup` and
+  `npm run eval` work as before. A test imports every `*.mjs` at the top, in `adapters/`,
+  `scripts/` and `router/` in a child with `HOME`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`,
+  `XDG_STATE_HOME` and `TMPDIR` in an empty scratch directory, and fails when anything appears or
+  changes there or a process is started.
+- Tamper: the files the tamper rule protects inside the checkout are read from the checkout instead
+  of a hand-kept list, which had missed `tools.mjs`, `freeze.mjs`, `notify.mjs`, `mcp.mjs`,
+  `laya.mjs`, `learn.mjs`, `status.mjs`, `replay.mjs`, `suggest.mjs`, `audit.mjs`,
+  `eval-compare.mjs`, `test.mjs` and more. Covered now: every top-level `*.mjs`, `*.js`, `*.sh` and
+  `*.json` file (`install.sh`, `package.json`, `.mcp.json`) and everything under `setup/`,
+  `scripts/`, `adapters/`, `hooks/`, `router/`, `routing/`, `plugin/`, `commands/`, `skills/`,
+  `.claude-plugin/`, `.codex-plugin/` and `.agents/`. The gate's selfcheck fails when a file of the
+  checkout is neither covered nor listed as not run by Reflex (docs, site, examples and the like).
 
 ### Fixed
 

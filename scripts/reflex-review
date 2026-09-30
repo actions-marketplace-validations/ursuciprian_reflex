@@ -13,9 +13,12 @@ import {spawnSync} from "node:child_process";
 import {dirname, join} from "node:path";
 import {bundle, log, reviewPrompt, writeBundle} from "../context.mjs";
 import {CONFIG} from "../gate.mjs";
+import {isMain} from "../failsafe.mjs";
 
 const argv = process.argv.slice(2);
 const opt = n => { const i = argv.indexOf(n); return i > -1 ? argv[i + 1] : undefined; };
+// The script itself runs only when started (node reflex-review), never when the file is imported.
+if (isMain(import.meta)) {
 const reviewer = opt("--reviewer") ?? process.env.REFLEX_REVIEWER;
 if (!reviewer) { console.error("reflex-review: set --reviewer or REFLEX_REVIEWER, e.g. \"codex exec -s read-only -\""); process.exit(2); }
 
@@ -33,3 +36,4 @@ log({kind: "review", reviewer: reviewer.split(" ")[0], changed: b.changed.length
      status: r.status, error: r.error ? String(r.error) : null, wall_s: (Date.now() - t0) / 1000, out});
 console.error(`reflex-review: ${r.status === 0 ? "review" : `reviewer exited ${r.status}; output`} in ${out}`);
 process.exit(r.status ?? 1);
+}

@@ -38,6 +38,7 @@ import {setFlagsFromString} from "node:v8";
 import {broad, compilePattern, patternError} from "./fastlane.mjs";
 import {parseFreeze} from "./freeze.mjs";
 import {notifyTarget, targetLabel} from "./notify.mjs";
+import {isMain} from "./failsafe.mjs";
 
 export const TRUST_FILE = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "reflex/trusted.json");
 const MAX_FILE = 64 * 1024, MAX_PATTERNS = 64;
@@ -354,4 +355,4 @@ function main(argv) {
   say(`trusted ${t.sha256.slice(0, 12)} for ${root}. Any change to the file drops the trust until you run reflex trust again.`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main(process.argv.slice(2));
+if (isMain(import.meta)) main(process.argv.slice(2));

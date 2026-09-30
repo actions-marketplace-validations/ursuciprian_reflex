@@ -1,5 +1,5 @@
 // The gate's offline self-check: node gate.mjs --selfcheck (no API calls).
-import {writeFileSync, rmSync, mkdirSync, symlinkSync, copyFileSync, cpSync, readFileSync, appendFileSync} from "node:fs";
+import {writeFileSync, rmSync, mkdirSync, symlinkSync, copyFileSync, cpSync, readFileSync, appendFileSync, readdirSync, statSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {tmpdir, homedir} from "node:os";
 import {join, dirname, basename, posix} from "node:path";
@@ -500,6 +500,19 @@ export async function selfcheck() {
     "node --check --run build", "node --check --build-snapshot e.js"])
     ok(!fastPass(c, rules), `not fast lane: ${c}`);
   ok(fastPass("node --check x.js", rules), "node --check alone is the fast lane");
+  // Every file Reflex runs from its checkout is protected (tamper.mjs OWN_DIRS and the top-level code files,
+  // read from the checkout): each file there is either covered or named here as not run by Reflex.
+  { const NOT_RUNTIME = /^(\.git|\.github|\.claude|\.reflex|node_modules|docs|site|examples|assets|dashboards)\/|^[^/]+\.(md|txt|cff|yml)$|^(LICENSE|\.gitignore)$|(^|\/)\.DS_Store$/;
+    const git = spawnSync("git", ["-C", HERE, "ls-files"], {encoding: "utf8"});
+    const files = git.status === 0 && git.stdout.trim() ? git.stdout.trim().split("\n")
+      : readdirSync(HERE, {recursive: true}).filter(f => !f.startsWith(".git/") && statSync(join(HERE, f)).isFile());
+    const uncovered = files.filter(f => !NOT_RUNTIME.test(f) && pw(`echo x > ${f}`, HERE) !== "tamper");
+    ok(files.length > 50 && !uncovered.length, `checkout: every runtime file is protected by the tamper rule (uncovered: ${uncovered.join(", ")})`);
+    for (const f of ["tools.mjs", "freeze.mjs", "notify.mjs", "mcp.mjs", "laya.mjs", "learn.mjs", "status.mjs", "replay.mjs", "suggest.mjs", "audit.mjs", "eval-compare.mjs",
+      "test.mjs", "scripts/build-plugin.mjs", "hooks/hooks.json", "plugin/gate.mjs", ".claude-plugin/marketplace.json", ".codex-plugin/plugin.json", "install.sh", ".mcp.json"])
+      ok(pw(`sed -i '' s/a/b/ ${f}`, HERE) === "tamper" && pw(`cp /tmp/x ${f}`, HERE) === "tamper", `checkout: ${f} is protected like gate.mjs`);
+    ok(pw("rm -rf .claude-plugin", HERE) === "tamper" && pw("sed -i '' s/a/b/ my-gate.mjs", HERE) !== "tamper" && pw("sed -i '' s/a/b/ src/notes.txt", HERE) !== "tamper",
+       "checkout: a dot directory by its name; a file that is not Reflex's is not tamper"); }
   // the checkout: committing its files is not changing them; a worktree nested in it is another checkout unless the command climbs out
   const nested = join(HERE, `.selfcheck-nested-${process.pid}`);
   try {

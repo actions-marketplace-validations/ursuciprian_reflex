@@ -21,7 +21,7 @@
 //   node instructions.mjs --select              JSON {prompt, cwd, recent_files?} on stdin -> {text, fragments}
 //   node instructions.mjs --check "<prompt>" [--cwd dir] [--files a,b]
 //   node instructions.mjs --selfcheck           offline, Jev stubbed
-import {hookFailure} from "./failsafe.mjs";   // first: an error after this warns and is logged
+import {hookFailure, isMain} from "./failsafe.mjs";   // first: an error after this warns and is logged
 import {cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync,
         writeFileSync} from "node:fs";
 import {spawnSync} from "node:child_process";
@@ -321,7 +321,7 @@ const flag = f => argv.includes(f);
 const opt = n => { const i = argv.indexOf(n); return i > -1 ? argv[i + 1] : undefined; };
 // A JSON parse error quotes its input, which here is the user's prompt: keep that out of stderr.
 const readStdin = () => { try { return JSON.parse(readFileSync(0, "utf8")); } catch { throw new Error("stdin is not JSON"); } };
-const main = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const main = isMain(import.meta);
 // Errors go to stderr and the process exits 0: a broken instruction layer never blocks a prompt.
 const guarded = fn => Promise.resolve().then(fn).catch(hookFailure);
 

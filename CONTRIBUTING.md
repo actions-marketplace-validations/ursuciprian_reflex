@@ -84,6 +84,9 @@ When you change rules, questions, policy or redaction:
   when a flag, a default or a limit changes.
 - Do not rewrite git history: `setup/context/golden.json` pins commit `b41c8c1`, and
   `npm run eval-context` breaks if it stops existing.
+- A script does its work only when started: put it under `if (isMain(import.meta))` (`failsafe.mjs`),
+  so importing the file runs nothing. `test.mjs` imports every file with a scratch HOME and fails on a
+  write or a started process.
 - Keep the working tree free of generated state: logs, cache, chunk stores and bundles go under
   `~/.local/state/reflex` (`REFLEX_DATA_DIR`), never in the repo.
 
@@ -97,7 +100,7 @@ When you change rules, questions, policy or redaction:
 | `scripts.mjs` | The local scripts a command runs (`localScripts`) and their lines for the script rules |
 | `readonly.mjs` | Read-only detection: `readOnlyLegacy`, `readOnlySimple`, their tables and flag allowlists, and `pipelines()` |
 | `rules.mjs` | The setup files (`load`), `checkRules`, `rulesHit`, the fast lane, and the deny rules on a command too large to check (`largeDeny`) |
-| `tamper.mjs` | What a command changes of Reflex itself: the cd tracking (`cdDirs`, `writesView`), the checkout, data and config directories in any spelling (`touchesOwn`), a nested checkout (`staysNested`), the reflex CLI forms that change Reflex, the plugin's own commands |
+| `tamper.mjs` | What a command changes of Reflex itself: the cd tracking (`cdDirs`, `writesView`), the checkout, data and config directories in any spelling (`touchesOwn`), a nested checkout (`staysNested`), the files it protects inside the checkout, read from the checkout (`namesOwnFile`, `OWN_DIRS`; the gate selfcheck fails on a file it does not cover), the reflex CLI forms that change Reflex, the plugin's own commands |
 | `jev.mjs` | Jev: the call's context, the provider's key and where it may go, `ask`, the answer cache and `jevJudge` |
 | `selfcheck.mjs` | `node gate.mjs --selfcheck`: the gate's offline self-check (not in the plugin bundle) |
 | `autonomy.mjs` | The escalation ladder (autonomous profile): the always-human class, System 2 escalation, the verdict cache key and the breaker, the approval queue, task envelopes, checkpoints, and `reflex queue` / `envelope` / `checkpoints` |
