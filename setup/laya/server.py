@@ -28,7 +28,7 @@ import os
 import sys
 from pathlib import Path
 
-LAYA_VERSION = "0.3.20"        # the laya package this was tested with (reflex setup pins it)
+LAYA_VERSION = "0.3.22"        # the laya package this was tested with (reflex setup pins it)
 REPO = "convaiinnovations/laya"
 REVISION = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"   # 2026-09-24; all three checkpoints
 SUBFOLDERS = {"english": None, "multilingual": "multilingual", "typed-decisions": "typed-decisions"}

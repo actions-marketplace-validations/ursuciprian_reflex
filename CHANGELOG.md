@@ -6,6 +6,14 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Laya engine: `reflex setup --engine laya` installs `laya[serve]==0.3.22` (was 0.3.20). Measured head to head with 0.3.20 and Jev 1.13.0 on every golden set on 2026-09-30: every number is the same, and every answer is the same except four gate cases whose state holds a per-process path (at most 0.013 of probability, no decision changed). The checkpoints stay at revision `55cf4c4`, still the latest. The GUIDE's "Measured against Jev" table is rerun on the current golden sets (199 gate cases, 47 ladder commands) and adds the MCP set, where calibrated Laya matches Jev (0 MISS, 0 over-strict, on 6 cases that reach System 1). Laya stays off by default.
+
+### Added
+
+- `npm run eval-compare` runs the MCP golden set too (`--suites mcp`).
+
 ## [0.17.1] - 2026-09-30
 
 ### Fixed
