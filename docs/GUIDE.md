@@ -728,7 +728,7 @@ trusted team fast lane entry for one repository.
 
 ### Read-only allowlist
 
-The read-only pass (`readOnlySimple()` in `gate.mjs`) answers one question: does this command
+The read-only pass (`readOnlySimple()` in `readonly.mjs`) answers one question: does this command
 only read? It answers yes only when it can see the whole command, and no otherwise. There is no
 shell parser to fool: a command it does not fully recognise is judged by the rules and the engine
 like any other, which costs a prompt or a Jev call, never safety.
@@ -806,7 +806,7 @@ Keep those under review.
 
 **Extending it.** Pick the narrowest place:
 
-- **For everyone:** add an entry to `READ_ONLY_SIMPLE` in `gate.mjs` (a flag spec built with
+- **For everyone:** add an entry to `READ_ONLY_SIMPLE` in `readonly.mjs` (a flag spec built with
   `F(short, shortWithValue, long, longWithValue)`, or a `test` function), and add the command and a
   harmful variant to the selfcheck lists (`simple, read-only` and `simple, not read-only`). Only
   add a program whose allowed flags cannot write, run code or read a secret; list its flags, do

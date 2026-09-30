@@ -1615,9 +1615,10 @@ try {
     r = sh("off");
     assert.ok(r.status === 0 && r.stdout.includes("ran"), "reflex-sh off runs bash");
     // Real crashes, in a copy of the checkout: a syntax error in an imported module (an import error)
-    // and a throw at the top level of gate.mjs.
+    // and a throw at the top level of gate.mjs and of config.mjs (where CONFIG is).
     for (const [name, file, patch] of [["import", "freeze.mjs", s => `${s}\nthis is not javascript\n`],
-                                       ["throw", "gate.mjs", s => s.replace("export const CONFIG = {", "throw new Error('top-level boom');\nexport const CONFIG = {")]]) {
+                                       ["throw", "gate.mjs", s => s.replace("const argv = process.argv.slice(2);", "throw new Error('top-level boom');\nconst argv = process.argv.slice(2);")],
+                                       ["throw-config", "config.mjs", s => s.replace("export const CONFIG = {", "throw new Error('top-level boom');\nexport const CONFIG = {")]]) {
       const copy = join(fdir, name);
       cpSync(root, copy, {recursive: true, filter: p => !/\/(\.git|node_modules)(\/|$)/.test(p.slice(root.length))});
       writeFileSync(join(copy, file), patch(readFileSync(join(copy, file), "utf8")));
