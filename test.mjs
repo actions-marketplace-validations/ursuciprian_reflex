@@ -1461,10 +1461,17 @@ try {
       assert.ok(v === "ask" && /destructive MCP tool call/.test(why), `${agent}: destructive asks: ${v} ${why}`);
       assert.equal(send(name("describe_stacks"), {StackName: "prod-api"})[0], "pass", `${agent}: a read passes`);
       const before = traced().length;
-      assert.equal(send(name("start_build"), {project: "web"})[0], "pass", `${agent}: an unknown tool passes in shadow`);
+      // aws is an infrastructure server: an unknown tool asks keyless under the MCP infra preset (mcp.infra), and is logged
+      assert.equal(send(name("start_build"), {project: "web"})[0], "ask", `${agent}: an unknown infra tool asks (mcp.infra)`);
       const row = traced().slice(before).find(r => r.rule_id === "mcp-unknown");
-      assert.ok(row && row.decision === "pass" && row.emitted === null && /start_build/.test(row.state.call.command), `${agent}: the unknown tool is logged: ${JSON.stringify(traced().slice(before))}`);
+      assert.ok(row && row.decision === "ask" && /start_build/.test(row.state.call.command), `${agent}: the unknown infra tool is logged as an ask: ${JSON.stringify(traced().slice(before))}`);
     }
+    // an unknown tool on a server that is not infrastructure stays log-only (a pass), even with db or github in the tool name
+    const before2 = traced().length;
+    assert.equal(decide("claude")("mcp__linear__start_thing", {})[0], "pass", "a non-infra unknown tool logs as a pass");
+    assert.equal(claude("mcp__notion__update_database", {database_id: "x"})[0], "pass", "the infra preset reads the server name, not the tool name");
+    const row2 = traced().slice(before2).find(r => r.rule_id === "mcp-unknown");
+    assert.ok(row2 && row2.decision === "pass" && row2.emitted === null, `a non-infra unknown tool is logged: ${JSON.stringify(traced().slice(before2))}`);
     // a shell command in an argument goes through the shell rules; SQL passes only when SELECT only
     assert.equal(claude("mcp__aws-mcp__call_aws", {cli_command: "aws ec2 terminate-instances --instance-ids i-1 --profile prod"})[0], "deny", "call_aws: the shell rules see the command");
     assert.equal(claude("mcp__aws-mcp__call_aws", {cli_command: "aws s3 ls"})[0], "pass", "call_aws: a read-only command passes");
@@ -1517,6 +1524,10 @@ try {
     assert.equal(claude("Write", {file_path: join(repo, "notes/a.md"), content: "x"})[0], "ask", "config.json protected adds a glob");
     setConfig({mcp: {unknown: "allow"}});
     assert.ok(/mcp takes only/.test(claude("mcp__ci__start_build", {})[1]), "an invalid mcp setting asks");
+    setConfig({mcp: {infra: false}});
+    assert.equal(claude("mcp__aws__start_build", {project: "web"})[0], "pass", "mcp.infra false: an unknown infra tool is log-only again");
+    setConfig({mcp: {infra: "yes"}});
+    assert.ok(/mcp takes only/.test(claude("mcp__aws__start_build", {})[1]), "mcp.infra must be a boolean");
     setConfig({});
     // plugin mode (Claude Code): the same asks and denies, never an allow, never a rewritten input
     for (const [tool, input, want] of [["mcp__aws__delete_stack", {StackName: "dev"}, "ask"], ["mcp__aws__delete_stack", {StackName: "prod"}, "deny"],

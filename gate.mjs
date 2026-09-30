@@ -382,7 +382,21 @@ function toolRules(call, env) {
   return {t, quick, call: {...call, command: `${mcpCommand(t, redact)} (input ${digest})`, tier,
     mcp: {server: t.server, tool: t.tool, arguments: redact(JSON.stringify(t.args ?? {})).slice(0, 2000), prod: tier.prod}}};
 }
-const unknownTool = t => ({outcome: "pass", source: "local", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules: logged (keyless)`, policy_version: load("mcp.json").version});
+// The MCP infra preset (config.json mcp.infra, on by default): an unknown tool on a server that acts on
+// cloud, clusters, infrastructure-as-code, a database or a code host is not only logged: the engine
+// judges it, and keyless it asks. Matched on the server name alone, word by word (aws-mcp, awslabs.eks,
+// mcp-server-kubernetes), or any server name containing "prod"; never on the tool name, so a
+// query_database tool on a notion server is not infra. Without a server name (Hermes, opencode) the
+// first word of the tool name is the server's (toolOf).
+const MCP_INFRA = new Set(["aws", "awslabs", "kubernetes", "k8s", "kubectl", "terraform", "tfc", "gcp", "gcloud", "azure", "postgres", "postgresql",
+  "mysql", "mongodb", "dynamodb", "database", "db", "supabase", "github", "gitlab"]);
+export const mcpInfraServer = t => {
+  const server = String(t.server ?? String(t.tool ?? "").split("_")[0]).toLowerCase();
+  return server.includes("prod") || server.split(/[^a-z0-9]+/).some(w => MCP_INFRA.has(w));
+};
+const unknownTool = t => CONFIG.mcp.infra && mcpInfraServer(t)
+  ? {outcome: "ask", source: "rule", id: "mcp-unknown", rule: `unknown tool on an infrastructure MCP server (${t.server ?? t.tool}): a human reviews it (mcp.infra)`, policy_version: load("mcp.json").version}
+  : {outcome: "pass", source: "local", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules: logged (keyless)`, policy_version: load("mcp.json").version};
 /** A tool call through the rules and the engine, as eval.mjs sees it: no freeze, queue, runaway guard or trace. */
 export async function judgeTool({tool, input = {}, mcp = false, cwd, env = {}, session = {}, useCache = true, asker}) {
   if (configurationError()) return {outcome: "ask", rule: configurationError(), source: "error"};
@@ -423,7 +437,7 @@ async function toolDecide(call, {background = false, asker, judger} = {}) {
   const version = load("mcp.json").version;
   if (CONFIG.mcp.unknown === "ask")
     return finish({outcome: "ask", source: "rule", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules (mcp.unknown: ask)`, policy_version: version}, call, "ask", {env, judger});
-  if (CONFIG.engine === "local") return pass(await finish(unknownTool(t), call, "pass", {env, judger, background}));
+  if (CONFIG.engine === "local") { const u = unknownTool(t); return pass(await finish(u, call, u.outcome === "ask" ? "ask" : "pass", {env, judger, background})); }
   if (CONFIG.mode !== "enforce" && !background) return inBackground(call);
   const t0 = tainted(call.session_id);
   const j = await jevJudge({command: call.command, cwd: call.cwd, env, session: {...callSession(call), mcp: call.mcp}, asker, tainted: !!t0, tool: true});

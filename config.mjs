@@ -160,7 +160,9 @@ export const CONFIG = {
   notify: notifyTarget(USER_CONFIG.notify, "config.json notify"),
   // MCP tool calls the rules do not cover (tools.mjs): "shadow" logs them (Jev judges them when
   // enforcing with a key), "ask" asks in every mode. config.json only.
-  mcp: {unknown: USER_CONFIG.mcp?.unknown ?? "shadow"},
+  // infra (default on): an unknown tool on a cloud, cluster, IaC or database server (gate.mjs mcpInfraServer)
+  // goes to the engine when there is one and asks keyless, instead of only being logged.
+  mcp: {unknown: USER_CONFIG.mcp?.unknown ?? "shadow", infra: USER_CONFIG.mcp?.infra ?? true},
 };
 // The one host the provider's key may go to (authorization()): where its endpoint was configured.
 CONFIG.keyHost = hostOf(CONFIG.api);
@@ -188,8 +190,9 @@ export function configurationError() {
 // Invalid tool gate settings ask, like any invalid configuration.
 function toolError() {
   const m = USER_CONFIG.mcp, p = USER_CONFIG.protected;
-  if (m !== undefined && (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).some(k => k !== "unknown") || !["shadow", "ask", undefined].includes(m.unknown)))
-    return 'mcp takes only "unknown": "shadow" or "ask"';
+  if (m !== undefined && (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).some(k => !["unknown", "infra"].includes(k)) ||
+      !["shadow", "ask", undefined].includes(m.unknown) || (m.infra !== undefined && typeof m.infra !== "boolean")))
+    return 'mcp takes only "unknown": "shadow" | "ask" and "infra": true | false';
   if (p !== undefined && (!Array.isArray(p) || p.some(g => typeof g !== "string" || !g.trim() || g.length > 200)))
     return "protected must be a list of globs";
   return null;
