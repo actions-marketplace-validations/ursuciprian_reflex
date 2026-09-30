@@ -21,7 +21,7 @@ import {isMain} from "./failsafe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url)), ENV = process.env;
 // @reflex:setup-only begin
-export const LAYA_PACKAGE = "laya[serve]==0.3.20";   // the version the evaluation ran on (setup/laya/server.py LAYA_VERSION)
+export const LAYA_PACKAGE = "laya[serve]==0.3.22";   // the version the evaluation ran on (setup/laya/server.py LAYA_VERSION)
 const PREFIX = ENV.REFLEX_PREFIX ?? join(homedir(), ".local/share/reflex");
 // @reflex:setup-only end
 export const laya = () => {

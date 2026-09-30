@@ -171,6 +171,10 @@ try {
     assert.match((await run(["scripts/reflex", "setup", "--engine", "laya", "--agents", "claude", "--dry-run"], {...laya, REFLEX_PREFIX: join(scratch, "laya-prefix")})).out,
       /laya engine[\s\S]*laya\[serve\]==[\d.]+ in .*laya-venv[\s\S]*disk about [\d.]+ GB/, "setup --engine laya previews the Laya install");
     assert.ok(!existsSync(join(scratch, "laya-prefix")), "the preview installs nothing");
+    // The pin setup installs is the version the server and the GUIDE say was measured.
+    const pin = readFileSync(join(root, "laya.mjs"), "utf8").match(/LAYA_PACKAGE = "laya\[serve\]==([\d.]+)"/)?.[1];
+    assert.ok(pin && readFileSync(join(root, "setup/laya/server.py"), "utf8").includes(`LAYA_VERSION = "${pin}"`) &&
+      readFileSync(join(root, "docs/GUIDE.md"), "utf8").includes(`laya[serve]==${pin}`), `laya pin ${pin}: laya.mjs, server.py and the GUIDE agree`);
     await new Promise(r => stub.close(r));
     assert.equal(spawnSync("python3", ["setup/laya/server.py", "--selfcheck"], {cwd: root, env, stdio: "inherit"}).status, 0, "laya server selfcheck");
   }

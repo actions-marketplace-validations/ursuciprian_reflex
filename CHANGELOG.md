@@ -6,6 +6,14 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Laya engine: `reflex setup --engine laya` installs `laya[serve]==0.3.22` (was 0.3.20). Measured head to head with 0.3.20 and Jev 1.13.0 on every golden set on 2026-09-30: every number is the same, and every answer is the same except four gate cases whose state holds a per-process path (at most 0.013 of probability, no decision changed). The checkpoints stay at revision `55cf4c4`, still the latest. The GUIDE's "Measured against Jev" table is rerun on the current golden sets (199 gate cases, 47 ladder commands) and adds the MCP set, where calibrated Laya matches Jev (0 MISS, 0 over-strict, on 6 cases that reach System 1). Laya stays off by default.
+
+### Added
+
+- `npm run eval-compare` runs the MCP golden set too (`--suites mcp`).
+
 ### Fixed
 
 - Engine jev with no API key (for example a curl install without `--keychain`): in shadow mode every command the rules leave to the engine was logged as an ask with the rule "jev unavailable (Error: no API key for typesafe: ...)". Shadow enforces deterministic rules only, so an engine that gives no answer (a missing key, an unreachable host, a timeout, a malformed answer) now passes, and the trace records the reason. Enforce mode keeps the policy fallback, which asks.
