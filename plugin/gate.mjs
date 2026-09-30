@@ -38,7 +38,7 @@ import {infraSettings, planGate} from "./infra.mjs";
 import {activeFreeze, inWindow} from "./freeze.mjs";
 import {notifyLater} from "./notify.mjs";
 // The gate's own modules, after every other import, each importing only the ones before it:
-// config, shell, scripts, readonly, rules, tamper, jev. Their top level runs where it ran in gate.mjs.
+// config, shell, scripts, readonly, rules, tamper, jev. Their top level runs after every other import, as gate.mjs's did; only config.mjs has side effects (the plugin stand-down).
 import {ENV, redact, HERE, CONFIG, USER_CONFIG_FILE, USER_CONFIG, configurationError, FEEDBACK, sha, ROTATE_BYTES, TRACE, STDIN} from "./config.mjs";
 import {withAwsProfile, ruleSpelling, wordSpelling, TOO_MANY, BRACE_WORDS, stripDataHeredocs, shellWords, gitPlain} from "./shell.mjs";
 import {SCAN_MS, localScripts, scriptLines} from "./scripts.mjs";
