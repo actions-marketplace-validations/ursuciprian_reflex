@@ -1,6 +1,6 @@
 {
   "version": "golden-workspace-v1",
-  "note": "The keyless workspace allowlist (workspace.mjs): node workspace.mjs --selfcheck builds a scratch repository from `files` (tracked) and `untracked`, plus a symlink out -> outside the repository, src/link.js -> src/app.js, a nested repository vendor/sub and src/skip.js marked skip-worktree. Each case runs through workspacePass and the gate's precheck in `cwd` (relative to the repository). `pass: true` must pass as a workspace pass; every other case must not pass that way (it may still pass as read-only, fast lane or a rule, just not here). `finding` names the PR #78 review finding it guards. `sed`: only on that sed flavour (gnu or bsd).",
+  "note": "The keyless workspace allowlist (workspace.mjs): node workspace.mjs --selfcheck builds a scratch repository from `files` (tracked) and `untracked`, plus a symlink out -> outside the repository, src/link.js -> src/app.js, a nested repository vendor/sub and src/skip.js marked skip-worktree, and src/ita.js added with git add -N. Each case runs through workspacePass and the gate's precheck in `cwd` (relative to the repository). `pass: true` must pass as a workspace pass; every other case must not pass that way (it may still pass as read-only, fast lane or a rule, just not here). `finding` names the PR #78 review finding it guards. `sed`: only on that sed flavour (gnu or bsd).",
   "files": {
     "src/app.js": "const foo = 1;\n",
     "src/util.js": "export const a = 2;\n",
@@ -131,6 +131,14 @@
     {"command": "cp -r src src2", "why": "a flag cp does not list"},
     {"command": "rm -f build/out.txt", "why": "rm is never on the allowlist"},
     {"command": "ln -s /etc x", "why": "ln is never on the allowlist"},
-    {"command": "chmod +x src/app.js", "why": "chmod is never on the allowlist"}
+    {"command": "chmod +x src/app.js", "why": "chmod is never on the allowlist"},
+    {"command":"cp src/app.js =git","why":"zsh expands =git to the path of git: a write outside the tree (review of v2)"},
+    {"command":"mv src/app.js =node","why":"zsh =word expansion (review of v2)"},
+    {"command":"touch =ls","why":"zsh =word expansion (review of v2)"},
+    {"command":"cp src/app.js new\r","why":"a CR is part of the word to the shell, not whitespace (review of v2)"},
+    {"command":"touch a ","why":"a no-break space is part of the word to the shell (review of v2)"},
+    {"command":"sed -i '' 's/a/b/' src/ita.js","why":"intent-to-add: tagged H but not in any checkpoint (review of v2)"},
+    {"command":"sed -i -e 's/a/b/' src/ita.js","why":"intent-to-add (review of v2)"},
+    {"command":"cp src/ita.js src/ita2.js","why":"intent-to-add source (review of v2)"}
   ]
 }

@@ -39,11 +39,14 @@ export function words(command) {
   if (typeof command !== "string" || command.length > MAX_LENGTH) return null;
   const out = [], re = /[ \t]*(?:'([^'\n]*)'|([A-Za-z0-9_@%+,=:/.-]+))(?=[ \t]|$)/y;
   let i = 0;
-  const s = command.trim();
+  // only spaces and tabs are trimmed: a CR or any other whitespace the shell keeps in a word is refused
+  const s = command.replace(/^[ \t]+|[ \t]+$/g, "");
   while (i < s.length) {
     re.lastIndex = i;
     const m = re.exec(s);
     if (!m || (out.length && !/[ \t]/.test(s[i]))) return null;
+    // zsh expands a word that starts with = to a command's path (=git is /usr/bin/git)
+    if (m[2]?.startsWith("=")) return null;
     out.push(m[1] !== undefined ? {text: m[1], quoted: true} : {text: m[2], quoted: false});
     i = re.lastIndex;
     if (out.length > MAX_WORDS) return null;
@@ -79,12 +82,15 @@ function inTree(word, ctx, {dir = false} = {}) {
   return {abs, rel: rel.join("/"), stat: stat ?? null, parent: stat !== undefined};
 }
 // A regular file git tracks as a plain cached entry (ls-files -v tag H): not skip-worktree (S),
-// not assume-unchanged (h), not unmerged (M), so a checkpoint records its current content.
+// not assume-unchanged (h), not unmerged (M), not intent-to-add (git add -N: tagged H, but no
+// content in the index), so a checkpoint records its current content.
 function tracked(p, ctx) {
   if (!p?.stat?.isFile()) return false;
   const r = git(ctx.root, ["ls-files", "-v", "--error-unmatch", "--", p.rel]);
   const lines = r.status === 0 ? r.stdout.split("\n").filter(Boolean) : [];
-  return lines.length === 1 && lines[0] === `H ${p.rel}`;
+  if (lines.length !== 1 || lines[0] !== `H ${p.rel}`) return false;
+  const ita = git(ctx.root, ["diff-files", "--name-only", "--diff-filter=A", "--", p.rel]);
+  return ita.status === 0 && !ita.stdout.trim();
 }
 
 /** {outcome: "allow", source: "workspace", id, rule} for one of the shapes above, else null. */
@@ -172,6 +178,11 @@ async function selfcheck() {
       if (got !== want || (want && d.effective !== "allow")) { failed++; console.log(`FAIL decide ${command} in ${cwd}: ${why}: ${JSON.stringify(d)}`); }
     }
     if (!run(["for-each-ref", "refs/reflex/checkpoints/"]).trim()) { failed++; console.log("FAIL a workspace pass left no checkpoint"); }
+    // an intent-to-add entry makes git stash create fail: no checkpoint, so no workspace pass (review of v2)
+    writeFileSync(join(repo, "src/ita.js"), "ita\n");
+    run(["add", "-N", "src/ita.js"]);
+    const ita = await at(repo, "cp src/app.js src/fresh2.js");
+    if (ita.source === "workspace") { failed++; console.log(`FAIL a repository whose checkpoint fails still passed: ${JSON.stringify(ita)}`); }
     const flavourNow = sedFlavour();
     for (const c of golden.cases) {
       if (c.sed && c.sed !== flavourNow) continue;

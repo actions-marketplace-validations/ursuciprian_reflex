@@ -98,6 +98,9 @@
     {"expect": ["pass", "ask"], "expect_local": "ask", "tool": "mcp__my-db__do_thing", "input": {"x": 1}, "why": "db as a word of the server name: infra"},
     {"expect": ["pass", "ask"], "expect_local": "pass", "tool": "mcp__dbt__compile_thing", "input": {"x": 1}, "why": "dbt is not db: the preset matches whole words"},
     {"expect": ["pass", "ask", "deny"], "expect_local": "ask", "tool": "mcp__acme-prod-tools__do_thing", "input": {"x": 1}, "why": "a server name containing prod: infra preset asks keyless"},
+    {"expect": ["pass", "ask"], "expect_local": "ask", "tool": "mcp__McpAws__start_thing", "input": {"x": 1}, "why": "camel case server name: McpAws is aws (review of v2)"},
+    {"expect": ["pass", "ask"], "expect_local": "ask", "tool": "mcp__myPostgresServer__run_thing", "input": {"x": 1}, "why": "camel case server name: postgres (review of v2)"},
+    {"expect": ["pass", "ask"], "expect_local": "ask", "tool": "mcp__GitHub__start_thing", "input": {"x": 1}, "why": "GitHub stays github as a whole word"},
     {"expect": ["pass", "ask"], "expect_local": "ask", "tool": "gitlab_start_pipeline_thing", "mcp": true, "input": {"project": "web"}, "why": "opencode naming: the first word of the tool is the server, gitlab"}
   ]
 }

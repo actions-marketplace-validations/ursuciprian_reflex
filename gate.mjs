@@ -403,8 +403,10 @@ function toolRules(call, env) {
 const MCP_INFRA = new Set(["aws", "awslabs", "kubernetes", "k8s", "kubectl", "terraform", "tfc", "gcp", "gcloud", "azure", "postgres", "postgresql",
   "mysql", "mongodb", "dynamodb", "database", "db", "supabase", "github", "gitlab"]);
 export const mcpInfraServer = t => {
-  const server = String(t.server ?? String(t.tool ?? "").split("_")[0]).toLowerCase();
-  return server.includes("prod") || server.split(/[^a-z0-9]+/).some(w => MCP_INFRA.has(w));
+  const raw = String(t.server ?? String(t.tool ?? "").split("_")[0]), server = raw.toLowerCase();
+  // camel case splits too (McpAws, myPostgresServer), and the whole word stays (GitHub is github)
+  const words = [...server.split(/[^a-z0-9]+/), ...raw.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase().split(/[^a-z0-9]+/)];
+  return server.includes("prod") || words.some(w => MCP_INFRA.has(w));
 };
 const unknownTool = t => CONFIG.mcp.infra && mcpInfraServer(t)
   ? {outcome: "ask", source: "rule", id: "mcp-unknown", rule: `unknown tool on an infrastructure MCP server (${t.server ?? t.tool}): a human reviews it (mcp.infra)`, policy_version: load("mcp.json").version}

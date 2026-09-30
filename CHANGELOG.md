@@ -13,6 +13,10 @@ All notable changes to Reflex are documented here. The format follows
 - The keyless workspace allowlist (`workspace.mjs`): `mkdir -p`, `touch`, `sed -i` with one `s///` script on a tracked file (the GNU or the BSD form, following the `sed` on PATH), and `cp` or `mv` of a tracked file to a path that does not exist yet pass without an engine, each as one simple command with plain relative paths only. No operator, expansion, redirect, glob, extra flag, dot segment (`..`, `.git`, `.reflex`, `.github`, `.husky`), symlink, nested repository or protected path. In enforce mode a checkpoint is taken first and the pass is refused without one, and never in production; anything else goes to the engine or the ladder unchanged. `config.json` `"workspace": false` or `REFLEX_WORKSPACE=off` turns it off. `node workspace.mjs --selfcheck` (in `npm test`) runs `setup/tool-gate/golden-workspace.json`, which covers the ten bypasses the review of the first attempt (#78) confirmed.
 - MCP infrastructure preset: an unknown MCP tool on a server named for cloud, clusters, IaC, a database or a code host (`aws`, `awslabs`, `kubernetes`, `k8s`, `kubectl`, `terraform`, `tfc`, `gcp`, `gcloud`, `azure`, `postgres`, `mysql`, `mongodb`, `dynamodb`, `database`, `db`, `supabase`, `github`, `gitlab`) or any server name containing `prod` asks keyless instead of being logged only; Jev still judges it with a key. The match reads the server name alone, word by word, so a `update_database` tool on a notion server is not infra and `dbt` is not `db`. `config.json` `"mcp": {"infra": false}` turns it off.
 
+### Fixed
+
+- A checkpoint whose `git stash create` failed (an intent-to-add entry, a read-only `.git`) was recorded as HEAD, so `reflex checkpoints restore` could not bring back uncommitted changes. It is now no checkpoint at all.
+
 ## [0.17.1] - 2026-09-30
 
 ### Fixed

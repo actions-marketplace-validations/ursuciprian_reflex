@@ -39,11 +39,14 @@ export function words(command) {
   if (typeof command !== "string" || command.length > MAX_LENGTH) return null;
   const out = [], re = /[ \t]*(?:'([^'\n]*)'|([A-Za-z0-9_@%+,=:/.-]+))(?=[ \t]|$)/y;
   let i = 0;
-  const s = command.trim();
+  // only spaces and tabs are trimmed: a CR or any other whitespace the shell keeps in a word is refused
+  const s = command.replace(/^[ \t]+|[ \t]+$/g, "");
   while (i < s.length) {
     re.lastIndex = i;
     const m = re.exec(s);
     if (!m || (out.length && !/[ \t]/.test(s[i]))) return null;
+    // zsh expands a word that starts with = to a command's path (=git is /usr/bin/git)
+    if (m[2]?.startsWith("=")) return null;
     out.push(m[1] !== undefined ? {text: m[1], quoted: true} : {text: m[2], quoted: false});
     i = re.lastIndex;
     if (out.length > MAX_WORDS) return null;
@@ -79,12 +82,15 @@ function inTree(word, ctx, {dir = false} = {}) {
   return {abs, rel: rel.join("/"), stat: stat ?? null, parent: stat !== undefined};
 }
 // A regular file git tracks as a plain cached entry (ls-files -v tag H): not skip-worktree (S),
-// not assume-unchanged (h), not unmerged (M), so a checkpoint records its current content.
+// not assume-unchanged (h), not unmerged (M), not intent-to-add (git add -N: tagged H, but no
+// content in the index), so a checkpoint records its current content.
 function tracked(p, ctx) {
   if (!p?.stat?.isFile()) return false;
   const r = git(ctx.root, ["ls-files", "-v", "--error-unmatch", "--", p.rel]);
   const lines = r.status === 0 ? r.stdout.split("\n").filter(Boolean) : [];
-  return lines.length === 1 && lines[0] === `H ${p.rel}`;
+  if (lines.length !== 1 || lines[0] !== `H ${p.rel}`) return false;
+  const ita = git(ctx.root, ["diff-files", "--name-only", "--diff-filter=A", "--", p.rel]);
+  return ita.status === 0 && !ita.stdout.trim();
 }
 
 /** {outcome: "allow", source: "workspace", id, rule} for one of the shapes above, else null. */
