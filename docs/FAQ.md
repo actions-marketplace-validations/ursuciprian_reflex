@@ -422,3 +422,7 @@ logs with `rm -rf ~/.local/state/reflex`. Without the command on `PATH`, use
 `curl -fsSL https://raw.githubusercontent.com/ursuciprian/reflex/main/install.sh | bash -s -- --uninstall`.
 
 See: [docs/SETUP.md: uninstall](SETUP.md#uninstall).
+
+## Why does `npx @ursuciprian/reflex setup` say "reflex: command not found"?
+
+You ran it inside a checkout of the Reflex repository. There npx resolves the package to the local folder instead of downloading it, and the local folder has no installed `reflex` binary. Run it from any other directory (`cd ~ && npx @ursuciprian/reflex@latest setup`), or from inside the checkout run the local copy with `node scripts/reflex setup`.

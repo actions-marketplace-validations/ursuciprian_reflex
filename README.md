@@ -957,7 +957,7 @@ The full list: [GUIDE: safety properties and limits](docs/GUIDE.md#safety-proper
 
 ## FAQ
 
-Short answers; the full list of 30 questions is in [docs/FAQ.md](docs/FAQ.md).
+Short answers; the full list of 31 questions is in [docs/FAQ.md](docs/FAQ.md).
 
 ### How do I stop Claude Code from running dangerous commands?
 

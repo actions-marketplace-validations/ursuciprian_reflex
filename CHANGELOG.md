@@ -6,6 +6,8 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-30
+
 ### Added
 
 - MCP server guardrails: the gate judges MCP tool calls before they run, in Claude Code and Codex (`mcp__<server>__<tool>`), opencode, pi and Hermes. Rules in `setup/tool-gate/mcp.json` ask on a destructive verb in the tool name (delete, destroy, drop, terminate, remove, purge, truncate, force, reset, rollback, uninstall and more), a scale to zero, a bucket policy, security group or IAM change, destructive SQL and an HTTP DELETE, and deny when an argument or the server points at production. A shell command in an argument goes through the shell rules. Read-like tools pass unlogged; an unknown tool is logged keyless, judged by Jev with a key, or asks with `"mcp": {"unknown": "ask"}`. The freeze, queue, runaway guard, trace, audit and webhook apply. A team policy can add `mcp` rules, stricter only.
@@ -1059,7 +1061,8 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/ursuciprian/reflex/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/ursuciprian/reflex/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/ursuciprian/reflex/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/ursuciprian/reflex/compare/v0.13.0...v0.14.0

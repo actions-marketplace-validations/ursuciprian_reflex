@@ -20,7 +20,7 @@ npm package: `@ursuciprian/reflex`. Repository: https://github.com/ursuciprian/r
 - [Supported agents](https://github.com/ursuciprian/reflex#supported-agents-claude-code-hooks-codex-hooks-and-more): which hook each agent uses and how an ask is shown
 - [Cost and latency](https://github.com/ursuciprian/reflex#cost-and-latency): token use, timing and price assumptions per engine
 - [Limits](https://github.com/ursuciprian/reflex#limits): what Reflex does not cover
-- [FAQ](https://github.com/ursuciprian/reflex/blob/main/docs/FAQ.md): 28 questions with direct answers, from "how do I stop Claude Code from running dangerous commands" to uninstalling
+- [FAQ](https://github.com/ursuciprian/reflex/blob/main/docs/FAQ.md): 31 questions with direct answers, from "how do I stop Claude Code from running dangerous commands" to uninstalling
 - [Setup](https://github.com/ursuciprian/reflex/blob/main/docs/SETUP.md): TypeSafe key, install options, per-agent hooks, enforce mode, calibrated allow, the autonomous profile, configuration variables, uninstall
 - [Guide](https://github.com/ursuciprian/reflex/blob/main/docs/GUIDE.md): design, testing, rollout, data handling, safety properties, injection guard, autonomous agents, Laya
 
