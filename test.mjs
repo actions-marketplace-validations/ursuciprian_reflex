@@ -441,6 +441,18 @@ try {
     assert.match(success(cli2(["setup", "--profile", "autonomous", ...agents2, "--dry-run"], {env: {PATH: `${onlyCodex}:/usr/bin:/bin`}})), /System 2: none .*no claude CLI/);
     assert.ok(!existsSync(settings2) && !existsSync(join(home, "installed")), "an autonomous preview writes nothing");
     assert.match(success(cli2(["setup", "--profile", "autonomous", ...agents2, "--mode", "shadow", "--dry-run"])), /mode shadow/, "a flag beside a profile wins");
+    // human-last: supervised (and no profile) pick a System 2 too; judge "off" opts out and stays out
+    assert.match(success(cli2(["setup", "--profile", "supervised", ...agents2, "--dry-run"])), /profile supervised[\s\S]*System 2: cli claude .*picked because claude is installed/);
+    assert.match(success(cli2(["setup", ...agents2, "--dry-run"])), /System 2: cli claude/, "no profile: human-last by default");
+    assert.match(success(cli2(["setup", ...agents2, "--judge", "off", "--dry-run"])), /System 2: none .*\[off: judge "off"/);
+    mkdirSync(dirname(settings2), {recursive: true});
+    writeFileSync(settings2, JSON.stringify({judge: "off"}));
+    assert.match(success(cli2(["setup", "--profile", "supervised", ...agents2, "--dry-run"])), /System 2: none .*\[off: judge "off"/, "a saved off is kept");
+    assert.equal(JSON.parse(success(cli2(["status", "--json"]))).human_last.rungs.find(r => r.rung === "System 2").active, false);
+    assert.match(success(cli2(["status"])), /A human is still asked for: .*System 2 is off \(judge "off" in config.json\)/);
+    writeFileSync(settings2, JSON.stringify({judge: "on"}));
+    assert.match(cli2(["status", "--json"]).stdout, /judge must be \\"off\\" or the System 2 settings/, "an invalid judge setting is an error");
+    rmSync(settings2);
     for (const bad of [["--profile", "yolo"], ["--judge", "litellm"], ["--judge", "openai-compatible"], ["--judge-key-env", "sk-live-123"], ["--judge", "cli", "--judge-cli", "gemini"]])
       assert.notEqual(cli2(["setup", ...bad, "--profile", "autonomous", ...agents2]).status, 0, `refused: ${bad.join(" ")}`);
     success(cli2(["setup", "--profile", "autonomous", ...agents2]));

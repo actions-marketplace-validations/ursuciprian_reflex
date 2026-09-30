@@ -89,7 +89,7 @@
     {"expect": ["pass", "ask"], "tool": "mcp__slack__send_message", "input": {"channel": "#dev", "text": "build is green"}, "why": "unknown"},
     {"expect": ["ask", "deny"], "expect_local": "ask", "tool": "mcp__terraform__apply_run", "input": {"workspace": "prod-core", "comment": "apply"}, "why": "unknown to the rules, production apply: Jev's call; keyless the MCP infra preset asks (mcp.infra)"},
     {"expect": ["ask", "deny"], "expect_local": "ask", "tool": "mcp__aws__update_function_code", "input": {"FunctionName": "prod-checkout", "ZipFile": "..."}, "why": "unknown to the rules, production deploy: Jev's call; keyless the MCP infra preset asks (mcp.infra)"},
-    {"expect": "pass", "expect_local": "pass", "tool": "mcp__notion__append_block_children", "input": {"block_id": "x"}, "why": "unknown tool on a non-infra server: log-only, not the infra preset"},
+    {"expect": ["pass", "ask"], "expect_local": "pass", "tool": "mcp__notion__append_block_children", "input": {"block_id": "x"}, "why": "unknown tool on a non-infra server: log-only, not the infra preset"},
     {"expect": ["pass", "ask"], "expect_local": "pass", "tool": "mcp__notion__update_database", "input": {"database_id": "x", "title": "Roadmap"}, "why": "the infra preset reads the server name only: a notion tool named for a database is not infra"},
     {"expect": ["pass", "ask"], "expect_local": "pass", "tool": "mcp__linear__sync_github_issue", "input": {"id": "LIN-1"}, "why": "github in the tool name, not the server: not infra"},
     {"expect": ["pass", "ask"], "expect_local": "ask", "tool": "mcp__awslabs_eks-mcp-server__manage_eks_stacks", "input": {"operation": "deploy", "cluster_name": "dev"}, "why": "awslabs server: infra preset asks keyless"},
