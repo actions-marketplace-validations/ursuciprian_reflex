@@ -4,7 +4,7 @@ import {existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync
 import {spawnSync} from "node:child_process";
 import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
-import {CLAUDE_SETTINGS, CODEX_HOOKS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, load, settingsHooks, setupFile} from "./gate.mjs";
+import {CLAUDE_SETTINGS, CODEX_HOOKS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, keyError, keyErrorMessage, load, settingsHooks, setupFile} from "./gate.mjs";
 import {compile} from "./policy.mjs";
 import {OPTIONS_VISIBLE, PLUGIN_MODE, pluginKey} from "./plugin.mjs";
 import {PROVIDERS, keyRouteError} from "./providers.mjs";
@@ -84,8 +84,11 @@ if (PLUGIN_MODE && !OPTIONS_VISIBLE) warnings.push("The plugin options (engine, 
 if (CONFIG.engine === "jev" && PLUGIN_MODE && !OPTIONS_VISIBLE) key = "plugin option (not visible from the Bash tool)";
 else if (CONFIG.engine === "jev" && PLUGIN_MODE) {
   key = pluginKey() ? "plugin option" : "missing";
-  if (key === "missing") errors.push(`Jev through ${CONFIG.provider} needs the Jev API key plugin option (/plugin, reflex, Configure), or the engine option set to local.`);
+  if (key === "missing") errors.push(`${keyErrorMessage()}.`);
 }
+// A hook found no key, although this shell may have one (the agent starts from another environment).
+const hookKey = keyError();
+if (hookKey && !errors.some(e => e.startsWith("Jev engine has no API key"))) errors.push(`${keyErrorMessage()} (a hook found none at ${hookKey.at}; this clears on the next Jev answer).`);
 // engine laya: the local server must answer, or System 1 falls back to the policy exactly as in a Jev outage.
 const laya = CONFIG.engine === "laya" ? await layaHealth() : null;
 if (laya && !laya.ok) errors.push(`Laya server not reachable at ${CONFIG.api} (${laya.error}): reflex laya start. Until it answers, System 1 falls back to the policy, as in a Jev outage.`);

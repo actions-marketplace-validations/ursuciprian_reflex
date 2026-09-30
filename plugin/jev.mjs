@@ -1,7 +1,7 @@
 // Jev (gate.mjs): the context a call is judged in, the provider's key and where it may go, one
 // call through the provider, the answer cache and jevJudge.
 import {PLUGIN_MODE, pluginKey} from "./plugin.mjs";
-import {existsSync, statSync, openSync, readSync, closeSync, mkdirSync, writeFileSync, renameSync} from "node:fs";
+import {existsSync, statSync, openSync, readSync, closeSync, mkdirSync, writeFileSync, renameSync, rmSync} from "node:fs";
 import {execFileSync} from "node:child_process";
 import {homedir, platform} from "node:os";
 import {join, dirname, resolve} from "node:path";
@@ -78,6 +78,44 @@ function apiKey() {
   }
   // Reached only in the plugin bundle run without --plugin: no key source there, so never call the provider.
   throw new Error(`no API key for ${CONFIG.provider}`);
+}
+
+// A missing key is a configuration error, not an outage: every engine decision falls back until it is
+// fixed. The hook that meets one records it (key-error.json in the data directory), a fresh Jev answer
+// clears it, and the Claude Code hook shows the warning once per session; status and doctor show it too.
+export const isKeyError = error => /\bno API key for /.test(error ?? "");
+export const KEY_ERROR = () => join(CONFIG.data, "key-error.json");
+export function keyErrorMessage() {
+  const head = "Jev engine has no API key: every engine decision falls back";
+  if (PLUGIN_MODE) return `${head}; set the Jev API key in the Reflex plugin options (/plugin, reflex, Configure) or set the engine option to local`;
+  return head;
+}
+const readKeyError = () => { try { return JSON.parse(readText(KEY_ERROR()) ?? "null"); } catch { return null; } };
+function writeKeyError(k) {
+  mkdirSync(CONFIG.data, {recursive: true});
+  const tmp = `${KEY_ERROR()}.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(k), {mode: 0o600});
+  renameSync(tmp, KEY_ERROR());   // atomic; a parallel hook can drop a session id, which only repeats the warning
+}
+/** After a judgment: remember a missing key, forget it once Jev answers. Never throws. */
+export function noteKeyError(j) {
+  try {
+    if (isKeyError(j.error)) { if (!readKeyError()) writeKeyError({at: new Date().toISOString(), provider: CONFIG.provider, warned: []}); }
+    else if (j.source === "jev" && existsSync(KEY_ERROR())) rmSync(KEY_ERROR(), {force: true});
+  } catch { /* a diagnostic must not change a decision */ }
+}
+/** The recorded missing-key error while the engine is jev, or null. */
+export const keyError = () => CONFIG.engine === "jev" ? readKeyError() : null;
+/** The warning for this session, once: null when there is no missing key or the session was warned. */
+// `mode`: the mode the call ran in (a team policy's floor included).
+export function keyWarning(session, mode = CONFIG.mode) {
+  try {
+    const k = mode === "off" ? null : keyError();
+    if (!k || (session && k.warned?.includes(session))) return null;
+    // ponytail: read, then write; a Jev answer that clears the marker in between can bring it back until the next answer
+    if (session && existsSync(KEY_ERROR())) writeKeyError({...k, warned: [...(k.warned ?? []), session].slice(-200)});
+    return `reflex: ${keyErrorMessage()}. ${mode === "enforce" ? "In enforce mode they ask (the policy fallback)." : "In shadow mode they are logged and pass; only deterministic rules act."}`;
+  } catch { return null; }
 }
 
 // Each provider's key goes to that provider's host only, checked on every call (keyRouteError):

@@ -85,6 +85,42 @@ try {
     const doc = JSON.parse(success(invoke("status.mjs", ["--json"], {env: ienv, cwd: repo})));
     assert.ok(doc.infra.terraform === join(bin, "terraform") && doc.infra.destroy === "deny" && doc.infra.require_plan_in_prod === true, JSON.stringify(doc.infra));
   }
+  // Engine jev with no API key. Shadow enforces deterministic rules only: the fallback passes, logged
+  // with the reason, and the Claude Code hook warns once per session. Enforce keeps the fallback ask.
+  // Status and doctor show the error; setup without a key picks the local engine and says so.
+  {
+    const data = join(scratch, "nokey"), work = join(scratch, "nokey-work"), kenv = {...env, REFLEX_DATA_DIR: data, REFLEX_MODE: "shadow"};
+    mkdirSync(work, {recursive: true});
+    const pre = (sid, e = kenv) => success(invoke("gate.mjs", ["--claude"], {env: e,
+      input: JSON.stringify({hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: "python3 build_things.py --fast"}, cwd: work, session_id: sid, tool_use_id: `t-${sid}-${Math.random()}`})}));
+    const rows = () => existsSync(join(data, "trace.jsonl")) ? readFileSync(join(data, "trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)) : [];
+    assert.equal(pre("A"), "", "shadow, no key: the hook passes silently");
+    for (let i = 0; i < 100 && !rows().length; i++) await new Promise(r => setTimeout(r, 100));   // the background judge
+    const row = rows()[0];
+    assert.ok(row && row.decision === "pass" && row.emitted === null && row.source === "fallback" && row.mode === "shadow" &&
+      /jev unavailable \(Error: no API key for typesafe.*shadow logs it and passes/.test(row.rule), `shadow, no key: logged as a pass with the reason: ${JSON.stringify(row)}`);
+    const warned = JSON.parse(pre("A"));
+    assert.ok(!warned.hookSpecificOutput && /Jev engine has no API key: every engine decision falls back; run reflex setup --keychain <item> or set TYPESAFE_API_KEY/.test(warned.systemMessage),
+      `a one-time warning: ${JSON.stringify(warned)}`);
+    assert.equal(pre("A"), "", "the warning is shown once per session, not per command");
+    assert.ok(JSON.parse(pre("B")).systemMessage, "another session is warned once too");
+    const enforced = JSON.parse(pre("C", {...kenv, REFLEX_MODE: "enforce"}));
+    assert.ok(enforced.hookSpecificOutput.permissionDecision === "ask" && /jev unavailable \(Error: no API key/.test(enforced.hookSpecificOutput.permissionDecisionReason),
+      `enforce, no key: the fallback asks: ${JSON.stringify(enforced)}`);
+    const status = JSON.parse(invoke("status.mjs", ["--json"], {env: kenv}).stdout);
+    assert.ok(status.api_key === "missing" && status.errors.some(e => e.startsWith("Jev engine has no API key: every engine decision falls back; run reflex setup --keychain <item> or set TYPESAFE_API_KEY")),
+      `status shows the missing key: ${JSON.stringify(status.errors)}`);
+    // setup: a saved engine jev and no key anywhere, Jev not asked for: the local engine, said so
+    const home = join(scratch, "nokey-setup"), {REFLEX_ENGINE: _e, ...base} = env;
+    mkdirSync(join(home, "config/reflex"), {recursive: true});
+    writeFileSync(join(home, "config/reflex/config.json"), JSON.stringify({engine: "jev", mode: "shadow"}));
+    const senv = {...base, HOME: home, XDG_CONFIG_HOME: join(home, "config"), XDG_STATE_HOME: join(home, "state"), REFLEX_PREFIX: join(home, "prefix")};
+    const picked = spawnSync(process.execPath, ["scripts/reflex", "setup", "--agents", "claude", "--dry-run"], {cwd: root, env: senv, encoding: "utf8", timeout: 30000});
+    assert.ok(picked.status === 0 && /engine local: no typesafe key found .*so this setup uses the local engine, not jev/.test(picked.stdout) && /Preview: local engine/.test(picked.stdout),
+      `setup without a key picks local and says so: ${picked.stdout}${picked.stderr}`);
+    const asked = spawnSync(process.execPath, ["scripts/reflex", "setup", "--agents", "claude", "--engine", "jev", "--dry-run"], {cwd: root, env: senv, encoding: "utf8", timeout: 30000});
+    assert.ok(asked.status === 0 && /Preview: jev engine/.test(asked.stdout) && /key not found/.test(asked.stdout), `--engine jev without a key keeps jev: ${asked.stdout}${asked.stderr}`);
+  }
   // engine laya against a stub Laya server (no model, no download, no network): the Jev request
   // shape, no key sent, the configured checkpoint named, and an outage handled like a Jev outage.
   {
@@ -209,12 +245,13 @@ try {
   const picks = "claude,codex,pi,omp,opencode,hermes";
   // The curl installer puts the package in place first, then runs its setup: still a fresh install.
   cpSync(root, packageRoot, {recursive: true, filter: s => ![".git", "node_modules", ".serena"].some(d => s === join(root, d))});
-  const installed = args => spawnSync(process.execPath, [join(packageRoot, "scripts/reflex"), ...args], {cwd: scratch, encoding: "utf8", timeout: 30000, env});
+  const installed = (args, extra) => spawnSync(process.execPath, [join(packageRoot, "scripts/reflex"), ...args], {cwd: scratch, encoding: "utf8", timeout: 30000, env, ...extra});
   assert.match(success(installed(["setup", "--agents", "claude", "--dry-run"])), /local engine/, "curl path: fresh install is local");
   // Settings written by 0.2.0 (a Keychain item, no engine) mean Jev was already in use.
   mkdirSync(dirname(settings), {recursive: true});
   writeFileSync(settings, JSON.stringify({keychain: "dev/example-key"}));
-  assert.match(success(installed(["setup", "--agents", "claude", "--dry-run"])), /jev engine/, "0.2.0 settings keep Jev");
+  assert.match(success(installed(["setup", "--agents", "claude", "--dry-run"], {env: {...env, TYPESAFE_API_KEY: "test-key"}})), /jev engine/, "0.2.0 settings keep Jev");
+  assert.match(success(installed(["setup", "--agents", "claude", "--dry-run"])), /engine local: no typesafe key found[\s\S]*Preview: local engine/, "0.2.0 settings without a key: local, said so");
   rmSync(dirname(settings), {recursive: true, force: true});
   rmSync(env.REFLEX_PREFIX, {recursive: true, force: true});
   const preview = success(cli(["setup", "--agents", picks, "--dry-run"]));

@@ -46,7 +46,7 @@ import {SCAN_MS, localScripts, scriptLines} from "./scripts.mjs";
 import {onlyNotes, pipelines, READ_ONLY_MODE, readOnly} from "./readonly.mjs";
 import {PRECHECK_MS, COMMAND_BYTES, largeDeny, load, SEVERITY, rx, checkRules, fastPass} from "./rules.mjs";
 import {ownCommand, nestedCheckout, writesOf, staysNested, touchesOwn, namesOwnFile, reflexChanges, TEAM_TAMPER, fastLaneEdit, namesOwn} from "./tamper.mjs";
-import {envContext, jevJudge, sessionContext, ask} from "./jev.mjs";
+import {envContext, jevJudge, sessionContext, ask, noteKeyError, keyWarning} from "./jev.mjs";
 // What the other files import from gate.mjs, wherever it now lives.
 export {USER_CONFIG_FILE, USER_CONFIG_ERROR, USER_CONFIG, ENGINES, JUDGE_BACKENDS, JUDGE_DEFAULTS, KEYLESS_JUDGE_DEFAULTS, BACKEND_DEFAULTS,
   QUEUE_DEFAULTS, RUNAWAY_DEFAULTS, runawaySettings, CLAUDE_SETTINGS, CODEX_HOOKS, settingsHooks, settingsHooksInstalled, PLUGIN, settingsCovers,
@@ -56,7 +56,7 @@ export {localScripts} from "./scripts.mjs";
 export {readOnlyLegacy, READ_ONLY_MODE, readOnly, simpleSegments, READ_ONLY_SIMPLE, readOnlySimple, pipelines} from "./readonly.mjs";
 export {policyDirectory, setupFile, load, checkRules, fastPass, rulesHit} from "./rules.mjs";
 export {ownCommand} from "./tamper.mjs";
-export {envContext, transcriptTail, sessionContext, ask, cacheGet, cachePut, broadCwd, jevJudge} from "./jev.mjs";
+export {envContext, transcriptTail, sessionContext, ask, cacheGet, cachePut, broadCwd, jevJudge, keyError, keyErrorMessage, keyWarning, KEY_ERROR} from "./jev.mjs";
 
 /** Everything decided without Jev, or null when Jev has to judge. A rule that fires on the command
  * as the rules know it (ruleSpelling) counts too; the more severe of the two rule outcomes wins. */
@@ -461,6 +461,10 @@ async function toolDecide(call, {background = false, asker, judger} = {}) {
 // (System 2, the always-human class, the queue, checkpoints), then the trace and the agent's view.
 async function finish(j, call, effective, opts = {}) {
   if (call.plan && !j.plan) j = {...j, plan: call.plan};
+  noteKeyError(j);
+  // Shadow enforces deterministic rules only: an engine that gave no answer (no key, unreachable,
+  // timed out, a malformed answer) passes and is logged with the reason. Enforce keeps the fallback.
+  if (j.source === "fallback" && CONFIG.mode !== "enforce") [j, effective] = [{...j, outcome: "pass", rule: `${j.rule}; shadow logs it and passes`}, "pass"];
   if (CONFIG.judge.enabled || CONFIG.queue.enabled || CONFIG.checkpoints) ({j, effective} = await ladder(j, call, effective, opts));
   runawayNote(call, j, effective);
   trace(j, call, effective);
@@ -722,7 +726,9 @@ async function claudePre(input) {
   const call = claudeCall(input);
   if (!call) return;
   const out = claudeOut(await decideSafe(call));
-  if (out) process.stdout.write(JSON.stringify(out));
+  // a missing engine key: one warning per session, shown to the user, not one per command
+  const warning = keyWarning(call.session_id, teamMode(CONFIG.mode, call.cwd));
+  if (out || warning) process.stdout.write(JSON.stringify({...out, ...(warning && {systemMessage: warning})}));
 }
 // pass is silent: Claude Code's own permission rules decide. allow skips its prompt, but its deny
 // and ask rules are still evaluated after the hook. The plugin never allows: its allow is a pass.
