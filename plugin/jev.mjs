@@ -107,12 +107,14 @@ export function noteKeyError(j) {
 /** The recorded missing-key error while the engine is jev, or null. */
 export const keyError = () => CONFIG.engine === "jev" ? readKeyError() : null;
 /** The warning for this session, once: null when there is no missing key or the session was warned. */
-export function keyWarning(session) {
+// `mode`: the mode the call ran in (a team policy's floor included).
+export function keyWarning(session, mode = CONFIG.mode) {
   try {
-    const k = keyError();
+    const k = mode === "off" ? null : keyError();
     if (!k || (session && k.warned?.includes(session))) return null;
-    if (session) writeKeyError({...k, warned: [...(k.warned ?? []), session].slice(-200)});
-    return `reflex: ${keyErrorMessage()}. ${CONFIG.mode === "enforce" ? "In enforce mode they ask (the policy fallback)." : "In shadow mode they are logged and pass; only deterministic rules act."}`;
+    // ponytail: read, then write; a Jev answer that clears the marker in between can bring it back until the next answer
+    if (session && existsSync(KEY_ERROR())) writeKeyError({...k, warned: [...(k.warned ?? []), session].slice(-200)});
+    return `reflex: ${keyErrorMessage()}. ${mode === "enforce" ? "In enforce mode they ask (the policy fallback)." : "In shadow mode they are logged and pass; only deterministic rules act."}`;
   } catch { return null; }
 }
 

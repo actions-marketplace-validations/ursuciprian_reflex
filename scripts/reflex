@@ -243,14 +243,18 @@ function setup() {
     (USER_CONFIG.keychain || USER_CONFIG.provider || Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
   let provider = engine === "jev" ? pickProvider(keychain) : null;
   if (provider?.error) die(provider.error);
-  // Jev without a key falls back on every decision. Unless Jev was asked for (--engine, --provider or
-  // REFLEX_ENGINE), setup picks the local engine instead and says so; asked for, it warns loudly.
-  const jevAsked = opt(args, "--engine") !== undefined || !!opt(args, "--provider") || ENV.REFLEX_ENGINE !== undefined;
-  const noKey = provider && !provider.key && `no ${provider.name} key found (${PROVIDERS[provider.name].env.join(", ")}, Keychain item ${keychainItem(provider.name, keychain)})`;
-  if (noKey && !jevAsked) {
-    say(`engine local: ${noKey}, so this setup uses the local engine, not jev. For Jev, store the key and rerun reflex setup --engine jev --keychain <item>, or set ${PROVIDERS[provider.name].env.join(" or ")}`);
+  // Jev without a key falls back on every decision. Unless Jev was asked for (--engine, --provider,
+  // --keychain or REFLEX_ENGINE), setup picks the local engine instead and says so; asked for, it warns
+  // loudly. Where the Keychain paste prompt can run, the pick waits for it (step 3).
+  const jevAsked = ["--engine", "--provider", "--keychain"].some(f => opt(args, f) !== undefined) || ENV.REFLEX_ENGINE !== undefined;
+  const toLocal = () => {
+    say(`engine local: no ${provider.name} key found (${PROVIDERS[provider.name].env.join(", ")}, Keychain item ${keychainItem(provider.name, keychain)}), ` +
+      `so this setup uses the local engine, not jev. For Jev, store the key and rerun reflex setup --engine jev --keychain <item>, or set ${PROVIDERS[provider.name].env.join(" or ")}`);
     [engine, provider] = ["local", null];
-  }
+  };
+  const pasteLater = platform() === "darwin" && !args.includes("--dry-run") && (() => { try { closeSync(openSync("/dev/tty", "r+")); return true; } catch { return false; } })();
+  const deferred = !!provider && !provider.key && !jevAsked && pasteLater;
+  if (provider && !provider.key && !jevAsked && !deferred) toLocal();
   const ladder = ladderSettings(preset);
   const settings = {profile: profile ?? USER_CONFIG.profile ?? "supervised", engine, mode, allow, keychain, provider, keyless: auto && engine === "local", ...ladder};
   const judgeOn = judgeSettings(settings.judge).enabled;
@@ -321,6 +325,11 @@ function setup() {
     }
   } else if (provider && !provider.key) {
     say(`set ${envNames}${where ? ` (${where.trim().replace(/^Create one at /, "")})` : ""} in the environment your agents start from`);
+  }
+  if (deferred && !pickProvider(keychain).key) {
+    toLocal();
+    Object.assign(settings, {engine, provider});
+    installArgs[installArgs.indexOf("--engine") + 1] = "local";
   }
   if (provider && !pickProvider(keychain).key)
     console.error(`\x1b[1;31mreflex WARNING: engine jev has no API key: every engine decision falls back (${mode === "enforce" ? "enforce: they ask" : "shadow: logged and passed"}). ` +

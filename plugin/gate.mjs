@@ -699,7 +699,7 @@ async function claudePre(input) {
   if (!call) return;
   const out = claudeOut(await decideSafe(call));
   // a missing engine key: one warning per session, shown to the user, not one per command
-  const warning = keyWarning(call.session_id);
+  const warning = keyWarning(call.session_id, teamMode(CONFIG.mode, call.cwd));
   if (out || warning) process.stdout.write(JSON.stringify({...out, ...(warning && {systemMessage: warning})}));
 }
 // pass is silent: Claude Code's own permission rules decide. allow skips its prompt, but its deny

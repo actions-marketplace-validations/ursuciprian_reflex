@@ -2891,8 +2891,9 @@ setting. After changing them, `reflex laya stop` and `start` (or reinstall the s
 With engine laya the calibrated allow gate is off whatever `--allow` says: its thresholds were
 fitted to Jev, and Laya did not earn them. System 2 can still approve what Laya escalates.
 
-A server that is down, slow or broken is a Jev outage: the policy's fallback (`ask` in enforce mode, a logged pass in shadow), rule
-`laya unavailable (...)`, logged, and `reflex doctor` / `reflex status` report it. Its answers are
+A server that is down, slow or broken is a Jev outage: the policy's fallback (`ask` in enforce
+mode, a logged pass in shadow), rule `laya unavailable (...)`, logged, and `reflex doctor` /
+`reflex status` report it. Its answers are
 logged with `source: "jev"` (System 1), the engine and the checkpoint name, like Jev's.
 
 ### Measured against Jev
