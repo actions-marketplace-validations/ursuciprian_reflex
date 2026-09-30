@@ -6,6 +6,22 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Laya engine: `reflex setup --engine laya` installs `laya[serve]==0.3.22` (was 0.3.20). Measured head to head with 0.3.20 and Jev 1.13.0 on every golden set on 2026-09-30: every number is the same, and every answer is the same except four gate cases whose state holds a per-process path (at most 0.013 of probability, no decision changed). The checkpoints stay at revision `55cf4c4`, still the latest. The GUIDE's "Measured against Jev" table is rerun on the current golden sets (199 gate cases, 47 ladder commands) and adds the MCP set, where calibrated Laya matches Jev (0 MISS, 0 over-strict, on 6 cases that reach System 1). Laya stays off by default.
+
+### Added
+
+- `npm run eval-compare` runs the MCP golden set too (`--suites mcp`).
+
+## [0.17.1] - 2026-09-30
+
+### Fixed
+
+- A path with an unclosed `[` (a glob the shell takes literally) crashed the self-protection check, so `reflex learn` and `reflex replay` stopped with a SyntaxError. The pattern now fails closed: the path counts as touching Reflex. In hooks the fail-closed wrapper already turned the crash into an ask.
+
+## [0.17.0] - 2026-09-30
+
 ### Added
 
 - MCP server guardrails: the gate judges MCP tool calls before they run, in Claude Code and Codex (`mcp__<server>__<tool>`), opencode, pi and Hermes. Rules in `setup/tool-gate/mcp.json` ask on a destructive verb in the tool name (delete, destroy, drop, terminate, remove, purge, truncate, force, reset, rollback, uninstall and more), a scale to zero, a bucket policy, security group or IAM change, destructive SQL and an HTTP DELETE, and deny when an argument or the server points at production. A shell command in an argument goes through the shell rules. Read-like tools pass unlogged; an unknown tool is logged keyless, judged by Jev with a key, or asks with `"mcp": {"unknown": "ask"}`. The freeze, queue, runaway guard, trace, audit and webhook apply. A team policy can add `mcp` rules, stricter only.
@@ -27,6 +43,15 @@ All notable changes to Reflex are documented here. The format follows
   history (32,001 commands, 30 days, keyless) it proposed nothing: 50.4 humans per 100 before and
   after, because the commands that ask there are interpreters, `sed -i`, `curl`, `gh` and `git`.
   A learned entry is pinned to the sha256 of the scripts it runs; an edited script stops passing.
+
+### Changed
+
+- gate.mjs split into modules; no behaviour change. `config.mjs` (settings, validation, redaction),
+  `shell.mjs` (words, heredocs, rule spellings), `scripts.mjs` (local scripts), `readonly.mjs`
+  (read-only detection, pipelines), `rules.mjs` (checkRules, the large-command deny rules),
+  `tamper.mjs`, `jev.mjs` (context, key, provider call, cache, jevJudge) and `selfcheck.mjs`.
+  gate.mjs keeps the CLI, precheck, decide and the hook adapters and re-exports every name that
+  moved. The new modules are in the plugin bundle and on the tamper list like gate.mjs.
 
 ### Security
 
@@ -50,6 +75,25 @@ All notable changes to Reflex are documented here. The format follows
   generic file name such as `config.json` under a variable, or an unknown program run in the parent
   that writes `reflex/` without naming it. `reflex learn` trusts these logs as far as this check
   protects them; the GUIDE says so.
+- Importing a Reflex file no longer does anything. `install.mjs`, `eval.mjs`, `eval-ladder.mjs`,
+  `eval-compare.mjs`, `eval-instructions.mjs`, `status.mjs`, `report.mjs`, `audit.mjs`, `replay.mjs`,
+  `test.mjs`, `hook.mjs`, `scripts/reflex`, `scripts/reflex-review` and `scripts/build-plugin.mjs`
+  ran their work at the top level, so an `import("./install.mjs")` (a review agent reading the code)
+  rewrote a real `~/.claude/settings.json`. Every script now runs only when started directly
+  (`isMain` in `failsafe.mjs`: the real path of `import.meta.url` against the real path of
+  `process.argv[1]`, so a symlinked `reflex` still runs). `node install.mjs ...`, `reflex setup` and
+  `npm run eval` work as before. A test imports every `*.mjs` at the top, in `adapters/`,
+  `scripts/` and `router/` in a child with `HOME`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`,
+  `XDG_STATE_HOME` and `TMPDIR` in an empty scratch directory, and fails when anything appears or
+  changes there or a process is started.
+- Tamper: the files the tamper rule protects inside the checkout are read from the checkout instead
+  of a hand-kept list, which had missed `tools.mjs`, `freeze.mjs`, `notify.mjs`, `mcp.mjs`,
+  `laya.mjs`, `learn.mjs`, `status.mjs`, `replay.mjs`, `suggest.mjs`, `audit.mjs`,
+  `eval-compare.mjs`, `test.mjs` and more. Covered now: every top-level `*.mjs`, `*.js`, `*.sh` and
+  `*.json` file (`install.sh`, `package.json`, `.mcp.json`) and everything under `setup/`,
+  `scripts/`, `adapters/`, `hooks/`, `router/`, `routing/`, `plugin/`, `commands/`, `skills/`,
+  `.claude-plugin/`, `.codex-plugin/` and `.agents/`. The gate's selfcheck fails when a file of the
+  checkout is neither covered nor listed as not run by Reflex (docs, site, examples and the like).
 
 ### Fixed
 
@@ -1031,7 +1075,9 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/ursuciprian/reflex/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/ursuciprian/reflex/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/ursuciprian/reflex/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/ursuciprian/reflex/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/ursuciprian/reflex/compare/v0.13.0...v0.14.0

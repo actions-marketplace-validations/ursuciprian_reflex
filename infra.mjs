@@ -28,6 +28,7 @@ import {createHash} from "node:crypto";
 import {homedir} from "node:os";
 import {basename, dirname, isAbsolute, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
+import {isMain} from "./failsafe.mjs";
 
 // terraform_show is off by default: `terraform show` starts the provider binaries in .terraform, and an
 // agent's file tools can write those (and the lock file) without passing the gate. On, it runs only when
@@ -1137,5 +1138,5 @@ async function selfcheck() {
     console.log("infra selfcheck ok");
   } finally { rmSync(tmp, {recursive: true, force: true}); rmSync(home, {recursive: true, force: true}); }
 }
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]) && process.argv.includes("--selfcheck"))
+if (isMain(import.meta) && process.argv.includes("--selfcheck"))
   selfcheck().catch(e => { console.error(e); process.exit(1); });   // not awaited: gate.mjs imports this module

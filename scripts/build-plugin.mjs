@@ -20,12 +20,14 @@ import {copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wr
 import {spawnSync} from "node:child_process";
 import {dirname, join, relative} from "node:path";
 import {fileURLToPath} from "node:url";
+import {isMain} from "../failsafe.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), ".."), OUT = join(ROOT, "plugin");
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
 // Every module a plugin hook, command or the MCP server loads, spawns or imports (statically or not).
-const MODULES = ["hook.mjs", "failsafe.mjs", "plugin.mjs", "gate.mjs", "guard.mjs", "instructions.mjs", "policy.mjs", "providers.mjs",
+const MODULES = ["hook.mjs", "failsafe.mjs", "plugin.mjs", "gate.mjs", "config.mjs", "shell.mjs", "scripts.mjs", "readonly.mjs", "rules.mjs",
+  "tamper.mjs", "jev.mjs", "guard.mjs", "instructions.mjs", "policy.mjs", "providers.mjs",
   "autonomy.mjs", "fastlane.mjs", "team.mjs", "infra.mjs", "freeze.mjs", "notify.mjs", "context.mjs", "judge2.mjs", "laya.mjs",
   "mcp.mjs", "audit.mjs", "status.mjs", "replay.mjs", "report.mjs", "suggest.mjs", "tools.mjs"];
 // The setup files read at runtime; the golden sets, fixtures and plan fixtures stay out.
@@ -161,6 +163,8 @@ async function linkCheck(dir) {
   if (errors.length) { console.error(errors.join("\n")); process.exit(1); }
 }
 
+// The script itself runs only when started (node build-plugin.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 if (process.argv[2] === "--link") await linkCheck(process.argv[3]);
 else {
   build();
@@ -168,4 +172,5 @@ else {
   if (problems.length) { console.error(`plugin build FAILED:\n${problems.join("\n")}`); process.exit(1); }
   for (const f of files) console.log(`${String(statSync(join(OUT, f)).size).padStart(8)}  plugin/${f}`);
   console.log(`plugin build OK: ${files.length} files, no forbidden pattern, every module parses and links`);
+}
 }

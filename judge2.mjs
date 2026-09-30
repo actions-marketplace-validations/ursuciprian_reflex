@@ -31,6 +31,7 @@ import {delimiter, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {BACKEND_DEFAULTS, CONFIG, append, load, redact, sha} from "./gate.mjs";
 import {PLUGIN_MODE, pluginJudgeKey} from "./plugin.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const ENV = process.env;
 const VERDICTS = ["approve", "deny", "human"];
@@ -594,7 +595,7 @@ async function selfcheck() {
 // @reflex:setup-only end
 
 const argv = process.argv.slice(2);
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta)) {
   if (argv.includes("--stub")) console.log((await stubServer({approveAll: argv.includes("--approve-all")})).url);
   else if (argv.includes("--fake-cli")) console.log(writeFakeClis(argv[argv.indexOf("--fake-cli") + 1], {approveAll: argv.includes("--approve-all")}));
   else if (argv.includes("--probe")) console.log(JSON.stringify(await probe()));

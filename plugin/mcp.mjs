@@ -17,6 +17,7 @@ import {existsSync, readFileSync, realpathSync, statSync} from "node:fs";
 import {homedir} from "node:os";
 import {dirname, isAbsolute, join} from "node:path";
 import {fileURLToPath} from "node:url";
+import {isMain} from "./failsafe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")).version;
@@ -325,7 +326,7 @@ export function serve(input = process.stdin) {
   input.on("end", async () => { if (buf && !skip) line(buf); await Promise.allSettled([...inflight]); process.stdout.write("", () => process.exit(0)); });
 }
 
-const main = process.argv[1] && fileURLToPath(import.meta.url) === (() => { try { return realpathSync(process.argv[1]); } catch { return process.argv[1]; } })();
+const main = isMain(import.meta);
 
 if (process.argv.includes("--mcp-tool")) {
   const {name, args} = JSON.parse(readFileSync(0, "utf8"));

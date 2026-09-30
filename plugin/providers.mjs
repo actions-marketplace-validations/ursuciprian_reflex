@@ -13,6 +13,7 @@
 //
 //   node providers.mjs --selfcheck    mock servers for every provider, no network
 import {createServer} from "node:http";
+import {isMain} from "./failsafe.mjs";
 
 export const PROVIDER_NAMES = ["typesafe", "openrouter", "cloudflare", "vercel", "compatible"];
 const typesafeBody = (state, questions, model) => ({state, model, questions});

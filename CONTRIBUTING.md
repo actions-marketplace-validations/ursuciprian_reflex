@@ -51,7 +51,7 @@ When you change rules, questions, policy or redaction:
 - **The guard only adds friction, never permission.** A finding can add a note, remove text, taint a
   session or block a prompt; nothing it does makes the gate looser, and any error passes.
 - **The gate can only tighten.** Nothing new may emit `allow` outside the calibrated allow gate, and
-  that gate stays as narrow as the checks in `gate.mjs` make it: unseen code, unsandboxed retries,
+  that gate stays as narrow as the checks in `jev.mjs` and `gate.mjs` make it: unseen code, unsandboxed retries,
   plan mode, commands without a stated intent, redacted commands and code Jev did not see never
   allow. The autonomous profile adds exactly two sources of `allow`, System 2's approve and a
   human's queue approval (`view()` in `gate.mjs`), both behind the same held prompts, and neither
@@ -65,7 +65,7 @@ When you change rules, questions, policy or redaction:
 - **Nothing unread is allowed.** A script a command runs is inspected before the command is judged;
   code the judge never saw is never allow-eligible.
 - **Judged data is redacted first, and the redaction is shared.** `setup/redact.json` is read by
-  both `gate.mjs` and `routing/reflex_router.py`; its `corpus` is asserted by both self-checks, so
+  both the gate (`config.mjs`) and `routing/reflex_router.py`; its `corpus` is asserted by both self-checks, so
   add a pattern *and* a corpus line together. Patterns must mean the same in JavaScript and Python.
 - **A new agent integration is a new adapter, not a new decision path.** It calls the same core with
   the same rules, questions, policy and logs, and documents in the README table what `ask` and
@@ -84,6 +84,9 @@ When you change rules, questions, policy or redaction:
   when a flag, a default or a limit changes.
 - Do not rewrite git history: `setup/context/golden.json` pins commit `b41c8c1`, and
   `npm run eval-context` breaks if it stops existing.
+- A script does its work only when started: put it under `if (isMain(import.meta))` (`failsafe.mjs`),
+  so importing the file runs nothing. `test.mjs` imports every file with a scratch HOME and fails on a
+  write or a started process.
 - Keep the working tree free of generated state: logs, cache, chunk stores and bundles go under
   `~/.local/state/reflex` (`REFLEX_DATA_DIR`), never in the repo.
 
@@ -91,7 +94,15 @@ When you change rules, questions, policy or redaction:
 
 | File | What it is |
 |---|---|
-| `gate.mjs` | The decision core and CLI: read-only detection, rules, redaction, Jev client, cache, logs, and the Claude Code / Codex / Hermes hook adapters |
+| `gate.mjs` | The decision core and CLI: `precheck` (the order of the rule, tamper, script and fast-lane checks), the prod tier, freezes, `judge`, `decide`, the tool gate, logs, and the Claude Code / Codex / Hermes hook adapters. Re-exports what the modules below define, so other files import from `gate.mjs` |
+| `config.mjs` | The gate's settings: `config.json`, the environment and the hook flags, `CONFIG`, `configurationError()` and its checks, secret redaction. Imports no other gate module |
+| `shell.mjs` | Shell reading: `maskQuotes`, `shellWords`, data heredocs, and the other spellings the rules read (`ruleSpelling`, `wordSpelling`, `gitPlain`, `awsPlain`) |
+| `scripts.mjs` | The local scripts a command runs (`localScripts`) and their lines for the script rules |
+| `readonly.mjs` | Read-only detection: `readOnlyLegacy`, `readOnlySimple`, their tables and flag allowlists, and `pipelines()` |
+| `rules.mjs` | The setup files (`load`), `checkRules`, `rulesHit`, the fast lane, and the deny rules on a command too large to check (`largeDeny`) |
+| `tamper.mjs` | What a command changes of Reflex itself: the cd tracking (`cdDirs`, `writesView`), the checkout, data and config directories in any spelling (`touchesOwn`), a nested checkout (`staysNested`), the files it protects inside the checkout, read from the checkout (`namesOwnFile`, `OWN_DIRS`; the gate selfcheck fails on a file it does not cover), the reflex CLI forms that change Reflex, the plugin's own commands |
+| `jev.mjs` | Jev: the call's context, the provider's key and where it may go, `ask`, the answer cache and `jevJudge` |
+| `selfcheck.mjs` | `node gate.mjs --selfcheck`: the gate's offline self-check (not in the plugin bundle) |
 | `autonomy.mjs` | The escalation ladder (autonomous profile): the always-human class, System 2 escalation, the verdict cache key and the breaker, the approval queue, task envelopes, checkpoints, and `reflex queue` / `envelope` / `checkpoints` |
 | `judge2.mjs` | System 2: the `cli`, `anthropic` and `openai-compatible` backends, the lean case under a token cap, strict verdict parsing, the verdict cache, tiers, budgets; the stub judge and fake CLIs for the tests |
 | `eval-ladder.mjs` | Runs `setup/tool-gate/ladder.json` through the autonomous profile with Jev live (or keyless, `--engine local`) and an approve-everything stub System 2 |

@@ -43,6 +43,7 @@ import {fileURLToPath} from "node:url";
 import {JUDGE_BACKENDS, QUEUE_DEFAULTS, USER_CONFIG, USER_CONFIG_ERROR, USER_CONFIG_FILE, judgeSettings, policyDirectory} from "../gate.mjs";
 import {onPath} from "../judge2.mjs";
 import {PROVIDERS, detect, envKey, hostOf, providerError, providerUrl} from "../providers.mjs";
+import {isMain} from "../failsafe.mjs";
 
 const ROOT = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..");
 const [cmd, ...args] = process.argv.slice(2);
@@ -363,6 +364,8 @@ function uninstall() {
   say(`removed. User settings and policy are kept beside ${USER_CONFIG_FILE}; logs are kept in ${ENV.REFLEX_DATA_DIR ?? join(ENV.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "reflex")}.`);
 }
 
+// The script itself runs only when started (node reflex), never when the file is imported.
+if (isMain(import.meta)) {
 switch (cmd) {
   case "setup": setup(); break;
   case "uninstall": uninstall(); break;
@@ -396,4 +399,5 @@ switch (cmd) {
   default:
     console.error("usage: reflex setup | status | doctor | check <cmd> | scan <file|-> | run <cmd> | report | audit | replay | suggest | learn | bench | queue | envelope | checkpoints | runaway | laya | mcp | install | uninstall | test | eval | version");
     process.exit(cmd ? 2 : 0);
+}
 }

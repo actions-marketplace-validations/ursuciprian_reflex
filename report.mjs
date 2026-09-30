@@ -14,9 +14,12 @@ import {compile} from "./policy.mjs";
 import {budgetState} from "./judge2.mjs";
 import {alwaysHuman, breaker, listItems, runawayTrips} from "./autonomy.mjs";
 import {template} from "./judge2.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const rows = f => existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
+// The script itself runs only when started (node report.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 const since = Date.now() - Number(arg("--since", 7)) * 864e5;
 // Subgoal checks (tag "subgoal") are counted apart: they are not commands and have no policy to replay.
 const logged = rows(join(CONFIG.data, "trace.jsonl")).filter(r => Date.parse(r.ts) >= since);
@@ -240,4 +243,5 @@ if (push) {
   const r = await fetch(`${push.replace(/\/$/, "")}/metrics/job/reflex/user/${user}`,
                         {method: "PUT", body: lines.join("\n") + "\n"});
   console.log(`  pushed       ${r.status} ${push}`);
+}
 }

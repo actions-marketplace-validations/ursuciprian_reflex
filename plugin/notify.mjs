@@ -9,6 +9,7 @@
 import {spawn} from "node:child_process";
 import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
+import {isMain} from "./failsafe.mjs";
 
 const ON = ["deny", "ask", "prod"], LOCAL = ["localhost", "127.0.0.1", "[::1]"], TIMEOUT_MS = 2000;
 /** Why a URL may not receive decisions, or null. */
@@ -79,7 +80,7 @@ export async function testTargets(targets) {
     ...await post(t.url, t.format === "slack" ? JSON.stringify({text}) : JSON.stringify({event: "reflex.test", dry_run: true, text}))})));
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1] && process.argv.includes("--send")) {
+if (isMain(import.meta) && process.argv.includes("--send")) {
   setTimeout(() => process.exit(0), TIMEOUT_MS + 1000).unref();
   try { await Promise.allSettled(JSON.parse(readFileSync(0, "utf8")).map(j => post(j.url, j.body))); } catch { /* nothing to send */ }
   process.exit(0);
