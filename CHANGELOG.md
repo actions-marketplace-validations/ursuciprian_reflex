@@ -6,6 +6,12 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Engine jev with no API key (for example a curl install without `--keychain`): in shadow mode every command the rules leave to the engine was logged as an ask with the rule "jev unavailable (Error: no API key for typesafe: ...)". Shadow enforces deterministic rules only, so an engine that gives no answer (a missing key, an unreachable host, a timeout, a malformed answer) now passes, and the trace records the reason. Enforce mode keeps the policy fallback, which asks.
+- A missing engine key is now reported as a configuration error, not an outage. `reflex status` and `reflex doctor` show "Jev engine has no API key: every engine decision falls back; run reflex setup --keychain <item> or set TYPESAFE_API_KEY", also when only the hooks' environment lacks the key. The Claude Code hook shows the warning once per session as a systemMessage, not once per command.
+- `reflex setup` with a saved engine jev and no key found (environment, Keychain or provider options) now picks the local engine and says so. With `--engine jev`, `--provider` or `REFLEX_ENGINE` it keeps jev and prints a loud warning that suggests `--keychain`.
+
 ## [0.17.1] - 2026-09-30
 
 ### Fixed

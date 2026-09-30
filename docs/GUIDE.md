@@ -108,13 +108,16 @@ environment and `config.json` but never search the Keychain. `cloudflare_account
 - **Answers.** Every reply is checked against the questions asked: a probability in [0, 1], a
   choice among the question's criteria, a score on its scale, a valid confidence. A reply that
   fails any check (probabilities only for the question's own options), is not JSON, or
-  (Cloudflare) did not complete is treated as Jev unavailable: the policy fallback asks. A
-  malformed answer is never read as a pass.
+  (Cloudflare) did not complete is treated as Jev unavailable: in enforce mode the policy
+  fallback asks. A malformed answer is never read as a pass by the policy; shadow mode, which
+  enforces deterministic rules only, logs the fallback with its reason and passes.
 - **Time.** One deadline covers the whole call, retries included: the hook's budget
   (`REFLEX_TIMEOUT_MS`, 3 s by default), not a per-attempt timeout. Only 408, 409, 429 and 5xx
   are retried, at most three attempts, with jittered exponential backoff, and only when the wait
   still ends before the deadline. A network error is not retried: without an idempotency key a
-  re-send could be charged twice. The breaker and the fallback are unchanged: an outage asks.
+  re-send could be charged twice. The breaker and the fallback are unchanged: in enforce mode an
+  outage asks. A missing key is a configuration error: `reflex status` and `reflex doctor` report
+  it, and the Claude Code hook warns once per session.
 - **Versions.** TypeSafe and compatible endpoints get the pinned `jev-1.13.0`. OpenRouter pins the
   minor version (`typesafe/jev-1.13`). Cloudflare and Vercel serve one current alias, so an answer
   there can change when TypeSafe ships a new Jev; set `REFLEX_MODEL` to pin where a provider
@@ -2888,7 +2891,7 @@ setting. After changing them, `reflex laya stop` and `start` (or reinstall the s
 With engine laya the calibrated allow gate is off whatever `--allow` says: its thresholds were
 fitted to Jev, and Laya did not earn them. System 2 can still approve what Laya escalates.
 
-A server that is down, slow or broken is a Jev outage: the policy's fallback (`ask`), rule
+A server that is down, slow or broken is a Jev outage: the policy's fallback (`ask` in enforce mode, a logged pass in shadow), rule
 `laya unavailable (...)`, logged, and `reflex doctor` / `reflex status` report it. Its answers are
 logged with `source: "jev"` (System 1), the engine and the checkpoint name, like Jev's.
 

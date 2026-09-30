@@ -239,10 +239,18 @@ function setup() {
   const keychain = opt(args, "--keychain", ENV.REFLEX_KEYCHAIN_SERVICE ?? USER_CONFIG.keychain ?? "typesafe-api-key");
   const auto = preset.engine === "auto" && opt(args, "--engine") === undefined;
   // --provider names Jev's carrier, so it means engine jev unless --engine says otherwise.
-  const engine = opt(args, "--engine", (opt(args, "--provider") ? "jev" : auto ? (hasKey(keychain) ? "jev" : "local") : preset.engine) ?? ENV.REFLEX_ENGINE ?? USER_CONFIG.engine ??
+  let engine = opt(args, "--engine", (opt(args, "--provider") ? "jev" : auto ? (hasKey(keychain) ? "jev" : "local") : preset.engine) ?? ENV.REFLEX_ENGINE ?? USER_CONFIG.engine ??
     (USER_CONFIG.keychain || USER_CONFIG.provider || Object.keys(USER_CONFIG.agents ?? {}).length ? "jev" : "local"));
-  const provider = engine === "jev" ? pickProvider(keychain) : null;
+  let provider = engine === "jev" ? pickProvider(keychain) : null;
   if (provider?.error) die(provider.error);
+  // Jev without a key falls back on every decision. Unless Jev was asked for (--engine, --provider or
+  // REFLEX_ENGINE), setup picks the local engine instead and says so; asked for, it warns loudly.
+  const jevAsked = opt(args, "--engine") !== undefined || !!opt(args, "--provider") || ENV.REFLEX_ENGINE !== undefined;
+  const noKey = provider && !provider.key && `no ${provider.name} key found (${PROVIDERS[provider.name].env.join(", ")}, Keychain item ${keychainItem(provider.name, keychain)})`;
+  if (noKey && !jevAsked) {
+    say(`engine local: ${noKey}, so this setup uses the local engine, not jev. For Jev, store the key and rerun reflex setup --engine jev --keychain <item>, or set ${PROVIDERS[provider.name].env.join(" or ")}`);
+    [engine, provider] = ["local", null];
+  }
   const ladder = ladderSettings(preset);
   const settings = {profile: profile ?? USER_CONFIG.profile ?? "supervised", engine, mode, allow, keychain, provider, keyless: auto && engine === "local", ...ladder};
   const judgeOn = judgeSettings(settings.judge).enabled;
@@ -314,6 +322,9 @@ function setup() {
   } else if (provider && !provider.key) {
     say(`set ${envNames}${where ? ` (${where.trim().replace(/^Create one at /, "")})` : ""} in the environment your agents start from`);
   }
+  if (provider && !pickProvider(keychain).key)
+    console.error(`\x1b[1;31mreflex WARNING: engine jev has no API key: every engine decision falls back (${mode === "enforce" ? "enforce: they ask" : "shadow: logged and passed"}). ` +
+      `Run reflex setup --keychain <item> or set ${envNames}; or reflex setup --engine local to run without one.\x1b[0m`);
 
   // 4. The ladder settings first: install.mjs reads them to give the gate hooks room for System 2.
   let written = {};
