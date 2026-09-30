@@ -33,6 +33,7 @@ try {
     [process.execPath, ["instructions.mjs", "--selfcheck"]], [process.execPath, ["install.mjs", "--selfcheck"]],
     [process.execPath, ["guard.mjs", "--selfcheck"]], [process.execPath, ["judge2.mjs", "--selfcheck"]], [process.execPath, ["autonomy.mjs", "--selfcheck"]], [process.execPath, ["freeze.mjs", "--selfcheck"]], [process.execPath, ["mcp.mjs", "--selfcheck"]],
     [process.execPath, ["context.mjs", "--selfcheck"]], [process.execPath, ["router/server.mjs", "--selfcheck"]], [process.execPath, ["infra.mjs", "--selfcheck"]],
+    [process.execPath, ["workspace.mjs", "--selfcheck"]],
     ["python3", ["routing/reflex_router.py", "--selfcheck"]],
   ]) {
     const r = spawnSync(program, args, {cwd: root, env, stdio: "inherit", timeout: 60000});
@@ -565,17 +566,27 @@ try {
     assert.equal(hook3("kubectl --context dev-cluster rollout restart deploy/api -n web"), undefined);
     assert.equal(hook3("curl -sS https://example.dev/data.json -o data.json"), undefined);
     assert.equal(calls3(), 3);
+    // the workspace allowlist: a tracked file copied to a new path is allowed with a checkpoint first, no
+    // System 2 call; the same shape onto an existing file, or anything glued on after it, is not a workspace pass
+    const cps3 = () => success(cli3(["checkpoints", "list", "--cwd", proj3])).trim().split("\n").length;
+    const cp0 = cps3();
+    assert.equal(hook3("cp a.txt a-copy.txt")?.permissionDecision, "allow");
+    assert.equal(calls3(), 3, "the workspace allowlist settled it without System 2");
+    assert.ok(cps3() >= cp0, "a checkpoint is in place");
+    writeFileSync(join(proj3, "b.txt"), "untracked\n");
+    for (const c of ["cp a.txt b.txt", "cp a.txt a2.txt && echo copied", "mv b.txt c.txt"]) hook3(c);
+    assert.equal(calls3(), 6, "not the allowlist: each went on to System 2");
     // the always-human class, a rule deny and tamper never reach System 2
     const iam3 = hook3("aws iam create-user --user-name keyless-bot");
     assert.ok(iam3.permissionDecision === "deny" && /parked in the approval queue/.test(iam3.permissionDecisionReason), JSON.stringify(iam3));
     assert.match(hook3("git push --force origin main").permissionDecisionReason, /force push/);
     assert.match(hook3("reflex queue approve q-0123456789").permissionDecisionReason, /parked in the approval queue/);
-    assert.equal(calls3(), 3, "System 2 is never asked about the always-human class, a rule or tamper");
+    assert.equal(calls3(), 6, "System 2 is never asked about the always-human class, a rule or tamper");
     // never a TypeSafe call: no Jev answer, no Jev fallback anywhere in the trace
     const trace3 = readFileSync(join(data3, "trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
     assert.ok(trace3.length >= 6 && trace3.every(r => !["jev", "fallback", "cache"].includes(r.source) && !r.error), JSON.stringify(trace3.map(r => r.source)));
     st3 = JSON.parse(success(cli3(["status", "--json"])));
-    assert.ok(st3.engine === "local" && st3.judge.budget.calls_used === 3 && st3.queue.pending >= 2 && !st3.judge.breaker.open, JSON.stringify(st3));
+    assert.ok(st3.engine === "local" && st3.judge.budget.calls_used === 6 && st3.queue.pending >= 2 && !st3.judge.breaker.open, JSON.stringify(st3));
     // a key later: the same profile moves to Jev
     assert.match(success(cli3(["setup", "--profile", "autonomous", ...agents2, "--dry-run"], {env: Object.fromEntries([["TYPESAFE_API_KEY", ["test", "key", process.pid].join("-")]])})), /engine jev/);
     console.log("keyless autonomous onboarding checks OK");

@@ -30,7 +30,8 @@ import {spawn, spawnSync} from "node:child_process";
 import {homedir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
-import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
+import {checkpoint, envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
+import {workspacePass} from "./workspace.mjs";
 import {userFastPass} from "./fastlane.mjs";
 import {globsReflex, repoRoot, teamMode, teamPolicy, teamRules} from "./team.mjs";
 import {argStrings, mcpCommand, mcpJudge, mcpWritePaths, protectedPath, toolOf} from "./tools.mjs";
@@ -221,7 +222,10 @@ function precheckAs(command, cwd, env, run, alt = false) {
   if (READ_ONLY_MODE === "simple" && readOnly(command)) return RO;
   if (fastPass(command, rules)) return {outcome: "pass", rule: "fast lane", source: "fast-lane", policy_version: rules.version};
   if (userFastPass(command, cwd, env)) return {outcome: "pass", rule: "fast lane (fastlane.json)", source: "fast-lane", policy_version: rules.version};
-  return null;
+  // Last: the keyless workspace allowlist (workspace.mjs), a few exact in-tree shapes. decide() honours
+  // it only with a checkpoint in hand; without one the command goes on to the engine.
+  const w = CONFIG.workspace ? workspacePass(command, cwd, {protectedWrite}) : null;
+  return w && {...w, policy_version: rules.version};
 }
 
 /** The whole gate for one command, as eval.mjs and the hook see it. noExec: the plan gate runs no
@@ -339,8 +343,16 @@ export async function decide(call, {background = false, asker, judger} = {}) {
     const d = j?.outcome === "deny" ? j : {...egress, ...(j && {answers: j.answers, state: j.state, gate: j.gate})};
     return finish(d, call, d.outcome, {env, judger, egress: true});
   }
+  // A workspace allowlist pass stands only with a recovery point: in enforce mode the checkpoint is taken
+  // now, before the command runs (it runs after the hook returns). No checkpoint (not a repository with a
+  // commit, or the checkpoint failed) or production: not a workspace pass, the engine or the ladder decides.
+  // Shadow takes none and logs what enforce would do (allowSetting: would_allow or pass).
+  if (quick?.source === "workspace") {
+    const c = call.tier?.prod ? null : CONFIG.mode === "enforce" ? checkpoint(call.cwd) : {};
+    quick = c ? allowSetting(holdAllow({...quick, ...(c.ref && {checkpoint: {ref: c.ref, ms: c.ms, ...(c.same && {same: true})}})}, call)) : null;
+  }
   if (quick) {
-    const effective = quick.source === "rule" ? quick.outcome : "pass";
+    const effective = quick.source === "rule" ? quick.outcome : quick.source === "workspace" && quick.outcome === "allow" ? "allow" : "pass";
     if (quick.source === "read-only") return view(quick, effective);
     return finish(quick, call, effective, {env, judger});
   }
@@ -622,9 +634,9 @@ export function holdAllow(j, call) {
 }
 // A fallback can pass, ask or deny; never allow, whatever the file says.
 function safeFallback() { try { const f = load("policy.json").fallback; return ["pass", "ask", "deny"].includes(f) ? f : null; } catch { return null; } }
-// Only a fresh Jev judgment, a System 2 approval or a human's queue approval may allow; a rule, the
-// read-only list or the fast lane never does.
-export const view = (j, effective) => ({effective: effective === "allow" && !["jev", "judge", "queue"].includes(j.source) ? "pass"
+// Only a fresh Jev judgment, a System 2 approval, a human's queue approval or a workspace allowlist
+// pass with its checkpoint taken (decide) may allow; a rule, the read-only list or the fast lane never does.
+export const view = (j, effective) => ({effective: effective === "allow" && !["jev", "judge", "queue", "workspace"].includes(j.source) ? "pass"
                                    : ["pass", "allow", "ask", "deny"].includes(effective) ? effective : "ask", decision: j.outcome, reason: `reflex (${j.source}): ${j.rule}`,
                                  source: j.source, policy: j.policy_version ?? null, ...(j.plan && {plan: j.plan})});
 
@@ -658,7 +670,7 @@ function trace(j, call, effective) {
     decision: j.outcome, policy_decision: j.policy_outcome ?? j.outcome, rule: j.rule, source: j.source, policy_version: j.policy_version ?? null,
     mode: CONFIG.mode, emitted: effective === "pass" ? null : effective,
     agent: call.agent ?? null, session_id: call.session_id ?? null, call_id: call.call_id ?? null,
-    permission_mode: call.permission_mode ?? null, ...(j.plan && {plan: j.plan}), ...(j.ladder && {ladder: j.ladder}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway}),
+    permission_mode: call.permission_mode ?? null, ...(j.plan && {plan: j.plan}), ...(j.ladder && {ladder: j.ladder}), ...(j.checkpoint && {checkpoint: j.checkpoint}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway}),
     ...(j.id && {rule_id: j.id}), ...(call.tier && {tier: call.tier}), cwd: call.cwd ?? null});
   // the decision webhook (notify.mjs): redacted, detached, never waited for; a trusted team policy may add one.
   // REFLEX_NOTIFY=off sends nothing (doctor's probes set it).
