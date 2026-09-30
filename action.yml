@@ -51,7 +51,7 @@ runs:
     - name: Validate the team policy
       shell: bash
       env:
-        REFLEX: npx --yes @ursuciprian/reflex@0.17.0
+        REFLEX: npx --yes @ursuciprian/reflex@0.17.1
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
         XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         DIR: ${{ inputs.directory }}
@@ -80,7 +80,7 @@ runs:
       id: check
       shell: bash
       env:
-        REFLEX: npx --yes @ursuciprian/reflex@0.17.0
+        REFLEX: npx --yes @ursuciprian/reflex@0.17.1
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
         XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         REFLEX_ENGINE: local
@@ -127,7 +127,7 @@ runs:
       if: inputs.golden-eval == 'true'
       shell: bash
       env:
-        REFLEX: npx --yes @ursuciprian/reflex@0.17.0
+        REFLEX: npx --yes @ursuciprian/reflex@0.17.1
         REFLEX_DATA_DIR: ${{ runner.temp }}/reflex
         XDG_CONFIG_HOME: ${{ runner.temp }}/reflex-config
         TYPESAFE_API_KEY: ${{ inputs.typesafe-api-key }}

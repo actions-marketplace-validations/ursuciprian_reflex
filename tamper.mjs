@@ -109,7 +109,9 @@ export const namesOwn = text => {
 // program run in the parent that writes reflex/ without naming it is not caught.
 const real = p => { try { return realpathSync(p); } catch { return p; } };
 const BROAD = () => new Set([homedir(), "/", tmpdir(), real(tmpdir()), "/tmp", "/private/tmp"].map(p => p.replace(/\/$/, "").toLowerCase() || "/"));
-const globPart = g => new RegExp(`^${g.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".").replace(/\[!/g, "[^")}$`, "i");
+// A glob the shell would take literally (an unclosed `[`) is not a valid pattern: it counts as a
+// match, so the command is treated as touching Reflex (fail closed) instead of crashing the gate.
+const globPart = g => { try { return new RegExp(`^${g.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".").replace(/\[!/g, "[^")}$`, "i"); } catch { return {test: () => true}; } };
 function pathsOwn(writes, cwd) {
   const own = [...new Set([HERE, CONFIG.data, dirname(USER_CONFIG_FILE)].flatMap(p => [p, real(p)]).map(p => p.toLowerCase()))];
   const broad = BROAD(), parents = [CONFIG.data, dirname(USER_CONFIG_FILE)].flatMap(p => [dirname(p), dirname(real(p))])

@@ -19,6 +19,7 @@ export async function selfcheck() {
   // read-only detection: readOnlyLegacy's cases, as before ("readonly": "legacy"). Every command
   // legacy refuses must be refused by readOnlySimple (opt-in) too; `leaks` lists any that is not.
   const leaks = [], readOnly = c => { const l = readOnlyLegacy(c); if (!l && readOnlySimple(c)) leaks.push(c); return l; };
+  { let threw = false; try { precheck("echo x > [a", "/tmp", {}); precheck("cp y .[", "/tmp", {}); } catch { threw = true; } ok(!threw, "an unclosed [ in a path does not crash the gate"); }
   ok(readOnly("ls -la && git status | head"), "read-only chain");
   ok(readOnly("AWS_PROFILE=dev aws ec2 describe-instances"), "env prefix + aws describe");
   ok(readOnly("kubectl get pods -A | grep Crash"), "kubectl get");
