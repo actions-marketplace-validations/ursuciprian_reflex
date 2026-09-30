@@ -21,7 +21,7 @@
 // "allow" (skip the agent's own prompt) is opt-in twice, REFLEX_ALLOW=on and enforce mode, and
 // only for a fresh Jev answer that clears the policy's allow gate.
 // First: failsafe.mjs answers the agent (ask, or block where it cannot ask) on any error after this.
-import {hookFailure} from "./failsafe.mjs";
+import {hookFailure, isMain} from "./failsafe.mjs";
 // Next: in the Claude Code plugin, settings come from the plugin options and config.json only (plugin.mjs).
 import {PLUGIN_MODE} from "./plugin.mjs";
 import {appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, openSync, readSync, writeSync, closeSync} from "node:fs";
@@ -44,7 +44,7 @@ import {withAwsProfile, ruleSpelling, wordSpelling, TOO_MANY, BRACE_WORDS, strip
 import {SCAN_MS, localScripts, scriptLines} from "./scripts.mjs";
 import {onlyNotes, pipelines, READ_ONLY_MODE, readOnly} from "./readonly.mjs";
 import {PRECHECK_MS, COMMAND_BYTES, largeDeny, load, SEVERITY, rx, checkRules, fastPass} from "./rules.mjs";
-import {ownCommand, nestedCheckout, writesOf, staysNested, touchesOwn, reflexChanges, TEAM_TAMPER, fastLaneEdit, namesOwn} from "./tamper.mjs";
+import {ownCommand, nestedCheckout, writesOf, staysNested, touchesOwn, namesOwnFile, reflexChanges, TEAM_TAMPER, fastLaneEdit, namesOwn} from "./tamper.mjs";
 import {envContext, jevJudge, sessionContext, ask} from "./jev.mjs";
 // What the other files import from gate.mjs, wherever it now lives.
 export {USER_CONFIG_FILE, USER_CONFIG_ERROR, USER_CONFIG, ENGINES, JUDGE_BACKENDS, JUDGE_DEFAULTS, KEYLESS_JUDGE_DEFAULTS, BACKEND_DEFAULTS,
@@ -182,7 +182,7 @@ function precheckAs(command, cwd, env, run, alt = false) {
       reflexChanges(command) ||
       // CDPATH sends a relative cd anywhere, so the directory tracking cannot say what a path names
       (inRepo && /\bCDPATH=/.test(command)) ||
-      (inRepo && /\b(gate|policy|install|eval|report|instructions|context|autonomy|judge2|eval-ladder|fastlane|team|infra|plugin|failsafe|hook|guard|providers|config|shell|scripts|readonly|rules|tamper|jev|selfcheck)\.mjs\b|\bsetup\/|\brouter\/|\brouting\/|\bscripts\/reflex-|\badapters\/|\.git\/hooks/.test(writes)))
+      (inRepo && namesOwnFile(writes)))
     hold(ruled({outcome: "ask", rule: "touches the Reflex gate, its setup or its logs", id: "tamper"}));
   // A repo's team policy (.reflex/) and the user's trust in it (team.mjs): a human's call.
   // A glob that expands to .reflex counts, and so does naming policy.json where a team policy applies.
@@ -810,7 +810,7 @@ function confirmOnTty(command, reason) {
 const argv = process.argv.slice(2);
 const flag = f => argv.includes(f);
 const opt = n => { const i = argv.indexOf(n); return i > -1 ? argv[i + 1] : undefined; };
-const main = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const main = isMain(import.meta);
 // An error a hook does not handle goes to failsafe.mjs: the pre-execution hooks ask, the others warn.
 const guarded = fn => Promise.resolve().then(fn).catch(hookFailure);
 

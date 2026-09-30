@@ -17,6 +17,7 @@ import {closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync,
 import {homedir, tmpdir} from "node:os";
 import {join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
+import {isMain} from "./failsafe.mjs";
 import "./plugin.mjs";   // the Claude Code plugin's commands pass --plugin: its settings, and the flag off argv
 
 const argv = process.argv.slice(2), [cmd] = argv;
@@ -30,6 +31,8 @@ const opt = (n, d) => {
 const AGENTS = ["claude", "codex", "opencode", "pi"];
 // The agent is the one word that is neither a flag nor a flag's value, wherever it stands.
 const VALUED = ["--since", "--project", "--engine", "--limit", "--min", "--forget"], FLAGS = ["--json", "--yes", "--write", "--list", "--prune", "--team"];
+// The script itself runs only when started (node replay.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 const words = argv.slice(1).filter((a, i, l) => !VALUED.includes(a) && !FLAGS.includes(a) && !VALUED.includes(l[i - 1]));
 if (words.some(w => w.startsWith("-")) || words.length > (["replay", "suggest"].includes(cmd) ? 1 : 0)) die(`unexpected argument ${words.at(-1)}`);
 const agentArg = words[0] ?? "all";
@@ -359,3 +362,4 @@ function confirmWrite(add, file) {
 if (cmd === "replay") await replay();
 else if (cmd === "suggest") await suggestCmd();
 else die("usage: reflex replay [claude|codex|opencode|pi|all] [--since 7d] [--project path] [--engine local|jev|laya] [--yes] [--limit N] [--json] | reflex bench [--engine local|jev|laya] [--json] | reflex suggest [agent] [--since 30d] [--project path] [--min N] [--json] [--write [--yes]]");
+}

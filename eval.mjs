@@ -12,8 +12,11 @@ import {cpSync, existsSync, readFileSync, rmSync, writeFileSync, mkdirSync} from
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {CONFIG, judge, judgeTool} from "./gate.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
+// The script itself runs only when started (node eval.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 const golden = JSON.parse(readFileSync(arg("--golden", join(CONFIG.setup, "golden.json")), "utf8"));
 const only = arg("--only");
 const label = c => c.command ?? `${c.tool} ${JSON.stringify(c.input ?? {})}`;
@@ -64,3 +67,4 @@ const out = join(CONFIG.data, `eval-${new Date().toISOString().replace(/[:.]/g, 
 writeFileSync(out, JSON.stringify({golden: golden.version, model: CONFIG.model, results}, null, 1));
 console.log(`details ${out}`);
 if (n("MISS")) process.exitCode = 1;
+}

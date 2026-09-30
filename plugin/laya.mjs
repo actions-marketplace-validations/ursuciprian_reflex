@@ -13,6 +13,7 @@ import {homedir, platform} from "node:os";
 import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {CONFIG, LAYA_DEFAULTS, LAYA_TOKEN, USER_CONFIG, layaUrl} from "./gate.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url)), ENV = process.env;
 export const laya = () => {

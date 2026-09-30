@@ -1,6 +1,6 @@
 // Tamper detection (gate.mjs): what a command changes of Reflex itself, the directories its cd steps
 // point at, a nested checkout, and the plugin's own commands.
-import {realpathSync, existsSync, lstatSync} from "node:fs";
+import {realpathSync, existsSync, lstatSync, readdirSync} from "node:fs";
 import {homedir, tmpdir} from "node:os";
 import {dirname, posix, resolve, join, basename} from "node:path";
 import {HERE, CONFIG, USER_CONFIG_FILE} from "./config.mjs";
@@ -138,6 +138,24 @@ const OWN_UNDER_VAR = /\$[^\s;&|<>]*?(?<=[/}])(reflex(\/|\s|$)|(trace|feedback|j
 const knownVars = (s, cwd) => s.replace(/\$HOME\b|\$\{HOME\}/g, homedir()).replace(/\$(TMPDIR|TMP|TEMP)\b|\$\{(TMPDIR|TMP|TEMP)\}/g, tmpdir())
   .replace(/\$PWD\b|\$\{PWD\}/g, cwd ?? "$PWD");
 export const touchesOwn = (writes, cwd) => { const w = knownVars(writes, cwd); return namesOwn(w) || pathsOwn(w, cwd) || OWN_UNDER_VAR.test(w); };
+
+// What Reflex runs from its checkout, as the relative paths a command run inside it names. Read
+// from the checkout itself, not kept by hand, so a module added later is covered the day it lands:
+// every file at the top that is code or config (*.mjs, *.js, *.sh, *.json: install.sh, package.json,
+// .mcp.json) and everything under these directories. The gate's selfcheck fails when a file of
+// the checkout is neither covered here nor in NOT_RUNTIME (selfcheck.mjs).
+export const OWN_DIRS = ["setup", "scripts", "adapters", "hooks", "router", "routing", "plugin", "commands", "skills", ".claude-plugin", ".codex-plugin", ".agents"];
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+let ownFiles = null;
+const OWN_FILES = () => ownFiles ??= (() => {
+  let top = [];
+  try { top = readdirSync(HERE, {withFileTypes: true}).filter(e => e.isFile() && /\.(mjs|js|sh|json)$/.test(e.name)).map(e => e.name); } catch { /* none */ }
+  // a file by its name (gate.mjs, ./gate.mjs, x/gate.mjs), a directory by the path under it (setup/…)
+  // or, a dot directory, by its name (.claude-plugin); .git/hooks is the checkout's own hooks
+  return new RegExp(String.raw`(?<![\w.-])(${top.map(esc).join("|") || "(?!)"})(?![\w-])|(?<![\w.-])(${OWN_DIRS.map(esc).join("|")})\/|` +
+    String.raw`(?<![\w.-])(${OWN_DIRS.filter(d => d.startsWith(".")).map(esc).join("|")})(?![\w.-])|\.git\/hooks`);
+})();
+export const namesOwnFile = writes => OWN_FILES().test(writes);
 
 // A directory with its own .git between the checkout and cwd (cwd included): its root, or null.
 export function nestedCheckout(cwd) {

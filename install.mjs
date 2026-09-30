@@ -21,6 +21,7 @@ import {homedir} from "node:os";
 import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {ENGINES, USER_CONFIG, USER_CONFIG_FILE, USER_CONFIG_ERROR, judgeSettings} from "./gate.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => {
@@ -42,6 +43,8 @@ const ENGINE = opt("--engine", process.env.REFLEX_ENGINE ?? USER_CONFIG.engine ?
 const UNINSTALL = argv.includes("--uninstall");
 const KEYCHAIN = opt("--keychain", undefined);   // macOS Keychain item holding the TypeSafe key
 const CONTEXT = argv.includes("--context") ? "on" : argv.includes("--no-context") ? "off" : "keep";
+// The script itself runs only when started (node install.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 if (argv.includes("--context") && argv.includes("--no-context")) throw new Error("--context and --no-context conflict");
 if (USER_CONFIG_ERROR && !UNINSTALL) throw new Error(USER_CONFIG_ERROR);
 if (!ENGINES.includes(ENGINE)) throw new Error("--engine must be local, jev or laya");
@@ -394,4 +397,5 @@ for (const a of targets) {
 if (!UNINSTALL || existsSync(USER_CONFIG_FILE)) {
   const next = UNINSTALL ? {...saved, agents} : {...saved, agents, mode: MODE, allow: ALLOW, engine: ENGINE, ...(KEYCHAIN && {keychain: KEYCHAIN})};
   writeFile(USER_CONFIG_FILE, JSON.stringify(next, null, 2) + "\n");
+}
 }

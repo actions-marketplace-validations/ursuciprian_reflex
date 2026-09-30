@@ -36,6 +36,7 @@ import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, rulesHit, confi
 import {judge2, stubServer, template} from "./judge2.mjs";
 import {hitsOf, terms} from "./context.mjs";
 import {teamEscalation} from "./team.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const iso = (t = Date.now()) => new Date(t).toISOString();
 const numbers = answers => Object.fromEntries(Object.entries(answers ?? {}).map(([k, a]) => [k, a?.noul ?? a?.choice ?? a?.score ?? null]));
@@ -1037,7 +1038,7 @@ function cli(argv) {
     "reflex envelope set \"<text>\" [--session id|--cwd dir] [--ttl 8h] | show | list | clear · reflex checkpoints [list|restore <name>] [--cwd dir]");
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta)) {
   // @reflex:setup-only begin
   if (process.argv.includes("--selfcheck")) await selfcheck(); else
   // @reflex:setup-only end
