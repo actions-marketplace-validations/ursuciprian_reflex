@@ -17,7 +17,10 @@ import {teamPolicy} from "./team.mjs";
 import {infraSettings, which} from "./infra.mjs";
 import {inWindow} from "./freeze.mjs";
 import {targetLabel, testTargets} from "./notify.mjs";
+import {isMain} from "./failsafe.mjs";
 
+// The script itself runs only when started (node status.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 const doctor = process.argv.includes("--doctor"), json = process.argv.includes("--json");
 const errors = [], warnings = [], agents = [];
 const home = homedir();
@@ -359,3 +362,4 @@ else {
   if (doctor) console.log("Doctor checks local configuration and synthetic decisions; host approval dialogs require verification in a real session. No commands were executed or sent to TypeSafe.");
 }
 process.exitCode = errors.length ? 1 : 0;
+}

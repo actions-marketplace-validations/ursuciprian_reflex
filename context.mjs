@@ -29,6 +29,7 @@ import {basename, dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {ask as jevAsk, redact, CONFIG} from "./gate.mjs";
 import {hostOf} from "./providers.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const ENV = process.env;
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -766,7 +767,7 @@ const argv = process.argv.slice(2);
 const opt = n => { const i = argv.indexOf(n); return i > -1 ? argv[i + 1] : undefined; };
 // No top-level await: the selfcheck imports the pi adapter, which imports this module again, and
 // that import would wait forever on a module still evaluating.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) (async () => {
+if (isMain(import.meta)) (async () => {
   if (argv.includes("--prune")) console.log(JSON.stringify(pruneChunks()));
   else if (argv.includes("--expand")) console.log(expandChunk(opt("--expand"), opt("--lines")));
   else if (argv.includes("--bundle")) console.log(writeBundle(await bundle({base: opt("--base") ?? "HEAD", goal: opt("--goal")}), opt("--out")));

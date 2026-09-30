@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 // Run every existing selfcheck and the onboarding journey without the user's configuration or keys.
 import assert from "node:assert/strict";
-import {cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync} from "node:fs";
+import {cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync} from "node:fs";
 import {spawn, spawnSync} from "node:child_process";
 import {createServer} from "node:http";
 import {tmpdir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
+import {isMain} from "./failsafe.mjs";
 
+// The script itself runs only when started (node test.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 const root = dirname(fileURLToPath(import.meta.url)), scratch = mkdtempSync(join(tmpdir(), "reflex-test-"));
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("REFLEX_") && !k.startsWith("JEV_") &&
   !["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "AI_GATEWAY_API_KEY", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"].includes(k)));
@@ -1661,6 +1664,43 @@ try {
     success(ocRun("pass", {REFLEX_MODE: "shadow", REFLEX_GATE: join(fdir, "gone/gate.mjs")}));
     console.log("fail-closed checks OK");
   }
+  {
+    // Importing a Reflex file runs nothing: a review agent's import("./install.mjs") once rewrote a
+    // real ~/.claude/settings.json. Each file is imported in a child whose HOME and config and state
+    // directories are an empty scratch directory, with every child_process function replaced by one
+    // that records the call and refuses it: no file may appear or change under that HOME, and no
+    // process may be started. A TypeScript adapter or an extensionless script this Node cannot import is skipped.
+    const files = [...readdirSync(root).filter(f => f.endsWith(".mjs")),
+      ...["adapters", "scripts", "router"].flatMap(d => readdirSync(join(root, d)).filter(f => statSync(join(root, d, f)).isFile() && /\.(mjs|js|ts)$|^[\w-]+$/.test(f) &&
+        (!/^[\w-]+$/.test(f) || readFileSync(join(root, d, f), "utf8").startsWith("#!/usr/bin/env node"))).map(f => `${d}/${f}`))];
+    const walk = d => readdirSync(d, {withFileTypes: true}).flatMap(e => e.isDirectory() ? [`${join(d, e.name)}/`, ...walk(join(d, e.name))]
+      : [`${join(d, e.name)} ${statSync(join(d, e.name)).mtimeMs} ${statSync(join(d, e.name)).size}`]);
+    const probe = `import {syncBuiltinESMExports} from "node:module"; import cp from "node:child_process";
+      for (const k of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"])
+        cp[k] = (...a) => { process.stdout.write("SPAWN " + k + " " + JSON.stringify(a[0]) + "\\n"); throw new Error("spawn refused on import"); };
+      syncBuiltinESMExports();
+      setTimeout(() => { console.log("HANG"); process.exit(3); }, 10000).unref();
+      try { await import(process.env.PROBE_FILE); console.log("IMPORTED"); }
+      catch (e) { console.log(["ERR_UNKNOWN_FILE_EXTENSION", "ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING"].includes(e?.code) ? "SKIP" : "THREW " + String(e?.message ?? e).split("\\n")[0]); }
+      process.exit(0);`;
+    let imported = 0;
+    for (const f of files) {
+      const home = mkdtempSync(join(scratch, "import-"));
+      mkdirSync(join(home, "tmp"));
+      const before = walk(home).join("\n");
+      const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe], {cwd: home, encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+        env: {PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude"), CODEX_HOME: join(home, ".codex"), XDG_CONFIG_HOME: join(home, ".config"),
+          XDG_STATE_HOME: join(home, ".local/state"), TMPDIR: join(home, "tmp"), REFLEX_KEYCHAIN_SERVICE: `reflex-test-${process.pid}`, PROBE_FILE: join(root, f)}});
+      const after = walk(home).join("\n"), out = r.stdout.trim();
+      assert.equal(after, before, `importing ${f} wrote under HOME: ${after.split("\n").filter(l => !before.split("\n").includes(l)).join(", ")}`);
+      assert.ok(!/^SPAWN/m.test(out), `importing ${f} started a process: ${out}`);
+      assert.ok(r.status === 0 && (/^IMPORTED$/m.test(out) || (/^SKIP$/m.test(out) && /\.ts$|^[^.]*$/.test(f))), `importing ${f}: ${out}\n${r.stderr}`);
+      if (/^IMPORTED$/m.test(out)) imported++;
+      rmSync(home, {recursive: true, force: true});
+    }
+    assert.ok(imported >= files.filter(f => /\.(mjs|js)$/.test(f)).length && files.includes("install.mjs") && files.includes("scripts/build-plugin.mjs"), "every module imported");
+    console.log(`import side effects checks OK (${imported} of ${files.length} files imported, nothing written or started)`);
+  }
 } finally { rmSync(scratch, {recursive: true, force: true}); }
 
 // The Claude Code plugin at `proot`: the checkout (--plugin mode) or the generated bundle, plugin/
@@ -1933,4 +1973,5 @@ async function claudePluginChecks(proot) {
   for (const f of ["assets/logo.svg", "assets/wordmark.svg"])
     assert.ok(!/<style|<script|\son\w+=|foreignObject|<animate|<set\b|href=["'](?!#)/i.test(readFileSync(join(root, f), "utf8")), `${f} is a clean SVG`);
   console.log(`claude code plugin checks OK (${proot === root ? "the checkout, --plugin" : proot})`);
+}
 }

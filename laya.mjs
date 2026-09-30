@@ -17,6 +17,7 @@ import {homedir, platform} from "node:os";
 import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {CONFIG, LAYA_DEFAULTS, LAYA_TOKEN, USER_CONFIG, layaUrl} from "./gate.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url)), ENV = process.env;
 // @reflex:setup-only begin
@@ -201,7 +202,7 @@ export async function setup({dryRun = false} = {}) {
 const say = m => console.log(`\x1b[1mreflex laya\x1b[0m ${m}`);
 function fail(m) { console.error(`\x1b[31mreflex laya: ${m}\x1b[0m`); process.exitCode = 1; }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta)) {
   const [cmd, ...rest] = process.argv.slice(2);
   const actions = {start, stop, status: () => status({json: rest.includes("--json")}), "install-service": installService,
     "uninstall-service": uninstallService, setup: () => setup({dryRun: rest.includes("--dry-run")}), service: () => process.stdout.write(serviceText())};

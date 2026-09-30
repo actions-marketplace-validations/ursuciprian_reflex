@@ -8,9 +8,12 @@ import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {CONFIG} from "./gate.mjs";
 import {THRESHOLD, discover, select} from "./instructions.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
+// The script itself runs only when started (node eval-instructions.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 const golden = JSON.parse(readFileSync(arg("--golden", join(HERE, "examples/instructions/golden.json")), "utf8"));
 const repo = arg("--repo", join(HERE, "examples/instructions/repo"));
 const fragments = discover(repo).filter(f => f.when && f.file.startsWith(repo)).map(f => ({...f, paths: [], keywords: []}));
@@ -36,3 +39,4 @@ const pct = x => (100 * x).toFixed(0) + "%";
 console.log(`\n${results.length} prompts · exact ${exact} · precision ${pct(tp / (tp + fp || 1))} · recall ${pct(tp / (tp + fn || 1))} · ` +
             `threshold ${THRESHOLD} · model ${CONFIG.model}`);
 if (fn || results.some(r => r.error)) process.exitCode = 1;
+}

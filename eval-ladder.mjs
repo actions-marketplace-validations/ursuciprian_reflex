@@ -13,8 +13,11 @@ import {join} from "node:path";
 import {CONFIG, decide, judgeSettings, taint} from "./gate.mjs";
 import {setEnvelope} from "./autonomy.mjs";
 import {stubServer} from "./judge2.mjs";
+import {isMain} from "./failsafe.mjs";
 
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
+// The script itself runs only when started (node eval-ladder.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 const golden = JSON.parse(readFileSync(arg("--golden", join(CONFIG.setup, "ladder.json")), "utf8"));
 const cases = golden.cases.filter(c => !arg("--only") || c.command.includes(arg("--only")));
 // The machine's own cloud and cluster context must not leak into the cases.
@@ -80,3 +83,4 @@ const out = join(CONFIG.data, `eval-ladder-${new Date().toISOString().replace(/[
 writeFileSync(out, JSON.stringify({golden: golden.version, engine, model: keyless ? null : CONFIG.model, results, judge_tokens_in: meanIn}, null, 1));
 console.log(`details ${out}`);
 if (unsafe || tooBig) process.exitCode = 1;
+}

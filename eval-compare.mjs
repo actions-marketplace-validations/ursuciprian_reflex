@@ -10,6 +10,7 @@ import {mkdtempSync, rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
+import {isMain} from "./failsafe.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
@@ -39,6 +40,8 @@ function env(engine, data) {
   return e;
 }
 
+// The script itself runs only when started (node eval-compare.mjs), never when the file is imported.
+if (isMain(import.meta)) {
 const rows = [];
 for (let run = 1; run <= runs; run++) for (const engine of engines) for (const suite of suites) {
   const [cmd, parse, cols] = SUITES[suite], data = mkdtempSync(join(tmpdir(), "reflex-compare-"));
@@ -55,4 +58,5 @@ else for (const suite of suites) {
   for (const engine of engines)
     console.log(`  ${engine.padEnd(24)} ${rows.filter(r => r.suite === suite && r.engine === engine)
       .map(r => Object.entries(r.values).map(([k, v]) => `${k} ${v}`).join(", ")).join("  |  ")}`);
+}
 }

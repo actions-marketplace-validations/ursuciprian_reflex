@@ -13,6 +13,7 @@
 //
 //   node providers.mjs --selfcheck    mock servers for every provider, no network
 import {createServer} from "node:http";
+import {isMain} from "./failsafe.mjs";
 
 export const PROVIDER_NAMES = ["typesafe", "openrouter", "cloudflare", "vercel", "compatible"];
 const typesafeBody = (state, questions, model) => ({state, model, questions});
@@ -344,5 +345,5 @@ async function selfcheck() {
 // @reflex:setup-only end
 
 // @reflex:setup-only begin
-if (process.argv.includes("--selfcheck") && import.meta.url === `file://${process.argv[1]}`) await selfcheck();
+if (process.argv.includes("--selfcheck") && isMain(import.meta)) await selfcheck();
 // @reflex:setup-only end
