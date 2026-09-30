@@ -6,6 +6,12 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-09-30
+
+### Fixed
+
+- A path with an unclosed `[` (a glob the shell takes literally) crashed the self-protection check, so `reflex learn` and `reflex replay` stopped with a SyntaxError. The pattern now fails closed: the path counts as touching Reflex. In hooks the fail-closed wrapper already turned the crash into an ask.
+
 ## [0.17.0] - 2026-09-30
 
 ### Added
@@ -1061,7 +1067,8 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/ursuciprian/reflex/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/ursuciprian/reflex/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/ursuciprian/reflex/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/ursuciprian/reflex/compare/v0.14.0...v0.15.0
