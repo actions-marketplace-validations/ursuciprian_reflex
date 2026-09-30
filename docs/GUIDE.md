@@ -30,6 +30,7 @@
 10. [Runaway guard: stop runaway AI agents](#runaway-guard-stop-runaway-ai-agents)
 11. [Reflex MCP server: ask before acting (Claude Desktop, Cursor, Cowork)](#reflex-mcp-server-ask-before-acting-claude-desktop-cursor-cowork)
 12. [Autonomous agents](#autonomous-agents)
+   - [Human-last: how Reflex decides without you](#human-last-how-reflex-decides-without-you)
 13. [Conditional instructions](#conditional-instructions)
 14. [Tool router](#tool-router)
 15. [Model routing](#model-routing)
@@ -208,6 +209,10 @@ hook (see the table in the README). Each adapter turns the agent's event into th
 3. **Fast lane** (`rules.json` → `pass`): known-safe steps: builds, tests, `mkdir`, `git add/commit`,
    pushing a non-main branch. A command passes when every segment is read-only or matches a fast-lane
    pattern. → **pass**, logged.
+   **Workspace allowlist** (`workspace.mjs`, keyless): a few exact in-tree shapes (`mkdir -p`,
+   `touch`, `sed -i` with one `s///` on a tracked file, `cp` or `mv` of a tracked file to a new
+   path) pass with a checkpoint taken first. See
+   [Human-last](#human-last-how-reflex-decides-without-you).
 4. **Jev**: the command (secrets redacted), its working directory, the environment context and
    the text the agent wrote right before this command and its last five commands (from the session
    transcript; if the command is not in the transcript yet, no intent is sent rather than an older one) are sent to
@@ -1252,11 +1257,21 @@ one (a tamper rule asks before an agent edits it). A team policy adds rules, str
 linear-time check like its other patterns; `outcome` is ask or deny, nothing looser.
 
 **Limits.** A rule reads a tool's name and arguments, not what the server does with them: an MCP
-tool named `apply_run` or `update_function_code` is unknown to the rules, so keyless it only logs,
-and only Jev (or `mcp.unknown: "ask"`) stops a production apply there. opencode and Hermes do not
+tool named `apply_run` or `update_function_code` is unknown to the rules. Keyless it asks on an
+infrastructure server (the MCP infra preset, below) and is only logged elsewhere; with a key Jev
+judges it. opencode and Hermes do not
 say which server a tool belongs to, so a `server` pattern reads the whole tool name. opencode and
 Codex cannot show an approval dialog for a tool call: an ask blocks with a reason that tells the
 agent to have the user make the change.
+
+**The MCP infra preset** (`config.json` `"mcp": {"infra": false}` turns it off). An unknown tool on a
+server named for cloud, clusters, IaC, a database or a code host asks keyless instead of being only
+logged. The match reads the server name alone, split into words: `aws`, `awslabs`, `kubernetes`,
+`k8s`, `kubectl`, `terraform`, `tfc`, `gcp`, `gcloud`, `azure`, `postgres`, `postgresql`, `mysql`,
+`mongodb`, `dynamodb`, `database`, `db`, `supabase`, `github`, `gitlab`, or any server name that
+contains `prod`. `aws-mcp`, `awslabs.eks-mcp-server` and `mcp-server-kubernetes` match; a tool
+called `update_database` on a `notion` server does not, and `dbt` is not `db`. Hermes and opencode
+give no server name, so the first word of the tool name stands for it.
 
 ## Protected files
 
@@ -1989,7 +2004,8 @@ command
 reflex setup --profile autonomous --dry-run     # the effective settings, nothing written
 reflex setup --profile autonomous               # engine jev (local without a TypeSafe key), enforce, allow on, System 2, queue, checkpoints
 reflex setup --profile autonomous --mode shadow # a flag beside a profile wins: log what it would do
-reflex setup --profile supervised               # back to a human for every ask
+reflex setup --profile supervised               # System 2 first when one is found, then a human in the agent
+reflex setup --profile supervised --judge off   # a human for every ask
 ```
 
 A profile is a preset written to `config.json` (`profile`, `judge`, `queue`, `checkpoints` beside
@@ -1997,6 +2013,72 @@ A profile is a preset written to `config.json` (`profile`, `judge`, `queue`, `ch
 override one session; `reflex run` turns all three off, since a person is at that terminal.
 `autonomy.mjs` holds the ladder, the queue, envelopes and checkpoints; `judge2.mjs` System 2;
 `setup/tool-gate/escalation.json` the always-human class and System 2's prompt.
+
+### Human-last: how Reflex decides without you
+
+A model decides, and you are the last rung, in both profiles. A command stops at the first rung
+that can answer it:
+
+1. **Rules.** Deterministic rules, tamper, protected paths and change freezes. Their ask or deny
+   always stands and always reaches a human.
+2. **Read-only and fast lane.** Known-safe commands pass.
+3. **The workspace allowlist** (keyless, `workspace.mjs`). Only these shapes, each one simple
+   command with plain relative paths and no flag but the ones shown:
+
+   | Shape | Condition |
+   |---|---|
+   | `mkdir -p <path>...`, `touch <path>...` | every path stays in the tree |
+   | `sed -i -e '<s>' <file>`, `sed -i '<s>' <file>` (GNU sed) | `<s>` is one `s/regex/replacement/flags`, flags from `g p i I m M` and digits, never `w` or `e`; `<file>` is tracked |
+   | `sed -i '' -e '<s>' <file>`, `sed -i '' '<s>' <file>` (BSD sed, macOS) | the same |
+   | `cp <file> <new>`, `mv <file> <new>` | `<file>` is tracked, `<new>` does not exist yet and its directory does |
+
+   "Stays in the tree" means: no leading `/` or `~`, no segment that starts with a dot (so no `..`,
+   `.git`, `.reflex`, `.github` or `.husky`, in any case), no symlink on the way, no nested
+   repository, and not a protected path (`protected.json`, the Reflex checkout, its logs and
+   settings). "Tracked" means a regular file git lists as a plain cached entry (`git ls-files -v`
+   tag `H`): not untracked, skip-worktree or assume-unchanged, so the checkpoint records it. No
+   operator, pipe, redirect, `$`, backtick, glob, brace, double quote or comment: `mkdir -p a && x`
+   is not on the list. GNU sed reads `-i ''` as a script and BSD sed reads `-i -e` as a backup
+   suffix, so each flavour gets only its own forms (the `sed` on PATH decides). In enforce mode the
+   gate takes a checkpoint (`refs/reflex/checkpoints/`) before the command runs, and the pass is
+   refused without one (a repository with no commit, a git error) and in production; the command
+   then goes on to the engine. It is allow-eligible (`allow on`; plan mode and an unsandboxed retry
+   still prompt). `config.json` `"workspace": false` or `REFLEX_WORKSPACE=off` turns it off. It never
+   detects what is dangerous, it only recognises these shapes: everything else is decided as before.
+4. **System 1.** Jev (or Laya) decides the confident majority. Keyless there is none, and what the
+   rules do not cover goes straight to System 2.
+5. **System 2.** What System 1 is unsure of (a would-be ask) goes to a stronger model before a
+   human: approve, deny or hand up. `reflex setup` picks one when it finds it: the `claude` CLI
+   (signed in, no extra key), else the Messages API with `ANTHROPIC_API_KEY`, within the daily budget.
+   This is the default in the supervised profile and with no profile, not only in the autonomous
+   one. `config.json` `"judge": "off"` (or `reflex setup --judge off`) opts out, and later setups keep
+   it off. The hook timeout is sized to System 2 at setup, which is why it is picked there and not
+   at run time.
+6. **Human.** The always-human class (`escalation.json`: production mutations, IAM, secrets writes,
+   destructive deletes, billing, the prod and exfil gates), a rule outcome, a change freeze, the
+   runaway guard, tainted egress, and what System 2 hands up or cannot answer (low confidence, an
+   error, a timeout, the budget or the breaker). In the supervised profile that is the agent's own
+   prompt; in the autonomous profile the approval queue. With `allow` off a System 2 approval is a
+   pass, so your agent's own permission rules still apply.
+
+`reflex status` prints the rungs, whether each is active and why, and the list of what still reaches
+a human (`human_last` in `reflex status --json`).
+
+**Measured** with `reflex replay` on the 300 most recent commands from the author's Claude Code and
+Codex sessions before the day of the change (nothing executed; aggregates only). Humans per 100
+commands:
+
+| Engine | Before (0.17.1, supervised) | After (human-last) |
+|---|---|---|
+| keyless (local rules) | 55.0 | 13.0 |
+| Jev | 15.0 | 13.3 |
+| Jev + System 2 (autonomous before, any profile after) | 13.3 | 13.3 |
+
+The System 2 figures count every case it is asked as settled; what it hands back reaches a human
+too, so they are a floor. The workspace allowlist passed none of the 300, and none of 29,401 Claude
+Code commands over 30 days: agents chain commands (`mkdir -p x && cd x`) or use absolute paths, and
+those stay with the engine. The allowlist is kept that strict on purpose; the first attempt, which
+passed whatever it could not find a problem with, leaked ten ways.
 
 ### Keyless autonomy
 

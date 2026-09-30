@@ -533,7 +533,10 @@ export function checkpoint(cwd) {
       copyFileSync(index, tmp);
       utimesSync(tmp, st.atime, Math.floor(st.mtimeMs / 1000));
     }
-    sha = git(cwd, ["stash", "create", "reflex checkpoint"], {GIT_INDEX_FILE: tmp}).stdout?.trim() ?? "";
+    // a failed stash create (an intent-to-add entry, a read-only .git) is no checkpoint, not a clean tree
+    const r = git(cwd, ["stash", "create", "reflex checkpoint"], {GIT_INDEX_FILE: tmp});
+    if (r.status !== 0) return null;
+    sha = r.stdout?.trim() ?? "";
   } finally { rmSync(tmpDir, {recursive: true, force: true}); }
   if (!sha) sha = git(cwd, ["rev-parse", "-q", "--verify", "HEAD"]).stdout?.trim() ?? "";
   if (!/^[0-9a-f]{40,64}$/.test(sha)) return null;   // an empty repository: nothing to go back to

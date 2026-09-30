@@ -33,6 +33,7 @@ try {
     [process.execPath, ["instructions.mjs", "--selfcheck"]], [process.execPath, ["install.mjs", "--selfcheck"]],
     [process.execPath, ["guard.mjs", "--selfcheck"]], [process.execPath, ["judge2.mjs", "--selfcheck"]], [process.execPath, ["autonomy.mjs", "--selfcheck"]], [process.execPath, ["freeze.mjs", "--selfcheck"]], [process.execPath, ["mcp.mjs", "--selfcheck"]],
     [process.execPath, ["context.mjs", "--selfcheck"]], [process.execPath, ["router/server.mjs", "--selfcheck"]], [process.execPath, ["infra.mjs", "--selfcheck"]],
+    [process.execPath, ["workspace.mjs", "--selfcheck"]],
     ["python3", ["routing/reflex_router.py", "--selfcheck"]],
   ]) {
     const r = spawnSync(program, args, {cwd: root, env, stdio: "inherit", timeout: 60000});
@@ -481,6 +482,18 @@ try {
     assert.match(success(cli2(["setup", "--profile", "autonomous", ...agents2, "--dry-run"], {env: {PATH: `${onlyCodex}:/usr/bin:/bin`}})), /System 2: none .*no claude CLI/);
     assert.ok(!existsSync(settings2) && !existsSync(join(home, "installed")), "an autonomous preview writes nothing");
     assert.match(success(cli2(["setup", "--profile", "autonomous", ...agents2, "--mode", "shadow", "--dry-run"])), /mode shadow/, "a flag beside a profile wins");
+    // human-last: supervised (and no profile) pick a System 2 too; judge "off" opts out and stays out
+    assert.match(success(cli2(["setup", "--profile", "supervised", ...agents2, "--dry-run"])), /profile supervised[\s\S]*System 2: cli claude .*picked because claude is installed/);
+    assert.match(success(cli2(["setup", ...agents2, "--dry-run"])), /System 2: cli claude/, "no profile: human-last by default");
+    assert.match(success(cli2(["setup", ...agents2, "--judge", "off", "--dry-run"])), /System 2: none .*\[off: judge "off"/);
+    mkdirSync(dirname(settings2), {recursive: true});
+    writeFileSync(settings2, JSON.stringify({judge: "off"}));
+    assert.match(success(cli2(["setup", "--profile", "supervised", ...agents2, "--dry-run"])), /System 2: none .*\[off: judge "off"/, "a saved off is kept");
+    assert.equal(JSON.parse(success(cli2(["status", "--json"]))).human_last.rungs.find(r => r.rung === "System 2").active, false);
+    assert.match(success(cli2(["status"])), /A human is still asked for: .*System 2 is off \(judge "off" in config.json\)/);
+    writeFileSync(settings2, JSON.stringify({judge: "on"}));
+    assert.match(cli2(["status", "--json"]).stdout, /judge must be \\"off\\" or the System 2 settings/, "an invalid judge setting is an error");
+    rmSync(settings2);
     for (const bad of [["--profile", "yolo"], ["--judge", "litellm"], ["--judge", "openai-compatible"], ["--judge-key-env", "sk-live-123"], ["--judge", "cli", "--judge-cli", "gemini"]])
       assert.notEqual(cli2(["setup", ...bad, "--profile", "autonomous", ...agents2]).status, 0, `refused: ${bad.join(" ")}`);
     success(cli2(["setup", "--profile", "autonomous", ...agents2]));
@@ -606,17 +619,27 @@ try {
     assert.equal(hook3("kubectl --context dev-cluster rollout restart deploy/api -n web"), undefined);
     assert.equal(hook3("curl -sS https://example.dev/data.json -o data.json"), undefined);
     assert.equal(calls3(), 3);
+    // the workspace allowlist: a tracked file copied to a new path is allowed with a checkpoint first, no
+    // System 2 call; the same shape onto an existing file, or anything glued on after it, is not a workspace pass
+    const cps3 = () => success(cli3(["checkpoints", "list", "--cwd", proj3])).trim().split("\n").length;
+    const cp0 = cps3();
+    assert.equal(hook3("cp a.txt a-copy.txt")?.permissionDecision, "allow");
+    assert.equal(calls3(), 3, "the workspace allowlist settled it without System 2");
+    assert.ok(cps3() >= cp0, "a checkpoint is in place");
+    writeFileSync(join(proj3, "b.txt"), "untracked\n");
+    for (const c of ["cp a.txt b.txt", "cp a.txt a2.txt && echo copied", "mv b.txt c.txt"]) hook3(c);
+    assert.equal(calls3(), 6, "not the allowlist: each went on to System 2");
     // the always-human class, a rule deny and tamper never reach System 2
     const iam3 = hook3("aws iam create-user --user-name keyless-bot");
     assert.ok(iam3.permissionDecision === "deny" && /parked in the approval queue/.test(iam3.permissionDecisionReason), JSON.stringify(iam3));
     assert.match(hook3("git push --force origin main").permissionDecisionReason, /force push/);
     assert.match(hook3("reflex queue approve q-0123456789").permissionDecisionReason, /parked in the approval queue/);
-    assert.equal(calls3(), 3, "System 2 is never asked about the always-human class, a rule or tamper");
+    assert.equal(calls3(), 6, "System 2 is never asked about the always-human class, a rule or tamper");
     // never a TypeSafe call: no Jev answer, no Jev fallback anywhere in the trace
     const trace3 = readFileSync(join(data3, "trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
     assert.ok(trace3.length >= 6 && trace3.every(r => !["jev", "fallback", "cache"].includes(r.source) && !r.error), JSON.stringify(trace3.map(r => r.source)));
     st3 = JSON.parse(success(cli3(["status", "--json"])));
-    assert.ok(st3.engine === "local" && st3.judge.budget.calls_used === 3 && st3.queue.pending >= 2 && !st3.judge.breaker.open, JSON.stringify(st3));
+    assert.ok(st3.engine === "local" && st3.judge.budget.calls_used === 6 && st3.queue.pending >= 2 && !st3.judge.breaker.open, JSON.stringify(st3));
     // a key later: the same profile moves to Jev
     assert.match(success(cli3(["setup", "--profile", "autonomous", ...agents2, "--dry-run"], {env: Object.fromEntries([["TYPESAFE_API_KEY", ["test", "key", process.pid].join("-")]])})), /engine jev/);
     console.log("keyless autonomous onboarding checks OK");
@@ -1502,10 +1525,17 @@ try {
       assert.ok(v === "ask" && /destructive MCP tool call/.test(why), `${agent}: destructive asks: ${v} ${why}`);
       assert.equal(send(name("describe_stacks"), {StackName: "prod-api"})[0], "pass", `${agent}: a read passes`);
       const before = traced().length;
-      assert.equal(send(name("start_build"), {project: "web"})[0], "pass", `${agent}: an unknown tool passes in shadow`);
+      // aws is an infrastructure server: an unknown tool asks keyless under the MCP infra preset (mcp.infra), and is logged
+      assert.equal(send(name("start_build"), {project: "web"})[0], "ask", `${agent}: an unknown infra tool asks (mcp.infra)`);
       const row = traced().slice(before).find(r => r.rule_id === "mcp-unknown");
-      assert.ok(row && row.decision === "pass" && row.emitted === null && /start_build/.test(row.state.call.command), `${agent}: the unknown tool is logged: ${JSON.stringify(traced().slice(before))}`);
+      assert.ok(row && row.decision === "ask" && /start_build/.test(row.state.call.command), `${agent}: the unknown infra tool is logged as an ask: ${JSON.stringify(traced().slice(before))}`);
     }
+    // an unknown tool on a server that is not infrastructure stays log-only (a pass), even with db or github in the tool name
+    const before2 = traced().length;
+    assert.equal(decide("claude")("mcp__linear__start_thing", {})[0], "pass", "a non-infra unknown tool logs as a pass");
+    assert.equal(claude("mcp__notion__update_database", {database_id: "x"})[0], "pass", "the infra preset reads the server name, not the tool name");
+    const row2 = traced().slice(before2).find(r => r.rule_id === "mcp-unknown");
+    assert.ok(row2 && row2.decision === "pass" && row2.emitted === null, `a non-infra unknown tool is logged: ${JSON.stringify(traced().slice(before2))}`);
     // a shell command in an argument goes through the shell rules; SQL passes only when SELECT only
     assert.equal(claude("mcp__aws-mcp__call_aws", {cli_command: "aws ec2 terminate-instances --instance-ids i-1 --profile prod"})[0], "deny", "call_aws: the shell rules see the command");
     assert.equal(claude("mcp__aws-mcp__call_aws", {cli_command: "aws s3 ls"})[0], "pass", "call_aws: a read-only command passes");
@@ -1558,6 +1588,10 @@ try {
     assert.equal(claude("Write", {file_path: join(repo, "notes/a.md"), content: "x"})[0], "ask", "config.json protected adds a glob");
     setConfig({mcp: {unknown: "allow"}});
     assert.ok(/mcp takes only/.test(claude("mcp__ci__start_build", {})[1]), "an invalid mcp setting asks");
+    setConfig({mcp: {infra: false}});
+    assert.equal(claude("mcp__aws__start_build", {project: "web"})[0], "pass", "mcp.infra false: an unknown infra tool is log-only again");
+    setConfig({mcp: {infra: "yes"}});
+    assert.ok(/mcp takes only/.test(claude("mcp__aws__start_build", {})[1]), "mcp.infra must be a boolean");
     setConfig({});
     // plugin mode (Claude Code): the same asks and denies, never an allow, never a rewritten input
     for (const [tool, input, want] of [["mcp__aws__delete_stack", {StackName: "dev"}, "ask"], ["mcp__aws__delete_stack", {StackName: "prod"}, "deny"],

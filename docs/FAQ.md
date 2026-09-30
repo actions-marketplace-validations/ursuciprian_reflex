@@ -128,7 +128,8 @@ server name points at production, by the same markers the shell rules use and a 
 `prod` list. A shell command passed to an MCP tool, such as the AWS MCP server's `call_aws`, goes
 through the shell rules. Read-like tools (get, list, describe, search, a SELECT-only query) pass
 without a prompt. An unknown tool is logged keyless and judged by Jev with a key, or asks with
-`"mcp": {"unknown": "ask"}`. On 30 days of real Claude Code sessions, none of 475 MCP calls asked.
+`"mcp": {"unknown": "ask"}`; keyless, an unknown tool on an infrastructure server (aws, kubernetes,
+terraform, a database, github and the like, or a server name containing prod) asks. On 30 days of real Claude Code sessions, none of 475 MCP calls asked.
 File tools are gated too: a write to `.github/workflows/`, production Terraform, agent settings or
 shell startup files asks. See [Gate MCP tool calls](GUIDE.md#gate-mcp-tool-calls) and
 [Protected files](GUIDE.md#protected-files).
@@ -143,6 +144,23 @@ allowlist keeps working. Claude Code's own rules cover file edits, web fetches a
 Reflex does not gate.
 
 See: [compared with other AI coding agent guardrails](../README.md#compared-with-other-ai-coding-agent-guardrails).
+
+## How do I reduce permission prompts without giving up prod safety?
+
+Reflex is human-last: a model decides, and you are the last rung. When System 1 (Jev, or the local
+rules keyless) is unsure, System 2 decides before you are asked. `reflex setup` turns System 2 on
+when it finds the `claude` CLI or `ANTHROPIC_API_KEY`, in the supervised profile too. You are still
+asked for the always-human class (production mutations, IAM, secrets writes, destructive deletes,
+billing), a rule's ask, a change freeze, the runaway guard and whatever System 2 hands up.
+`reflex status` shows which rungs are active and why a human would still be asked. `"judge": "off"`
+in `config.json` opts out.
+
+On 300 recent commands from the author's sessions, humans per 100 fell from 55.0 to 13.0 keyless and
+from 15.0 to 13.3 with Jev. The keyless workspace allowlist (`mkdir -p`, `touch`, `sed -i` on a
+tracked file, `cp` or `mv` to a new path) is strict on purpose and passed none of them: agents chain
+commands or use absolute paths, and those go to the engine. `reflex learn` and `reflex suggest` add
+fast-lane entries from what you already approve. See
+[Human-last](GUIDE.md#human-last-how-reflex-decides-without-you).
 
 ## Can I use Reflex with --dangerously-skip-permissions?
 

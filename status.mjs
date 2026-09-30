@@ -337,8 +337,28 @@ if (!fastlane.error) try {
   if (doctor && stale) warnings.push(`${stale} learned fast-lane entr${stale === 1 ? "y has" : "ies have"} gone unused for ${STALE_DAYS} days: reflex learn --list shows them, reflex learn --prune removes them.`);
 } catch { /* a status line must not fail on it */ }
 // @reflex:setup-only end
+// Human-last: which rungs decide before a human, and what still reaches one.
+const s2why = !CONFIG.judge.enabled ? (USER_CONFIG.judge === "off" ? 'off (judge "off" in config.json)' : "off (no System 2 found at setup: reflex setup picks the claude CLI or ANTHROPIC_API_KEY)")
+  : CONFIG.mode !== "enforce" ? `logged only (${CONFIG.mode} mode)` : judge.reachable === false ? "NOT reachable" : judge.budget && (judge.budget.calls_left <= 0 || judge.budget.usd_left <= 0) ? "daily budget used up"
+  : judge.breaker?.open ? "paused by the breaker" : null;
+const human_last = {
+  rungs: [
+    {rung: "rules", active: true, why: "deterministic rules, tamper, protected paths and change freezes: their ask or deny always stands"},
+    {rung: "read-only and fast lane", active: true, why: "known-safe commands pass"},
+    {rung: "workspace allowlist", active: CONFIG.workspace, why: CONFIG.workspace ? "mkdir -p, touch, sed -i s/// on a tracked file, cp or mv of a tracked file to a new path: pass keyless with a checkpoint first" : "off (workspace false or REFLEX_WORKSPACE=off)"},
+    {rung: "System 1", active: CONFIG.engine !== "local", why: CONFIG.engine === "local" ? "keyless: no Jev, what the rules do not cover goes straight to System 2" : `${CONFIG.engine} decides the confident majority`},
+    {rung: "System 2", active: !s2why, why: s2why ?? `decides what System 1 is unsure of, before a human (${CONFIG.judge.backend === "cli" ? `cli ${CONFIG.judge.cli}` : CONFIG.judge.backend})`},
+    {rung: "human", active: true, why: CONFIG.queue.enabled ? "the approval queue (reflex queue)" : "the agent's own prompt"}],
+  human_when: [
+    "a rule's ask or deny, tamper, a protected path or a change freeze",
+    "the always-human class (escalation.json): production mutations, IAM, secrets writes, destructive deletes, billing, the prod and exfil gates",
+    ...(CONFIG.runaway.enabled ? ["the runaway guard stopped the session (reflex runaway reset lifts it)"] : []),
+    "network egress in a session that read a suspected prompt injection",
+    ...(CONFIG.engine === "local" && CONFIG.mcp.infra ? ["an unknown tool on an infrastructure MCP server (mcp.infra)"] : []),
+    s2why ? `anything System 1 is unsure of: System 2 is ${s2why}` : "what System 2 hands up: low confidence, an error, a timeout",
+    ...(CONFIG.allow !== "on" || CONFIG.mode !== "enforce" ? [`an approval is a pass, not an allow (allow ${CONFIG.allow}, ${CONFIG.mode} mode): the agent's own permission prompt may still ask`] : [])]};
 const result = {profile: CONFIG.profile, engine: CONFIG.engine, system1: CONFIG.engine === "jev" ? `Jev via ${provider.name} (${provider.host}) + policy` : laya ? `Laya ${CONFIG.model} (local, ${laya.ok ? "running" : "DOWN"}) + policy` : keyless ? "local rules (keyless: what they do not cover goes to System 2)" : "local rules", mode: CONFIG.mode, guard: guardMode(), allow: CONFIG.allow, config: USER_CONFIG_FILE,
-  policy, provider, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, runaway, hook_errors, learned, team_policy, freeze, notify, infra, agents, errors, warnings};
+  policy, provider, api_key: key, claude_hooks: claudeHooks, plugin, codex_hooks, codex_plugin, opencode_plugin, judge, queue, checkpoints: CONFIG.checkpoints, workspace: CONFIG.workspace, mcp: CONFIG.mcp, human_last, runaway, hook_errors, learned, team_policy, freeze, notify, infra, agents, errors, warnings};
 if (json) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`Reflex: ${CONFIG.profile} profile · ${CONFIG.engine} engine · ${CONFIG.mode} mode · guard ${guardMode()} · allow ${CONFIG.allow}`);
@@ -347,6 +367,9 @@ else {
     `${judge.reachable ? (cliJudge ? "found" : `reachable (HTTP ${judge.status})`) : judge.reachable === false ? "NOT reachable" : "not checked"}` +
     (judge.budget ? `; budget left today ${judge.budget.calls_left} calls, $${judge.budget.usd_left}` : "") : "off"}`);
   console.log(`Queue: ${queue.enabled ? "on" : "off"}; ${queue.pending} pending of ${queue.total} · checkpoints ${CONFIG.checkpoints ? "on" : "off"}`);
+  console.log(`Human-last: ${human_last.rungs.map(x => `${x.rung} ${x.active ? "on" : "off"}`).join(" > ")}`);
+  for (const x of human_last.rungs) console.log(`  ${x.rung}: ${x.why}`);
+  console.log(`A human is still asked for: ${human_last.human_when.join("; ")}`);
   console.log(`Team policy: ${team_policy ? `${team_policy.file}; ${team_policy.trust}${team_policy.valid ? "" : ", INVALID"}; sha256 ${team_policy.sha256?.slice(0, 12) ?? "unreadable"}; ` +
     `rules ${team_policy.rules}, always-human ${team_policy.always_human}, prod markers ${team_policy.prod_markers}, mode floor ${team_policy.mode_floor ?? "none"}, ` +
     `freezes ${team_policy.freezes}, fast lane ${team_policy.fastlane_entries} (${team_policy.fastlane_active ? "active" : "inactive"}), notify ${team_policy.notify}` : "none in this directory"}`);

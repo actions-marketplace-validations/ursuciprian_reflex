@@ -160,12 +160,19 @@ export const CONFIG = {
   notify: notifyTarget(USER_CONFIG.notify, "config.json notify"),
   // MCP tool calls the rules do not cover (tools.mjs): "shadow" logs them (Jev judges them when
   // enforcing with a key), "ask" asks in every mode. config.json only.
-  mcp: {unknown: USER_CONFIG.mcp?.unknown ?? "shadow"},
+  // infra (default on): an unknown tool on a cloud, cluster, IaC or database server (gate.mjs mcpInfraServer)
+  // goes to the engine when there is one and asks keyless, instead of only being logged.
+  mcp: {unknown: USER_CONFIG.mcp?.unknown ?? "shadow", infra: USER_CONFIG.mcp?.infra ?? true},
+  // The keyless workspace allowlist (workspace.mjs): a few exact in-tree command shapes pass with a
+  // checkpoint first. On unless REFLEX_WORKSPACE=off or config.json "workspace": false.
+  workspace: onOff(ENV.REFLEX_WORKSPACE, USER_CONFIG.workspace ?? true),
 };
 // The one host the provider's key may go to (authorization()): where its endpoint was configured.
 CONFIG.keyHost = hostOf(CONFIG.api);
-/** Saved judge settings with the backend's (and, keyless, the engine's) defaults filled in; `enabled` unless the backend is none or REFLEX_JUDGE=off. */
+/** Saved judge settings with the backend's (and, keyless, the engine's) defaults filled in; `enabled` unless the backend is none or REFLEX_JUDGE=off.
+ * config.json "judge": "off" is the opt-out from human-last: no System 2, and `reflex setup` does not pick one again. */
 export function judgeSettings(saved = {}, env, engine = "jev") {
+  if (saved === "off") saved = {backend: "none"};
   const backend = saved?.backend ?? JUDGE_DEFAULTS.backend, s = saved ?? {}, k = engine === "local" ? KEYLESS_JUDGE_DEFAULTS : {};
   return {...JUDGE_DEFAULTS, ...BACKEND_DEFAULTS[backend], ...s, backend, budget: {...JUDGE_DEFAULTS.budget, ...k.budget, ...s.budget},
           price: {...JUDGE_DEFAULTS.price, ...s.price}, breaker: {...JUDGE_DEFAULTS.breaker, ...k.breaker, ...s.breaker},
@@ -183,13 +190,15 @@ export function configurationError() {
     : CONFIG.engine === "jev" && PROVIDER.error ? PROVIDER.error
     : !["off", "shadow", "enforce"].includes(CONFIG.mode) ? "mode must be off, shadow or enforce"
     : !["off", "shadow", "on"].includes(CONFIG.allow) ? "allow must be off, shadow or on"
-    : ![undefined, "simple", "legacy"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? "readonly must be simple or legacy" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra) ?? toolError());
+    : ![undefined, "simple", "legacy"].includes(ENV.REFLEX_READONLY ?? USER_CONFIG.readonly) ? "readonly must be simple or legacy"
+    : typeof CONFIG.workspace !== "boolean" || ![undefined, true, false].includes(USER_CONFIG.workspace) ? "workspace must be on or off (config.json true or false)" : layaError() ?? ladderError() ?? infraError(USER_CONFIG.infra) ?? toolError());
 }
 // Invalid tool gate settings ask, like any invalid configuration.
 function toolError() {
   const m = USER_CONFIG.mcp, p = USER_CONFIG.protected;
-  if (m !== undefined && (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).some(k => k !== "unknown") || !["shadow", "ask", undefined].includes(m.unknown)))
-    return 'mcp takes only "unknown": "shadow" or "ask"';
+  if (m !== undefined && (!m || typeof m !== "object" || Array.isArray(m) || Object.keys(m).some(k => !["unknown", "infra"].includes(k)) ||
+      !["shadow", "ask", undefined].includes(m.unknown) || (m.infra !== undefined && typeof m.infra !== "boolean")))
+    return 'mcp takes only "unknown": "shadow" | "ask" and "infra": true | false';
   if (p !== undefined && (!Array.isArray(p) || p.some(g => typeof g !== "string" || !g.trim() || g.length > 200)))
     return "protected must be a list of globs";
   return null;
@@ -210,6 +219,8 @@ function layaError() {
 // Invalid ladder settings ask, like any invalid configuration: a typo must not turn System 2 into an approver.
 function ladderError() {
   const j = CONFIG.judge, q = CONFIG.queue, num = (v, lo, hi = Infinity) => typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi;
+  const sj = USER_CONFIG.judge;
+  if (sj !== undefined && sj !== "off" && (!sj || typeof sj !== "object" || Array.isArray(sj))) return 'judge must be "off" or the System 2 settings';
   for (const [k, v] of [["judge", j.enabled], ["queue", q.enabled], ["checkpoints", CONFIG.checkpoints], ["runaway", CONFIG.runaway.enabled]])
     if (typeof v !== "boolean") return `${k} must be on or off`;
   const r = CONFIG.runaway;

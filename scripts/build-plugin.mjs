@@ -29,7 +29,7 @@ const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const MODULES = ["hook.mjs", "failsafe.mjs", "plugin.mjs", "gate.mjs", "config.mjs", "shell.mjs", "scripts.mjs", "readonly.mjs", "rules.mjs",
   "tamper.mjs", "jev.mjs", "guard.mjs", "instructions.mjs", "policy.mjs", "providers.mjs",
   "autonomy.mjs", "fastlane.mjs", "team.mjs", "infra.mjs", "freeze.mjs", "notify.mjs", "context.mjs", "judge2.mjs", "laya.mjs",
-  "mcp.mjs", "audit.mjs", "status.mjs", "replay.mjs", "report.mjs", "suggest.mjs", "tools.mjs"];
+  "mcp.mjs", "audit.mjs", "status.mjs", "replay.mjs", "report.mjs", "suggest.mjs", "tools.mjs", "workspace.mjs"];
 // The setup files read at runtime; the golden sets, fixtures and plan fixtures stay out.
 const DATA = ["setup/redact.json", ...["rules", "policy", "questions", "escalation", "subgoals", "mcp", "protected"].map(f => `setup/tool-gate/${f}.json`),
   ...["policy", "detectors", "questions"].map(f => `setup/injection/${f}.json`)];
