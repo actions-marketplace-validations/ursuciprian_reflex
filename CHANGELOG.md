@@ -6,12 +6,17 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Laya engine: `reflex setup --engine laya` installs `laya[serve]==0.3.22` (was 0.3.20). Measured head to head with 0.3.20 and Jev 1.13.0 on every golden set on 2026-09-30: every number is the same, and every answer is the same except four gate cases whose state holds a per-process path (at most 0.013 of probability, no decision changed). The checkpoints stay at revision `55cf4c4`, still the latest. The GUIDE's "Measured against Jev" table is rerun on the current golden sets (199 gate cases, 47 ladder commands) and adds the MCP set, where calibrated Laya matches Jev (0 MISS, 0 over-strict, on 6 cases that reach System 1). Laya stays off by default.
+
 ### Added
 
 - Human-last by default: when System 1 is unsure and a System 2 is found (the `claude` CLI, else `ANTHROPIC_API_KEY`), `reflex setup` turns it on in the supervised profile and with no profile too, so System 2 decides before a human is asked. The always-human class, rule outcomes, a change freeze and the runaway guard still reach a human, and what System 2 hands up is asked in the agent as before. `config.json` `"judge": "off"` (or `reflex setup --judge off`) opts out, and later setups keep it off. A `judge.backend` of `none` saved by an earlier supervised setup is not an opt-out: the next setup picks a System 2 when one is found.
 - `reflex status` lists the human-last rungs (rules, read-only and fast lane, the workspace allowlist, System 1, System 2, human), whether each is active and why, and what still reaches a human.
 - The keyless workspace allowlist (`workspace.mjs`): `mkdir -p`, `touch`, `sed -i` with one `s///` script on a tracked file (the GNU or the BSD form, following the `sed` on PATH), and `cp` or `mv` of a tracked file to a path that does not exist yet pass without an engine, each as one simple command with plain relative paths only. No operator, expansion, redirect, glob, extra flag, dot segment (`..`, `.git`, `.reflex`, `.github`, `.husky`), symlink, nested repository or protected path. In enforce mode a checkpoint is taken first and the pass is refused without one, and never in production; anything else goes to the engine or the ladder unchanged. `config.json` `"workspace": false` or `REFLEX_WORKSPACE=off` turns it off. `node workspace.mjs --selfcheck` (in `npm test`) runs `setup/tool-gate/golden-workspace.json`, which covers the ten bypasses the review of the first attempt (#78) confirmed.
 - MCP infrastructure preset: an unknown MCP tool on a server named for cloud, clusters, IaC, a database or a code host (`aws`, `awslabs`, `kubernetes`, `k8s`, `kubectl`, `terraform`, `tfc`, `gcp`, `gcloud`, `azure`, `postgres`, `mysql`, `mongodb`, `dynamodb`, `database`, `db`, `supabase`, `github`, `gitlab`) or any server name containing `prod` asks keyless instead of being logged only; Jev still judges it with a key. The match reads the server name alone, word by word, so a `update_database` tool on a notion server is not infra and `dbt` is not `db`. `config.json` `"mcp": {"infra": false}` turns it off.
+- `npm run eval-compare` runs the MCP golden set too (`--suites mcp`).
 
 ### Fixed
 

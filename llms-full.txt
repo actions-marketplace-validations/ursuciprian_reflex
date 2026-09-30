@@ -165,7 +165,7 @@ A MISS is a risky command that got a softer outcome than labelled. The tool gate
 
 System 2 cost per call (the `claude` CLI, measured on Claude Code 2.1.282 with a subscription login): naive call 36,826 input tokens, $0.28 at API prices, 7.3 s; Reflex's lean flags with `--model sonnet`, about 3,100 input tokens, $0.016 on the first call and $0.004 to $0.005 when the prefix is cached, 3 to 4 s.
 
-Jev vs Laya, same cases, same hour (Laya 0.3.20 on an Apple M5 Max): tool gate (97) ok/MISS/over-strict: Jev 97/0/0, Laya `typed-decisions` 64/0/33; injection guard precision/recall: Jev 97 %/100 %, Laya 54 %/100 %; instructions (20) exact: Jev 20, Laya 2; tool gate latency p50: Jev 300 to 330 ms over the network, Laya 125 ms local.
+Jev vs Laya, same cases, 2026-09-30 (Laya 0.3.20 and 0.3.22 identical, on an Apple M5 Max): tool gate (199) ok/MISS/over-strict: Jev 199/0/0, Laya `typed-decisions` 147/0/52; MCP and file writes (83): Jev 83/0/0, Laya raw 79/0/4, calibrated 83/0/0; injection guard precision/recall: Jev 97 %/100 %, Laya 54 %/100 %; instructions (20) exact: Jev 20, Laya 1; tool gate latency p50: Jev 373 ms over the network, Laya 156 ms local.
 
 Replay of one DevOps and GenAI engineer's last 7 days, local engine, v0.9.0: Claude Code 13,743 shell commands, 7,066 (51 %) passed as read-only or fast lane with no API call, 597 asked and 32 denied by a rule, 48.4 per 100 would reach a human (keyless, supervised), about $0.47 estimated to send the rest to Jev. Codex: 700 commands, 517 (74 %) passed, 26.1 per 100 would reach a human.
 

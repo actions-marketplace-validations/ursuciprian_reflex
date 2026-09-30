@@ -30,6 +30,7 @@ const SUITES = {
   router: [["node", "router/server.mjs", "--eval"], s => s.match(/ok (\d+) · held (\d+).*unsafe (\d+)/)?.slice(1), ["ok", "held", "unsafe"]],
   context: [["node", "context.mjs", "--eval-context"], s => s.match(/must-keep recall (\d+)\/\d+.*hidden (\d+) %/)?.slice(1), ["kept", "hidden%"]],
 };
+SUITES.mcp = [["node", "eval.mjs", "--golden", "setup/tool-gate/golden-mcp.json"], ...SUITES.gate.slice(1)];   // MCP tool calls, scored as the gate
 const suites = arg("--suites", Object.keys(SUITES).join(",")).split(",");
 
 function env(engine, data) {
