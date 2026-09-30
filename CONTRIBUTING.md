@@ -101,6 +101,7 @@ When you change rules, questions, policy or redaction:
 | `readonly.mjs` | Read-only detection: `readOnlyLegacy`, `readOnlySimple`, their tables and flag allowlists, and `pipelines()` |
 | `rules.mjs` | The setup files (`load`), `checkRules`, `rulesHit`, the fast lane, and the deny rules on a command too large to check (`largeDeny`) |
 | `tamper.mjs` | What a command changes of Reflex itself: the cd tracking (`cdDirs`, `writesView`), the checkout, data and config directories in any spelling (`touchesOwn`), a nested checkout (`staysNested`), the files it protects inside the checkout, read from the checkout (`namesOwnFile`, `OWN_DIRS`; the gate selfcheck fails on a file it does not cover), the reflex CLI forms that change Reflex, the plugin's own commands |
+| `workspace.mjs` | The keyless workspace allowlist (`workspacePass`): the few exact in-tree shapes that pass without an engine, the checkpoint the gate takes first (`decide`), and its `--selfcheck` over `setup/tool-gate/golden-workspace.json` |
 | `jev.mjs` | Jev: the call's context, the provider's key and where it may go, `ask`, the answer cache and `jevJudge` |
 | `selfcheck.mjs` | `node gate.mjs --selfcheck`: the gate's offline self-check (not in the plugin bundle) |
 | `autonomy.mjs` | The escalation ladder (autonomous profile): the always-human class, System 2 escalation, the verdict cache key and the breaker, the approval queue, task envelopes, checkpoints, and `reflex queue` / `envelope` / `checkpoints` |

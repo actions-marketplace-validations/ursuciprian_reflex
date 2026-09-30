@@ -112,13 +112,15 @@ function ask(question, secret) {
   } catch { return ""; } finally { closeSync(fd); }
 }
 
-// Profiles are presets written to config.json; a flag given next to one still wins. supervised is
-// the behaviour Reflex always had: a human answers every ask in the agent. autonomous puts System 2
-// and an async human queue in front of the human (autonomy.mjs, docs/GUIDE.md#autonomous-agents).
+// Profiles are presets written to config.json; a flag given next to one still wins. Human-last in
+// both: when System 1 is unsure and a System 2 is found (judge "auto", detectJudge), System 2 decides
+// before a human is asked; config.json "judge": "off" (or --judge off) opts out and setup keeps it off.
+// supervised: what System 2 hands up is asked in the agent. autonomous adds an async human queue
+// and checkpoints (autonomy.mjs, docs/GUIDE.md#autonomous-agents).
 // Its engine is Jev when a TypeSafe key is there, else local (keyless): the rules, the read-only list
 // and the fast lane decide what they cover and System 2 judges the rest.
 const PROFILES = {
-  supervised: {judge: "none", queue: false, checkpoints: false},
+  supervised: {judge: "auto", queue: false, checkpoints: false},
   autonomous: {engine: "auto", mode: "enforce", allow: "on", judge: "auto", queue: true, checkpoints: true},
 };
 // A TypeSafe key where the hooks will look: the environment, or the Keychain item on macOS.
@@ -172,9 +174,11 @@ function detectJudge() {
 }
 // The ladder settings setup writes, from flags, else the profile, else what is saved.
 function ladderSettings(preset) {
-  const saved = USER_CONFIG, j = saved.judge ?? {};
-  const chosen = opt(args, "--judge");
-  if (chosen !== undefined && !JUDGE_BACKENDS.includes(chosen)) die(`--judge must be one of ${JUDGE_BACKENDS.join(", ")}`);
+  const saved = USER_CONFIG, off = saved.judge === "off", j = off ? {} : saved.judge ?? {};
+  const chosen = opt(args, "--judge") === "off" ? "none" : opt(args, "--judge");
+  if (chosen !== undefined && !JUDGE_BACKENDS.includes(chosen)) die(`--judge must be one of ${JUDGE_BACKENDS.join(", ")} or off`);
+  // --judge none|off, or a saved "off": no System 2, and later setups do not pick one again
+  if (chosen === "none" || (off && chosen === undefined && !opt(args, "--judge-cli"))) return {...ladderRest(preset, saved), judge: "off", detected: false};
   let judge = {...j}, detected = false;
   if (chosen === "cli" || (chosen === undefined && opt(args, "--judge-cli"))) {
     const cli = opt(args, "--judge-cli", j.backend === "cli" ? j.cli : onPath("claude") ? "claude" : "codex");
@@ -183,8 +187,9 @@ function ladderSettings(preset) {
     if (!command) die(`--judge cli: ${cli} is not on PATH`);
     judge = {...judge, backend: "cli", cli, command};
   } else if (chosen) judge = {...judge, backend: chosen};
-  else if (preset.judge === "none") judge = {...judge, backend: "none"};
-  else if (preset.judge === "auto" && (!j.backend || j.backend === "none")) { judge = {...judge, ...detectJudge()}; detected = true; }
+  // the default (no profile too): pick a System 2 when none is saved. A backend "none" saved by an
+  // earlier supervised setup is not an opt-out; "off" is.
+  else if (!j.backend || j.backend === "none") { judge = {...judge, ...detectJudge()}; detected = true; }
   for (const [flag, key] of [["--judge-url", "url"], ["--judge-model", "model"], ["--judge-key-env", "key_env"], ["--judge-keychain", "keychain"]]) {
     const v = opt(args, flag);
     if (v !== undefined) judge[key] = v;
@@ -195,11 +200,14 @@ function ladderSettings(preset) {
   const timeout = number("--judge-timeout"), calls = number("--judge-budget-calls"), usd = number("--judge-budget-usd");
   if (timeout !== undefined) judge.timeout_ms = timeout * 1000;
   if (calls !== undefined || usd !== undefined) judge.budget = {...j.budget, ...(calls !== undefined && {calls}), ...(usd !== undefined && {usd})};
+  return {...ladderRest(preset, saved), judge, detected};
+}
+function ladderRest(preset, saved) {
   const q = saved.queue ?? {}, queue = {...q, enabled: onOff("--queue", preset.queue ?? q.enabled ?? false)};
   const ttl = number("--queue-ttl");
   if (ttl !== undefined) queue.ttl_hours = ttl;
   if (opt(args, "--notify") !== undefined) queue.notify = opt(args, "--notify") || null;
-  return {judge, queue, checkpoints: onOff("--checkpoints", preset.checkpoints ?? saved.checkpoints ?? false), detected};
+  return {queue, checkpoints: onOff("--checkpoints", preset.checkpoints ?? saved.checkpoints ?? false)};
 }
 function describe(s) {
   const j = judgeSettings(s.judge, undefined, s.engine), q = {...QUEUE_DEFAULTS, ...s.queue};
@@ -207,7 +215,8 @@ function describe(s) {
     : j.key_env ? `$${j.key_env} (not set)` : "none (a keyless endpoint)";
   const where = j.backend === "cli" ? `cli ${j.cli} (${j.command ?? "not found"}), model ${j.model ?? "the CLI's default (pin one with --judge-model)"}, no API key`
     : `${j.backend} ${j.url}, model ${j.model}, key ${key}`;
-  const picked = !s.detected ? "" : j.backend === "cli" ? " [picked because claude is installed; --judge anthropic|openai-compatible|none to change]"
+  const picked = s.judge === "off" ? " [off: judge \"off\" in config.json; --judge cli|anthropic|openai-compatible to turn it on]"
+    : !s.detected ? "" : j.backend === "cli" ? " [picked because claude is installed; --judge anthropic|openai-compatible|off to change]"
     : j.backend === "anthropic" ? " [picked because ANTHROPIC_API_KEY is set; --judge to change]" : " [no claude CLI and no ANTHROPIC_API_KEY; --judge to pick one]";
   const keyless = !s.keyless ? [] : [`engine local: no TypeSafe key found ($TYPESAFE_API_KEY or Keychain item ${s.keychain}), so this is keyless autonomy: ` +
     (j.enabled ? "commands the local rules do not cover go to System 2 instead of Jev; System 2 alone allows only small commands (docs/GUIDE.md#keyless-autonomy)"

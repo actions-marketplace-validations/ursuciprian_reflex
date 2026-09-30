@@ -12,7 +12,15 @@ All notable changes to Reflex are documented here. The format follows
 
 ### Added
 
+- Human-last by default: when System 1 is unsure and a System 2 is found (the `claude` CLI, else `ANTHROPIC_API_KEY`), `reflex setup` turns it on in the supervised profile and with no profile too, so System 2 decides before a human is asked. The always-human class, rule outcomes, a change freeze and the runaway guard still reach a human, and what System 2 hands up is asked in the agent as before. `config.json` `"judge": "off"` (or `reflex setup --judge off`) opts out, and later setups keep it off. A `judge.backend` of `none` saved by an earlier supervised setup is not an opt-out: the next setup picks a System 2 when one is found.
+- `reflex status` lists the human-last rungs (rules, read-only and fast lane, the workspace allowlist, System 1, System 2, human), whether each is active and why, and what still reaches a human.
+- The keyless workspace allowlist (`workspace.mjs`): `mkdir -p`, `touch`, `sed -i` with one `s///` script on a tracked file (the GNU or the BSD form, following the `sed` on PATH), and `cp` or `mv` of a tracked file to a path that does not exist yet pass without an engine, each as one simple command with plain relative paths only. No operator, expansion, redirect, glob, extra flag, dot segment (`..`, `.git`, `.reflex`, `.github`, `.husky`), symlink, nested repository or protected path. In enforce mode a checkpoint is taken first and the pass is refused without one, and never in production; anything else goes to the engine or the ladder unchanged. `config.json` `"workspace": false` or `REFLEX_WORKSPACE=off` turns it off. `node workspace.mjs --selfcheck` (in `npm test`) runs `setup/tool-gate/golden-workspace.json`, which covers the ten bypasses the review of the first attempt (#78) confirmed.
+- MCP infrastructure preset: an unknown MCP tool on a server named for cloud, clusters, IaC, a database or a code host (`aws`, `awslabs`, `kubernetes`, `k8s`, `kubectl`, `terraform`, `tfc`, `gcp`, `gcloud`, `azure`, `postgres`, `mysql`, `mongodb`, `dynamodb`, `database`, `db`, `supabase`, `github`, `gitlab`) or any server name containing `prod` asks keyless instead of being logged only; Jev still judges it with a key. The match reads the server name alone, word by word, so a `update_database` tool on a notion server is not infra and `dbt` is not `db`. `config.json` `"mcp": {"infra": false}` turns it off.
 - `npm run eval-compare` runs the MCP golden set too (`--suites mcp`).
+
+### Fixed
+
+- A checkpoint whose `git stash create` failed (an intent-to-add entry, a read-only `.git`) was recorded as HEAD, so `reflex checkpoints restore` could not bring back uncommitted changes. It is now no checkpoint at all.
 
 ## [0.17.1] - 2026-09-30
 
