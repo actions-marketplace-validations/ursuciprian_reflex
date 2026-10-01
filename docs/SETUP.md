@@ -32,12 +32,14 @@ clone the repository and run `claude --plugin-dir /path/to/reflex/plugin`.
 `plugin/` is generated from the repository by `node scripts/build-plugin.mjs` and committed, since
 the marketplace installs from git. It holds only what plugin mode runs: the runtime modules, the
 setup files the gate and the guard read (no golden sets, fixtures or plan fixtures), `hooks/`,
-`commands/`, `skills/`, `.mcp.json`, `.claude-plugin/plugin.json` (with `userConfig` and the icon),
-`README.md`, `LICENSE` and `assets/logo-512.png`. Code that only `reflex setup` and the selfchecks
-run is marked in the source with `// @reflex:setup-only begin` and `// @reflex:setup-only end` (in
-Markdown, `<!-- @reflex:setup-only begin -->`) and left out: the allow answer, the rewritten tool
-result, the Keychain and key variable reads, Laya setup, the selfchecks, evals and benchmarks. A
-region may only hold code plugin mode cannot reach, never a check that makes a decision stricter.
+`commands/`, the scripts the commands run (`scripts/*.sh`), `skills/`, `.mcp.json`,
+`.claude-plugin/plugin.json` (with `userConfig`, no icon), `README.md` and `LICENSE`. Code that only
+`reflex setup` and the selfchecks run is marked in the source with `// @reflex:setup-only begin` and
+`// @reflex:setup-only end` (in Markdown, `<!-- @reflex:setup-only begin -->`) and left out: the
+allow answer and everything that produces it, the Hermes adapter, the rewritten tool result, the
+Keychain and key variable reads, Laya setup, the doctor probes, the shell shim, the selfchecks, test
+doubles, evals and benchmarks. A region may only hold code plugin mode cannot reach, never a check
+that makes a decision stricter.
 
 The build fails when a region is unbalanced, when a module does not parse or does not link, when a
 file is over 256 KiB, when a file other than the icon is binary, or when a forbidden pattern (the
