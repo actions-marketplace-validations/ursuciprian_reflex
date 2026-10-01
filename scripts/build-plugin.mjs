@@ -2,7 +2,8 @@
 // Builds plugin/, the Claude Code plugin the marketplace installs (.claude-plugin/marketplace.json
 // "source": "./plugin"). Only what plugin mode (--plugin, plugin.mjs) runs goes in: the runtime
 // modules, the setup files the gate and the guard read, the hooks, commands, skill, MCP server
-// entry, the command scripts, README and LICENSE (no icon: the listing sets none). Setup-only code is cut out of the modules:
+// entry, the command scripts, README and LICENSE (no icon: the listing sets none). Setup-only code is
+// cut out of the modules:
 //
 //   // @reflex:setup-only begin            (<!-- @reflex:setup-only begin --> in Markdown)
 //   ...code that plugin mode never runs...
