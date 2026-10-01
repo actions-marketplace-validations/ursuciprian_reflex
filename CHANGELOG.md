@@ -6,6 +6,8 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-30
+
 ### Changed
 
 - Laya engine: `reflex setup --engine laya` installs `laya[serve]==0.3.22` (was 0.3.20). Measured head to head with 0.3.20 and Jev 1.13.0 on every golden set on 2026-09-30: every number is the same, and every answer is the same except four gate cases whose state holds a per-process path (at most 0.013 of probability, no decision changed). The checkpoints stay at revision `55cf4c4`, still the latest. The GUIDE's "Measured against Jev" table is rerun on the current golden sets (199 gate cases, 47 ladder commands) and adds the MCP set, where calibrated Laya matches Jev (0 MISS, 0 over-strict, on 6 cases that reach System 1). Laya stays off by default.
@@ -1086,7 +1088,8 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/ursuciprian/reflex/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/ursuciprian/reflex/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/ursuciprian/reflex/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/ursuciprian/reflex/compare/v0.15.0...v0.16.0
