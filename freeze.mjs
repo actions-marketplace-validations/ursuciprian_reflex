@@ -81,6 +81,7 @@ export function activeFreeze(windows, now = new Date(), prod = true) {
   return on.find(w => w.outcome === "deny") ?? on[0] ?? null;
 }
 
+// @reflex:setup-only begin
 function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
   const one = w => parseFreeze([w]);
@@ -117,3 +118,4 @@ function selfcheck() {
   console.log(process.exitCode ? "freeze selfcheck FAILED" : "freeze selfcheck OK");
 }
 if (process.argv[1]?.endsWith("freeze.mjs") && process.argv.includes("--selfcheck")) selfcheck();
+// @reflex:setup-only end

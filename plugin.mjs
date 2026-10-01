@@ -17,6 +17,14 @@
 const E = process.env, argv = process.argv;
 export const PLUGIN_FLAG = argv.includes("--plugin");
 export const PLUGIN_MODE = E.REFLEX_PLUGIN === "1" || (PLUGIN_FLAG && !argv.some(a => /^--codex(-|$)/.test(a)));
+/** What a source that may let a command skip the agent's prompt answers (a calibrated Jev answer,
+ *  a System 2 approval, a human's queue approval, the workspace allowlist). The plugin never allows,
+ *  so there it is a plain pass at the source. Outside the plugin it is "allow", which gate.mjs
+ *  allowSetting keeps only with REFLEX_ALLOW on in enforce mode. */
+export let APPROVED = "pass";
+// @reflex:setup-only begin
+if (!PLUGIN_MODE) APPROVED = "allow";
+// @reflex:setup-only end
 /** The option the user set in Claude Code, trimmed; undefined when unset or empty. */
 export const option = key => E[`CLAUDE_PLUGIN_OPTION_${key}`]?.trim() || undefined;
 // What the plugin must not take from the environment: every REFLEX_* setting (engine, mode, allow,

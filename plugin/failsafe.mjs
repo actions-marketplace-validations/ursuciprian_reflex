@@ -6,7 +6,7 @@
 // script with a dynamic import (run, below), so an error while the modules load (a bad config value, a throw at top level, a
 // syntax or import error) or a rejection nobody handled still answers the agent, in its own contract:
 //   the gate's pre-execution hooks ask: Claude Code "ask" (JSON, exit 0); Codex "deny" with the
-//   reason (Codex has no ask: JSON plus exit 2); Hermes "approve" (its own prompt); --decide (opencode,
+//   reason (Codex has no ask: JSON plus exit 2); Hermes its own approval prompt; --decide (opencode,
 //   pi, omp) {"effective": "ask"}; reflex-sh confirms on the terminal or refuses with exit 126.
 //   In shadow mode the error is logged and nothing blocks; mode off passes without loading anything.
 //   Post-execution and prompt hooks (the record hooks, the injection guard, instructions) never
@@ -114,13 +114,8 @@ export function hookFailure(e, {simulated = false} = {}) {
         const why = `${reason}. This hook cannot open an approval dialog: the user can fix Reflex (reflex doctor) or run the exact command in their own terminal. Do not retry or disable the hook.`;
         if (outcome === "ask") { out(JSON.stringify({hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why}})); err(`${why}\n`); code = 2; }
         else if (outcome === "pass") out(JSON.stringify({systemMessage: `${reason} (${subgoal ? "a subagent spawn" : `${mode} mode`}: not blocked)`}));
-      } else if (hook.flag === "--hermes") {
-        if (outcome !== "decided") out(JSON.stringify(outcome === "ask" ? {action: "approve", message: reason, rule_key: `reflex:error:${randomUUID()}`} : {}));
       } else if (hook.flag === "--decide") {
         if (outcome !== "decided") out(JSON.stringify({effective: outcome, decision: "error", reason, source: "error"}) + "\n");
-      } else if (hook.flag === "--sh") {
-        log({at: new Date().toISOString(), script: hook.script, flag: hook.flag, mode, outcome, error: msg});
-        shell(outcome, reason);
       }
     } else if (["--claude", "--codex", "--claude-post", "--codex-post", "--claude-prompted", "--claude-prompt", "--codex-prompt"].includes(hook.flag)) {
       if (!wrote) {
@@ -142,28 +137,10 @@ export function hookFailure(e, {simulated = false} = {}) {
   }
 }
 
-// reflex-sh: an ask is a y/N on the terminal; no terminal, or no, refuses. A pass runs the command.
-function shell(outcome, reason) {
-  const args = process.argv.slice(process.argv.indexOf("--sh") + 1);
-  const ci = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a)), command = ci > -1 ? args[ci + 1] : undefined;
-  if (command && outcome === "ask" && !confirm(command, reason)) { err(`${reason}\nrefused; a human can run it directly if it is intended.\n`); process.exit(126); }
-  const r = spawnSync(ENV.REFLEX_SHELL ?? "/bin/bash", args, {stdio: "inherit"});
-  process.exit(r.status ?? 1);
-}
-function confirm(command, reason) {
-  try {
-    const fd = openSync("/dev/tty", "r+");
-    writeSync(fd, `\n${reason}\nCommand: ${JSON.stringify(command.slice(0, 500))}\nrun it? [y/N] `);
-    const buf = Buffer.alloc(16), n = readSync(fd, buf, 0, 16, null);
-    return /^y(es)?$/i.test(buf.toString("utf8", 0, n).trim());
-  } catch { return false; }
-}
 
 // Mode off for the gate's pre-execution hooks: the answer the gate would give, with nothing loaded.
 function off(hook) {
   if (hook.flag === "--decide") out(JSON.stringify({effective: "pass", decision: "pass", reason: "reflex off", source: "off"}) + "\n");
-  if (hook.flag === "--hermes") out("{}");
-  if (hook.flag === "--sh") { const r = spawnSync(ENV.REFLEX_SHELL ?? "/bin/bash", process.argv.slice(process.argv.indexOf("--sh") + 1), {stdio: "inherit"}); process.exit(r.status ?? 1); }
   if (!isatty(0)) try { readFileSync(0); } catch { /* nothing to read */ }
   process.exit(0);
 }

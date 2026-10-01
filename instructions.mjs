@@ -199,6 +199,7 @@ async function hermes(input) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// @reflex:setup-only begin
 async function selfcheck() {
   const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
   // parsing
@@ -314,6 +315,7 @@ async function selfcheck() {
   ok(last.cwd === join(realpathSync(home), "kw") && cli.stdout.includes("source: .reflex/instructions/kw.md"), `--check resolves --cwd (${last.cwd})`);
   console.log(process.exitCode ? "instructions selfcheck FAILED" : "instructions selfcheck OK");
 }
+// @reflex:setup-only end
 
 // ---------------------------------------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -326,6 +328,7 @@ const main = isMain(import.meta);
 const guarded = fn => Promise.resolve().then(fn).catch(hookFailure);
 
 if (!main) { /* imported */ }
+// @reflex:setup-only begin
 // The log and cache paths are fixed when gate.mjs loads, so the self-check reruns itself with a
 // scratch data dir rather than write into the real one.
 else if (flag("--selfcheck") && !ENV.REFLEX_SELFCHECK_DATA) {
@@ -336,6 +339,7 @@ else if (flag("--selfcheck") && !ENV.REFLEX_SELFCHECK_DATA) {
   process.exitCode = r.status ?? 1;
 }
 else if (flag("--selfcheck")) await selfcheck();
+// @reflex:setup-only end
 else if (flag("--claude")) await guarded(() => userPromptSubmit(readStdin(), "claude-code"));
 else if (flag("--codex")) await guarded(() => userPromptSubmit(readStdin(), "codex"));
 else if (flag("--hermes")) await guarded(() => hermes(readStdin()));

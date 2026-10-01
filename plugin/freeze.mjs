@@ -81,39 +81,3 @@ export function activeFreeze(windows, now = new Date(), prod = true) {
   return on.find(w => w.outcome === "deny") ?? on[0] ?? null;
 }
 
-function selfcheck() {
-  const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
-  const one = w => parseFreeze([w]);
-  const fri = one({days: ["fri"], after: "15:00", tz: "Europe/Bucharest"});
-  ok(!fri.errors.length && fri.windows[0].reason === "change freeze: Friday after 15:00 (Europe/Bucharest)" && fri.windows[0].outcome === "ask" &&
-     fri.windows[0].applies_to === "prod", `reason and defaults: ${JSON.stringify(fri)}`);
-  // 2026-10-02 is a Friday; Bucharest is UTC+3 in October (EEST), UTC+2 in winter (EET)
-  const w = fri.windows[0];
-  ok(inWindow(w, new Date("2026-10-02T12:00:00Z")) && !inWindow(w, new Date("2026-10-02T11:59:00Z")), "Friday 15:00 local is 12:00 UTC in summer time");
-  ok(inWindow(w, new Date("2026-10-02T20:59:00Z")) && !inWindow(w, new Date("2026-10-02T21:00:00Z")), "Friday ends at local midnight (Saturday 00:00)");
-  ok(inWindow(w, new Date("2026-12-04T13:00:00Z")) && !inWindow(w, new Date("2026-12-04T12:59:00Z")), "winter time: 15:00 local is 13:00 UTC");
-  ok(!inWindow(w, new Date("2026-10-01T14:00:00Z")), "Thursday is outside");
-  const range = one({from: "2026-12-20", to: "2027-01-03", outcome: "deny"}).windows[0];
-  ok(range.reason === "change freeze: 2026-12-20 to 2027-01-03 (UTC)" && inWindow(range, new Date("2026-12-20T00:00:00Z")) &&
-     inWindow(range, new Date("2027-01-03T23:59:59Z")) && !inWindow(range, new Date("2027-01-04T00:00:00Z")) && !inWindow(range, new Date("2026-12-19T23:59:59Z")),
-     "a date range is inclusive at both ends");
-  const tokyo = one({from: "2026-12-20", tz: "Asia/Tokyo"}).windows[0];
-  ok(inWindow(tokyo, new Date("2026-12-19T15:00:00Z")) && !inWindow(tokyo, new Date("2026-12-19T14:59:00Z")), "a date range follows its tz");
-  const night = one({before: "08:00", after: "00:00", days: ["mon", "tue"]}).windows[0];
-  ok(night.reason === "change freeze: Monday and Tuesday after 00:00 before 08:00 (UTC)" && inWindow(night, new Date("2026-09-28T07:59:00Z")) &&
-     !inWindow(night, new Date("2026-09-28T08:00:00Z")), "before is exclusive");
-  // strict validation: every problem is an error, never a smaller window
-  for (const bad of [{days: ["friday"]}, {days: []}, {days: ["fri", "fri"]}, {after: "25:00"}, {after: "9:00"}, {after: "18:00", before: "08:00"},
-    {from: "2026-02-30"}, {from: "2026-13-01"}, {from: "2026-02-32"}, {to: "2026-00-10"}, {before: "00:00"}, {from: "2027-01-03", to: "2026-12-20"}, {tz: "Mars/Olympus", days: ["fri"]}, {days: ["fri"], outcome: "allow"},
-    {days: ["fri"], outcome: "pass"}, {days: ["fri"], applies_to: "dev"}, {days: ["fri"], until: "x"}, {tz: "UTC"}, {}, "fri", null, [], {days: ["fri"], note: 5}])
-    ok(one(bad).errors.length === 1 && one(bad).windows.length === 0, `invalid: ${JSON.stringify(bad)}`);
-  const mixed = parseFreeze([{days: ["fri"]}, {days: ["xyz"]}]);
-  ok(mixed.windows.length === 1 && mixed.errors.length === 1, "valid windows stay, invalid ones are errors");
-  ok(parseFreeze("fri").errors.length === 1 && !parseFreeze(undefined).errors.length, "the list itself is checked");
-  // deny before ask; applies_to all covers commands that are not production
-  const both = parseFreeze([{from: "2026-01-01"}, {from: "2026-01-01", outcome: "deny"}, {from: "2026-01-01", applies_to: "all"}]).windows, t = new Date("2026-06-01T00:00:00Z");
-  ok(activeFreeze(both, t, true).outcome === "deny" && activeFreeze(both, t, false).applies_to === "all" && activeFreeze(both.slice(0, 2), t, false) === null &&
-     activeFreeze(both, new Date("2025-06-01T00:00:00Z"), true) === null, "a deny wins; applies_to all covers every command");
-  console.log(process.exitCode ? "freeze selfcheck FAILED" : "freeze selfcheck OK");
-}
-if (process.argv[1]?.endsWith("freeze.mjs") && process.argv.includes("--selfcheck")) selfcheck();

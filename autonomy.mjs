@@ -33,7 +33,11 @@ import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, rulesHit, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
         stripDataHeredocs, taint, tainted, taintedRule} from "./gate.mjs";
-import {judge2, stubServer, template} from "./judge2.mjs";
+import {APPROVED, PLUGIN_MODE} from "./plugin.mjs";
+import {judge2, template} from "./judge2.mjs";
+// @reflex:setup-only begin
+import {stubServer} from "./judge2.mjs";   // the selfcheck only
+// @reflex:setup-only end
 import {hitsOf, terms} from "./context.mjs";
 import {teamEscalation} from "./team.mjs";
 import {isMain} from "./failsafe.mjs";
@@ -63,7 +67,7 @@ export async function ladder(j, call, effective, {env = envContext(call.cwd), ju
   // Shadow never blocks: it logs what the autonomous profile would have done and changes nothing.
   // System 2 is called only where nobody waits (the background judge); the hook path records "would".
   const dry = CONFIG.mode !== "enforce";
-  const want = dry ? ({would_allow: "allow"}[j.outcome] ?? j.outcome) : effective;
+  const want = dry ? ({would_allow: APPROVED}[j.outcome] ?? j.outcome) : effective;
   const L = {...j.ladder, system1: j.ladder?.system1 ?? j.source};
   const out = r => ({j: {...r.j, ladder: {...L, ...(dry && {dry: true})}}, effective: dry ? effective : r.effective});
   const human = cls => {
@@ -107,18 +111,18 @@ export async function ladder(j, call, effective, {env = envContext(call.cwd), ju
         const guard = tainted(call.session_id) ? "session read a suspected prompt injection"
           : j.source === "local" ? keylessGuard(call, context, v) : j.source !== "jev" ? "no fresh Jev answer" : j.allow_guard;
         const a = guard ? {...j, outcome: "pass", source: "judge", rule: `System 2 approved it (no allow: ${guard}): ${v.reason}`}
-          : allowSetting(holdAllow({...j, outcome: "allow", source: "judge", rule: `System 2 approved it: ${v.reason}`}, call));
-        r = {j: a, effective: a.outcome === "allow" ? "allow" : "pass"};
+          : allowSetting(holdAllow({...j, outcome: APPROVED, source: "judge", rule: `System 2 approved it: ${v.reason}`}, call));
+        r = {j: a, effective: a.outcome === APPROVED ? APPROVED : "pass"};
       } else r = human({id: v.error ? `system2-${v.error}` : "system2", rule: v.reason || "System 2 handed it to a human"});
     }
-  } else if (["pass", "allow"].includes(want) && !["read-only", "fast-lane", "queue", "judge"].includes(j.source)) {
+  } else if (["pass", APPROVED].includes(want) && !["read-only", "fast-lane", "queue", "judge"].includes(j.source)) {
     // A System 1 pass or allow in the always-human class still needs a human: an answer can be wrong,
     // a pattern cannot be argued with. Only tightens.
     const cls = alwaysHuman(j, call, env, {system1: true});
     if (cls) r = human(cls);
     else L.resolver ??= "system1";
   } else L.resolver ??= want === "deny" && j.source === "judge" ? "system2" : j.source === "queue" ? "human" : "system1";
-  if (!dry && CONFIG.checkpoints && ["pass", "allow"].includes(r.effective) && j.source !== "read-only") {
+  if (!dry && CONFIG.checkpoints && ["pass", APPROVED].includes(r.effective) && j.source !== "read-only") {
     const c = checkpoint(call.cwd);
     if (c) L.checkpoint = {ref: c.ref, ms: c.ms, ...(c.same && {same: true})};
   }
@@ -363,6 +367,7 @@ export function runawayReplay(items, cfg = CONFIG.runaway) {
   }
   return out;
 }
+// @reflex:setup-only begin
 /** Lift a stop now: forget a session's window (its subagents' too), or every session's. */
 export function runawayReset({session, all} = {}) {
   let n = 0;
@@ -372,6 +377,7 @@ export function runawayReset({session, all} = {}) {
   }
   return n;
 }
+// @reflex:setup-only end
 
 // ---------------------------------------------------------------------------------------------
 // The approval queue: one small JSON file per item in <data>/queue (0700 / 0600). An item holds the
@@ -409,12 +415,15 @@ export function park(call, j, cls) {
 }
 // Optional: a command run for each new item (queue.notify), detached, with the id, the reason and the
 // agent in the environment. Never the command text: a webhook would carry it off the machine.
+// The Claude Code plugin runs no shell command of its own: there the webhook (notify) is the only notice.
 function notify(item) {
-  if (!CONFIG.queue.notify) return;
+  // @reflex:setup-only begin
+  if (!CONFIG.queue.notify || PLUGIN_MODE) return;
   try {
     spawn("/bin/sh", ["-c", CONFIG.queue.notify], {detached: true, stdio: "ignore",
       env: {...process.env, REFLEX_QUEUE_ID: item.id, REFLEX_QUEUE_REASON: item.reason.slice(0, 200), REFLEX_QUEUE_AGENT: item.agent ?? ""}}).unref();
   } catch { /* a notification must not change a decision */ }
+  // @reflex:setup-only end
 }
 export const pendingFor = call => { const it = readItem(`q-${queueKey(call).slice(0, 10)}`); return it?.key === queueKey(call) && it.status === "pending" ? it : null; };
 // A runaway stop is parked under its own key: approving it lifts the guard once and is never an
@@ -433,13 +442,14 @@ export function queueAnswer(call) {
     rmSync(claim, {force: true});
     // a runaway stop the human lifted: the guard steps aside once, the gate still judges the command
     if (it.class === "runaway") return {resume: true};
-    return {outcome: "allow", source: "queue", rule: `approved by a human in the approval queue (${id})`, ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "approved", decided_at: it.decided_at}};
+    return {outcome: APPROVED, source: "queue", rule: `approved by a human in the approval queue (${id})`, ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "approved", decided_at: it.decided_at}};
   }
   if (it.status === "denied" && live)
     return {outcome: "deny", source: "queue", rule: `a human denied this in the approval queue (${id})${it.note ? `: ${it.note}` : ""}. Do not retry it; find another way or ask the user`,
             ladder: {resolver: "human", queue: id, queue_created: it.created, answered: "denied", decided_at: it.decided_at}};
   return null;
 }
+// @reflex:setup-only begin
 export function answer(id, verdict, {ttlHours = CONFIG.queue.ttl_hours, note} = {}) {
   const it = readItem(id);
   if (!it) throw new Error(`no queue item ${id}`);
@@ -450,17 +460,21 @@ export function answer(id, verdict, {ttlHours = CONFIG.queue.ttl_hours, note} = 
   writeItem(next);
   return next;
 }
+// @reflex:setup-only end
 
 // ---------------------------------------------------------------------------------------------
 // Task envelopes: <data>/envelopes.json. The user's own, per session or per directory (the nearest
 // enclosing one wins; a session envelope wins over a directory's), with an expiry.
 const ENVELOPES = () => join(CONFIG.data, "envelopes.json");
 const readEnvelopes = () => { try { return JSON.parse(readFileSync(ENVELOPES(), "utf8")); } catch { return {version: "envelopes-v1", entries: []}; } };
+// @reflex:setup-only begin
 const writeEnvelopes = e => {
   mkdirSync(CONFIG.data, {recursive: true, mode: 0o700});
   writeFileSync(`${ENVELOPES()}.${process.pid}`, JSON.stringify(e, null, 1), {mode: 0o600});
   renameSync(`${ENVELOPES()}.${process.pid}`, ENVELOPES());
 };
+// @reflex:setup-only end
+// @reflex:setup-only begin
 export function setEnvelope({text, session, cwd = process.cwd(), ttlHours = 24}) {
   if (!text?.trim()) throw new Error("an envelope needs text");
   const e = readEnvelopes(), scope = session ? "session" : "cwd", key = session ? String(session) : resolve(cwd);
@@ -469,12 +483,15 @@ export function setEnvelope({text, session, cwd = process.cwd(), ttlHours = 24})
   writeEnvelopes(e);
   return entry;
 }
+// @reflex:setup-only end
+// @reflex:setup-only begin
 export function clearEnvelopes({session, cwd, all} = {}) {
   const e = readEnvelopes(), before = e.entries.length;
   e.entries = all ? [] : e.entries.filter(x => !(session ? x.scope === "session" && x.key === String(session) : x.scope === "cwd" && x.key === resolve(cwd ?? process.cwd())));
   writeEnvelopes(e);
   return before - e.entries.length;
 }
+// @reflex:setup-only end
 // .reflex/envelope.md from cwd up to the repository root (outside a repository, cwd only), a regular
 // file up to 8 KB: the same places, and the same trust, as instruction fragments.
 export function repoEnvelope(dir) {
@@ -558,6 +575,7 @@ export function checkpoints(cwd) {
     return {name, sha, at: iso(Number(name.split("-")[0])), stash: parents.length > 1};
   });
 }
+// @reflex:setup-only begin
 /** Make the tracked files match a checkpoint, after checkpointing the current state. HEAD does not move. */
 export function restore(cwd, name) {
   const target = [`${REFS}${name}`, name].map(n => git(cwd, ["rev-parse", "-q", "--verify", `${n}^{commit}`]).stdout?.trim()).find(Boolean);
@@ -572,6 +590,7 @@ export function restore(cwd, name) {
   const head = git(cwd, ["rev-parse", "HEAD"]).stdout.trim(), base = parents[0] ?? target;
   return {target, safety: safety?.ref ?? null, head_moved: parents.length > 1 && head !== base ? base : null};
 }
+// @reflex:setup-only end
 
 // ---------------------------------------------------------------------------------------------
 // @reflex:setup-only begin
@@ -989,11 +1008,13 @@ function cli(argv) {
   const pos = all.filter((a, i) => !a.startsWith("--") && !VALUED.includes(all[i - 1]));
   if (area === "queue") {
     const [what = "list", id] = pos;
+    // @reflex:setup-only begin
     if (what === "clear") {
       let n = 0;
       for (const i of listItems()) if (all.includes("--all") || i.status !== "pending") { rmSync(itemFile(i.id), {force: true}); n++; }
       return console.log(`removed ${n} item${n === 1 ? "" : "s"}`);
     }
+    // @reflex:setup-only end
     if (what === "list") {
       const items = listItems();
       if (json) return print(items.map(({key, ...i}) => i));
@@ -1005,24 +1026,34 @@ function cli(argv) {
     const it = readItem(id);
     if (!it) throw new Error(`no queue item ${id ?? ""} (reflex queue list)`);
     if (what === "show") return print(json ? (({key, ...i}) => i)(it) : Object.entries((({key, ...i}) => i)(it)).map(([k, v]) => `${k.padEnd(11)} ${v}`).join("\n"));
+    // @reflex:setup-only begin
     if (what === "approve") { const n = answer(id, "approved", {ttlHours: opt("--ttl") ? hours(opt("--ttl")) : undefined}); return print(json ? n : `${id} approved until ${n.expires}: the agent's identical retry runs once`); }
+    // @reflex:setup-only end
+    // @reflex:setup-only begin
     if (what === "deny") { const n = answer(id, "denied", {note: opt("--reason")}); return print(json ? n : `${id} denied; the agent's retry is refused with your reason until ${n.expires}`); }
+    // @reflex:setup-only end
   }
   if (area === "envelope") {
     const [what = "show", text] = pos, cwd = resolve(opt("--cwd") ?? process.cwd()), session = opt("--session");
+    // @reflex:setup-only begin
     if (what === "set") { const e = setEnvelope({text, session, cwd, ttlHours: opt("--ttl") ? hours(opt("--ttl")) : 24}); return print(json ? e : `envelope for ${e.scope} ${e.key} until ${e.expires}`); }
+    // @reflex:setup-only end
+    // @reflex:setup-only begin
     if (what === "clear") return print(`removed ${clearEnvelopes({session, cwd, all: all.includes("--all")})}`);
+    // @reflex:setup-only end
     if (what === "list") return print(json ? readEnvelopes().entries : readEnvelopes().entries.map(e => `${e.scope.padEnd(7)} ${e.key}  until ${e.expires}\n        ${e.text}`).join("\n") || "no envelopes");
     if (what === "show") { const e = envelopeFor({cwd, session_id: session}); return print(json ? e : e ? `user: ${e.user ?? "(none)"}\nrepository (can only narrow): ${e.repo ?? "(none)"}` : "no envelope applies here"); }
   }
   if (area === "checkpoints") {
     const [what = "list", name] = pos, cwd = resolve(opt("--cwd") ?? process.cwd());
     if (what === "list") { const l = checkpoints(cwd); return print(json ? l : l.map(c => `${c.name}  ${c.sha}  ${c.at}${c.stash ? "" : "  (clean tree: HEAD)"}`).join("\n") || "no checkpoints"); }
+    // @reflex:setup-only begin
     if (what === "restore") {
       const r = restore(cwd, name);
       return print(json ? r : `tracked files restored to ${r.target.slice(0, 12)}; the state before it is checkpoint ${r.safety?.split("/").pop()}` +
         (r.head_moved ? `\nHEAD has moved since the checkpoint; git reset --soft ${r.head_moved.slice(0, 12)} moves it back` : ""));
     }
+    // @reflex:setup-only end
   }
   if (area === "runaway") {
     const [what = "list", session] = pos;
@@ -1032,10 +1063,12 @@ function cli(argv) {
       return console.log(trips.map(t => `${iso(t.last).slice(0, 16)}  ${t.dry ? "shadow " : "stopped"} ${t.signal.padEnd(10)} x${t.n}  ${(t.agent ?? "").padEnd(11)} ${t.session}\n` +
         `            ${t.reason}`).join("\n") || `no stops in the last 24 h (runaway guard ${CONFIG.runaway.enabled ? "on" : "off"})`);
     }
+    // @reflex:setup-only begin
     if (what === "reset") {
       if (!session && !all.includes("--all")) throw new Error("reflex runaway reset <session id> | --all");
       return print(`forgot ${runawayReset({session, all: all.includes("--all")})} session window(s)`);
     }
+    // @reflex:setup-only end
   }
   throw new Error("usage: reflex runaway [list|reset <session>|reset --all] · reflex queue [list|show <id>|approve <id> [--ttl 2h]|deny <id> [--reason text]|clear [--all]] · " +
     "reflex envelope set \"<text>\" [--session id|--cwd dir] [--ttl 8h] | show | list | clear · reflex checkpoints [list|restore <name>] [--cwd dir]");

@@ -730,7 +730,7 @@ function findOk(a) {
 }
 // gh: pr, issue, run, repo and release reads, auth status without --show-token, and api as a GET
 // (no -X, --method, -f, -F, --field, --raw-field, --input or -H, and not graphql). No --web (runs a browser).
-// gh's --jq is gojq with the process environment ($ENV.GH_TOKEN): held to jq's rule
+// gh's --jq is gojq, which can print the process environment (gh's token included): held to jq's rule
 const GH_JQ = {vals: {q: v => !JQ_UNSAFE.test(v), jq: v => !JQ_UNSAFE.test(v)}};
 const GH_READ = F("", "RqtLsAlBHSacbuej", ["json?", "comments", "log", "log-failed", "watch", "required", "fail-fast", "exit-status", "name-only", "patch", "draft",
   "verbose", "all", "exclude-drafts", "exclude-pre-releases"], ["repo", "jq", "template", "limit", "state", "author", "label", "base", "head", "search", "assignee",

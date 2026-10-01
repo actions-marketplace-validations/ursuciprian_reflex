@@ -145,11 +145,6 @@
       "color": "#8a5300",
       "blurb": "A human confirms first"
     },
-    "allow": {
-      "label": "Allow",
-      "color": "#2f6f9f",
-      "blurb": "Clearly safe; runs without the agent's own prompt when REFLEX_ALLOW=on"
-    },
     "pass": {
       "label": "Pass",
       "color": "#2b7f6c",
@@ -272,7 +267,7 @@
       "id": "allow",
       "label": "Clearly safe?",
       "test": "blast <= $allowBlastMax and blast.confidence >= $allowConfidence and mutates < $allowRiskBelow and exfil < $allowRiskBelow and injection < $allowRiskBelow and on_task >= $allowOnTask and env == 'local'",
-      "outcome": "allow",
+      "outcome": "pass",
       "detail": "blast {blast} (confidence {blast.confidence}), mutates {mutates}, on_task {on_task}, {env}",
       "rule": "clearly safe: blast {blast} at confidence {blast.confidence}"
     }

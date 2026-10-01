@@ -424,7 +424,7 @@ export function helmChange(words) {
 }
 // `helm diff upgrade` with the command's own chart, release and values, or null (not run) when the
 // command has a flag that could change what runs or where it connects, or one this does not know.
-const HELM_PASS = new Map([["-f", "--values"], ["--values", "--values"], ["--set", "--set"], ["--set-string", "--set-string"], ["--set-json", "--set-json"],
+const HELM_FORWARD = new Map([["-f", "--values"], ["--values", "--values"], ["--set", "--set"], ["--set-string", "--set-string"], ["--set-json", "--set-json"],
   ["--set-file", "--set-file"], ["--set-literal", "--set-literal"], ["--version", "--version"], ["--repo", "--repo"], ["-n", "--namespace"],
   ["--namespace", "--namespace"], ["--kube-context", "--kube-context"]]);
 const HELM_BOOL = new Set(["--devel", "--reuse-values", "--reset-values", "--reset-then-reuse-values", "--disable-openapi-validation", "--skip-schema-validation",
@@ -436,7 +436,7 @@ export function helmDiffArgs(h) {
   if (!h.release || !h.chart || h.extra || /^-/.test(h.release) || /^-/.test(h.chart)) return null;
   const out = [];
   for (const [n, v] of h.flags) {
-    if (HELM_PASS.has(n) && v != null) out.push(`${HELM_PASS.get(n)}=${v}`);
+    if (HELM_FORWARD.has(n) && v != null) out.push(`${HELM_FORWARD.get(n)}=${v}`);
     else if (HELM_BOOL.has(n) && (v == null || v === "true")) out.push(n);
     else if (!HELM_DROP.has(n)) return null;   // --kubeconfig, --kube-apiserver, --kube-token, --post-renderer, --dry-run, --force, -o, anything else
   }
@@ -657,6 +657,7 @@ export function planGate({command, cwd, settings: s, settingsAt = () => s, prod,
 }
 
 // ---------------------------------------------------------------------------------------------
+// @reflex:setup-only begin
 // node infra.mjs --selfcheck: fixture plans (setup/tool-gate/plans), a fake terraform and a fake
 // kubectl on PATH that log every call. No real binary, cluster or cloud is touched.
 async function selfcheck() {
@@ -1140,3 +1141,4 @@ async function selfcheck() {
 }
 if (isMain(import.meta) && process.argv.includes("--selfcheck"))
   selfcheck().catch(e => { console.error(e); process.exit(1); });   // not awaited: gate.mjs imports this module
+// @reflex:setup-only end

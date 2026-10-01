@@ -2,7 +2,7 @@
 // Builds plugin/, the Claude Code plugin the marketplace installs (.claude-plugin/marketplace.json
 // "source": "./plugin"). Only what plugin mode (--plugin, plugin.mjs) runs goes in: the runtime
 // modules, the setup files the gate and the guard read, the hooks, commands, skill, MCP server
-// entry, README, LICENSE and the icon. Setup-only code is cut out of the modules:
+// entry, the command scripts, README and LICENSE (no icon: the listing sets none). Setup-only code is cut out of the modules:
 //
 //   // @reflex:setup-only begin            (<!-- @reflex:setup-only begin --> in Markdown)
 //   ...code that plugin mode never runs...
@@ -12,11 +12,11 @@
 // after one that always returns in plugin mode, a selfcheck, eval or setup CLI. It may never hold a
 // check that tightens a decision. The build fails when a region is unbalanced or nested, when a
 // module does not parse or does not link (every import resolves to a bundled file and names an
-// export it has), when a file is over 256 KiB, when a file other than the icon is binary, or when a
+// export it has), when a file is over 256 KiB, when a file is binary, or when a
 // FORBIDDEN pattern is left anywhere in the bundle.
 //
 //   node scripts/build-plugin.mjs     writes plugin/ (committed; CI fails on drift)
-import {copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync} from "node:fs";
+import {chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {dirname, join, relative} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -33,9 +33,10 @@ const MODULES = ["hook.mjs", "failsafe.mjs", "plugin.mjs", "gate.mjs", "config.m
 // The setup files read at runtime; the golden sets, fixtures and plan fixtures stay out.
 const DATA = ["setup/redact.json", ...["rules", "policy", "questions", "escalation", "subgoals", "mcp", "protected"].map(f => `setup/tool-gate/${f}.json`),
   ...["policy", "detectors", "questions"].map(f => `setup/injection/${f}.json`)];
-const FILES = [".mcp.json", "hooks/hooks.json", "LICENSE", "assets/logo-512.png",
+const FILES = [".mcp.json", "hooks/hooks.json", "LICENSE",
   ...readdirSync(join(ROOT, "commands")).filter(f => f.endsWith(".md")).sort().map(f => `commands/${f}`), "skills/reflex/SKILL.md"];
-const BINARY = ["assets/logo-512.png"];
+// The plain shell scripts the commands run (commands/*.md): fixed arguments, the rest checked, then node on one module.
+const SCRIPTS = ["check", "queue", "replay", "report", "status", "suggest"].map(s => `scripts/${s}.sh`);
 const MAX = 256 * 1024;
 
 // What the directory's policy holds a plugin to: never allow, never rewrite a tool's input or
@@ -43,9 +44,15 @@ const MAX = 256 * 1024;
 // [pattern, the files where it may stand, why]; an exception is data that detects the pattern.
 const FORBIDDEN = [
   [/permissionDecision.*allow|"behavior"\s*:\s*"allow"/], [/updatedInput/], [/updated(MCP)?ToolOutput/],
+  // a hook answer is a literal ask or deny, never a value computed at run time, and never an approve
+  [/\bpermissionDecision\b"?\s*:\s*(?!\s|"(ask|deny)")/], [/action"?\s*:\s*"approve"/],
+  // "allow" as a decision: produced, compared or listed. The reports only read it from old logs.
+  [/\boutcome"?\s*:\s*"allow"|\beffective"?\s*:\s*"allow"|[=!]==\s*"allow"|"allow"\s*[=!]==|[[,]\s*"allow"\s*[\],]|\?\s*"allow"/,
+    ["report.mjs", "replay.mjs"], "the reports count allow decisions in traces written by reflex setup hooks"],
   [/find-generic-password/, ["setup/tool-gate/rules.json"], "the rule that asks before a command reads a Keychain secret"],
   [/security find-generic-password|["']security["']/],
   [/TYPESAFE_API_KEY/], [/OPENROUTER_API_KEY/], [/CLOUDFLARE_API_TOKEN/], [/AI_GATEWAY_API_KEY/],
+  [/ANTHROPIC_API_KEY|REFLEX_KEYCHAIN_SERVICE|GH_TOKEN/],
   [/pip install|bin\/pip|-m", "venv"|laya-venv|laya\[serve\]/], [/huggingface|HF_HUB|HF_HOME/i],
   [/curl /, ["suggest.mjs"], "probes a fast-lane suggestion must never pass (command substitution, a .env upload)"],
   [/npx /], [/npm install -g|npm i -g/], [/child_process.*install/], [/@reflex:setup-only/],
@@ -72,7 +79,6 @@ const MANIFEST = {
   description: "Prod-safe AI coding agents for infra teams: a pre-execution hook that judges each shell command by where it points and what it will change, then runs it, asks a human, or blocks it.",
   author: {name: "Ciprian Ursu", url: "https://github.com/ursuciprian"},
   homepage: "https://github.com/ursuciprian/reflex#readme", repository: "https://github.com/ursuciprian/reflex", license: pkg.license,
-  icon: "./assets/logo-512.png",
   keywords: ["claude-code", "claude-code-hooks", "claude-code-plugin", "claude-code-security", "pre-tool-use", "pre-execution-hook", "command-approval",
     "guardrails", "agent-security", "prompt-injection", "prompt-injection-protection", "human-in-the-loop", "tool-call-gating", "permission-prompts",
     "devsecops", "jev", "typesafe"],
@@ -91,19 +97,22 @@ const MANIFEST = {
 };
 
 const json = v => JSON.stringify(v, null, 2) + "\n";
-const put = (rel, body) => { mkdirSync(dirname(join(OUT, rel)), {recursive: true}); writeFileSync(join(OUT, rel), body, {mode: 0o644}); };
+const put = (rel, body, mode = 0o644) => { mkdirSync(dirname(join(OUT, rel)), {recursive: true}); writeFileSync(join(OUT, rel), body, {mode}); chmodSync(join(OUT, rel), mode); };
 function build() {
   rmSync(OUT, {recursive: true, force: true});
   for (const f of MODULES) put(f, strip(readFileSync(join(ROOT, f), "utf8"), f));
   for (const f of DATA) {
     const d = JSON.parse(readFileSync(join(ROOT, f), "utf8"));
     if (f === "setup/redact.json") delete d.corpus;   // the selfchecks' test corpus
+    // The plugin never allows: the policy's allow gate answers pass (what plugin mode turned it into anyway).
+    if (f === "setup/tool-gate/policy.json") {
+      for (const g of d.gates) if (g.outcome === "allow") g.outcome = "pass";
+      delete d.outcomes.allow;
+    }
     put(f, json(d));
   }
-  for (const f of FILES) {
-    if (BINARY.includes(f)) { mkdirSync(dirname(join(OUT, f)), {recursive: true}); copyFileSync(join(ROOT, f), join(OUT, f)); }
-    else put(f, strip(readFileSync(join(ROOT, f), "utf8"), f));
-  }
+  for (const f of FILES) put(f, strip(readFileSync(join(ROOT, f), "utf8"), f));
+  for (const f of SCRIPTS) put(f, readFileSync(join(ROOT, f), "utf8"), 0o755);
   put(".claude-plugin/plugin.json", json(MANIFEST));
   // mcp.mjs reports this version; nothing is installed from it.
   put("package.json", json({name: pkg.name, version: pkg.version, private: true, type: "module", license: pkg.license}));
@@ -116,7 +125,6 @@ function verify() {
   for (const f of files) {
     const buf = readFileSync(join(OUT, f)), size = statSync(join(OUT, f)).size;
     if (size > MAX) problems.push(`${f}: ${size} bytes, over 256 KiB`);
-    if (BINARY.includes(f)) continue;
     if (buf.includes(0)) { problems.push(`${f}: binary`); continue; }
     buf.toString("utf8").split("\n").forEach((line, i) => {
       for (const [re, allowed = []] of FORBIDDEN) if (re.test(line) && !allowed.includes(f)) problems.push(`${f}:${i + 1}: ${re} in ${line.trim().slice(0, 120)}`);
