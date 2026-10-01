@@ -6,6 +6,15 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Claude Code plugin (`plugin/`), for the plugin directory's review:
+  - Nothing in the bundle can answer allow. A Jev answer that clears the policy's allow gate, a System 2 approval, a human's queue approval and a workspace allowlist pass are a plain pass at the source in plugin mode (plugin mode already turned them into a pass; the trace now logs `pass` where it logged `allow` for a queue approval). The hook writes only a literal ask or deny. The bundled `policy.json` has no allow outcome, the Hermes adapter (its `approve` is an ask) is left out, and the build fails on a `permissionDecision` other than ask or deny, an `approve` action, or `"allow"` as a decision anywhere but the reports.
+  - The commands run plain shell scripts (`scripts/check.sh`, `status.sh`, `report.sh`, `replay.sh`, `suggest.sh`, `queue.sh`) that refuse any argument the command does not list, then run one module with node. `allowed-tools` names those scripts, and the gate judges each one as the `reflex` command it stands for.
+  - Keys come only from the plugin options: the bundle has no Anthropic key variable (the `anthropic` System 2 backend takes the System 2 API key option), no Keychain item setting and no `--bare` switch from the environment.
+  - Left out of the bundle: the selfchecks and test doubles (the fake `claude` and `codex` CLIs, the stub judge, the infra, freeze and instructions selfchecks), `reflex doctor`'s probes, the `reflex-sh` shell shim, the `queue.notify` shell command, the queue approve, deny and clear, envelope set and clear, checkpoint restore and runaway reset CLIs, the icon, the OpenRouter referer header and documentation links.
+  - The plugin README has notes for reviewers: what runs, where keys go, and which files the gate reads.
+
 ## [0.18.0] - 2026-09-30
 
 ### Changed

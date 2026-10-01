@@ -164,7 +164,7 @@ const HIDDEN_EL = /<([a-z][a-z0-9]*)\b(?=[^>]{0,500}?(?:style\s*=\s*["'][^"']{0,
 const ATTR = /\b(alt|title|aria-label|aria-description|data-[\w-]+)\s*=\s*(?:"([^"]{12,2000})"|'([^']{12,2000})')/gi;
 const MD_COMMENT = /^[ \t]*\[(?:\/\/|comment|_?metadata_?)\]:\s*(?:#|<>)\s*\(([^\n]{1,2000})\)/gim;
 // The URL is taken whole (a lookahead capture cannot backtrack) and a title must start with a space
-// or `>`: overlapping classes here made "[a](http://x" repeated 200 KB take longer than the hook's timeout.
+// or `>`: overlapping classes here made a markdown link opener repeated 200 KB take longer than the hook's timeout.
 const IMG = /!\[[^\]\n]{0,300}\]\(\s*<?(?=(https?:\/\/[^\s)>]{1,2000}))\1(?:[\s>][^)\n]{0,300})?\)|<img\b[^>]{0,500}?\ssrc\s*=\s*["']?(https?:\/\/[^\s"'>]{1,2000})[^>]{0,500}>/gi;
 const LINK = /(?<!!)\[[^\]\n]{0,300}\]\(\s*<?(?=(https?:\/\/[^\s)>]{1,2000}))\1(?:[\s>][^)\n]{0,300})?\)|<a\b[^>]{0,500}?\shref\s*=\s*["']?(https?:\/\/[^\s"'>]{1,2000})|<(https?:\/\/[^\s<>]{1,2000})>/gi;
 const IMG_REF = /!\[([^\]\n]{0,300})\](?:\[([^\]\n]{0,100})\])?/g;

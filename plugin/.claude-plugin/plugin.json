@@ -10,7 +10,6 @@
   "homepage": "https://github.com/ursuciprian/reflex#readme",
   "repository": "https://github.com/ursuciprian/reflex",
   "license": "MIT",
-  "icon": "./assets/logo-512.png",
   "keywords": [
     "claude-code",
     "claude-code-hooks",

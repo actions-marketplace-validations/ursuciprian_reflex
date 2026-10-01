@@ -4,7 +4,7 @@
 // or any compatible endpoint (a full URL and a Bearer token). gate.mjs ask() and its callers see one
 // shape whichever carries the call.
 //
-// Adapted from jev-mcp by Joey Kudish (MIT, https://github.com/jkudish/jev-mcp, commit a34db93,
+// Adapted from jev-mcp by Joey Kudish (MIT, jkudish/jev-mcp, commit a34db93,
 // src/provider.ts and src/lib.ts): the provider names and their auto-detection order, the model
 // slugs, the Cloudflare envelope, the 408/409/429/5xx retry allowlist with jittered backoff inside
 // one deadline, and key redaction in error text. Request and response formats were checked against
@@ -18,7 +18,7 @@ import {isMain} from "./failsafe.mjs";
 export const PROVIDER_NAMES = ["typesafe", "openrouter", "cloudflare", "vercel", "compatible"];
 const typesafeBody = (state, questions, model) => ({state, model, questions});
 // url: the default endpoint. pinned: its key goes to this host and no other.
-// keychain: the macOS Keychain item (TypeSafe's is REFLEX_KEYCHAIN_SERVICE or "keychain" in config.json).
+// keychain: the macOS Keychain item reflex setup reads (TypeSafe's can be "keychain" in config.json); the plugin never reads it.
 // env and detect (below): the environment variables its key is read from.
 export const PROVIDERS = {
   typesafe: {url: () => "https://api.typesafe.ai/v1/systemone", keychain: "typesafe-api-key",
@@ -27,7 +27,7 @@ export const PROVIDERS = {
   openrouter: {url: () => "https://openrouter.ai/api/alpha/decisions",
     keychain: "openrouter-api-key", pinned: "openrouter.ai",
     model: m => m.startsWith("typesafe/") ? m : `typesafe/${m.replace(/^(jev-\d+\.\d+)\.\d+$/, "$1")}`, body: typesafeBody,
-    headers: {"HTTP-Referer": "https://github.com/ursuciprian/reflex", "X-Title": "Reflex"}},
+    headers: {"X-Title": "Reflex"}},
   // Cloudflare serves one always-current alias, typesafe/jev; the call wraps the contract in {model, input}.
   cloudflare: {url: s => `https://api.cloudflare.com/client/v4/accounts/${s.account}/ai/run`,
     keychain: "cloudflare-api-token", pinned: "api.cloudflare.com",
@@ -37,6 +37,7 @@ export const PROVIDERS = {
     keychain: "ai-gateway-api-key", pinned: "ai-gateway.vercel.sh", model: m => m.startsWith("typesafe-ai/") ? m : "typesafe-ai/jev", body: typesafeBody},
   compatible: {url: s => s.url, keychain: "jev-api-key", model: m => m, body: typesafeBody},
 };
+// OpenRouter's app attribution; the plugin sends the title only.
 /** host[:port] lowercased, without a trailing dot or the scheme's default port; null when not a URL. */
 export const hostOf = u => { try { const x = new URL(u); return x.hostname.replace(/\.$/, "") + (x.port ? `:${x.port}` : ""); } catch { return null; } };
 export const DEFAULT_HOSTS = ["api.typesafe.ai", "openrouter.ai", "api.cloudflare.com", "ai-gateway.vercel.sh"];

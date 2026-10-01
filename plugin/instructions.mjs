@@ -199,121 +199,6 @@ async function hermes(input) {
 }
 
 // ---------------------------------------------------------------------------------------------
-async function selfcheck() {
-  const ok = (c, m) => { if (!c) { console.error("FAIL", m); process.exitCode = 1; } };
-  // parsing
-  const f = parseFragment('---\nwhen: "the task touches React"\npaths: [web/**/*.tsx, "**/*.css"]\nkeywords:\n  - react\n  - tailwind\n---\nUse tokens.\n', "fe");
-  ok(f?.id === "fe" && f.when === "the task touches React" && f.paths.join() === "web/**/*.tsx,**/*.css" &&
-     f.keywords.join() === "react,tailwind" && f.body === "Use tokens.", "front-matter: scalars, inline and dash lists");
-  ok(parseFragment("no front-matter", "x") === null && parseFragment("---\nwhen: x\n---\n", "x") === null &&
-     parseFragment("---\ntitle: y\n---\nbody", "x") === null, "no front-matter, empty body or no condition: not a fragment");
-  // globs and prompt paths
-  ok(pathMatches("web/**/*.tsx", "/r/web/src/a/App.tsx") && pathMatches("web/**/*.tsx", "web/App.tsx") &&
-     !pathMatches("web/**/*.tsx", "/r/api/App.tsx"), "glob ** and suffix match");
-  ok(pathMatches("*.tf", "/infra/envs/prod/main.tf") && pathMatches("**/*.{ts,tsx}", "src/a.ts") &&
-     !pathMatches("*.tf", "main.tfvars"), "basename glob, braces, anchored");
-  ok(pathsIn("fix web/src/App.tsx:12 and main.tf, see https://x.io/a.b.").join() === "web/src/App.tsx,main.tf", "paths in a prompt");
-  ok(keywordHit("stripe", "Refund via Stripe.") && !keywordHit("tf", "the tfvars file"), "keywords are whole words");
-
-  // discovery on the fixture repo: the user's fragment wins an id conflict, the user dir is included
-  const home = ENV.REFLEX_SELFCHECK_DATA, repo = join(home, "repo");
-  cpSync(join(dirname(fileURLToPath(import.meta.url)), "examples/instructions/repo"), repo, {recursive: true});
-  mkdirSync(join(repo, ".git"));
-  mkdirSync(join(home, ".config/reflex/instructions"), {recursive: true});
-  writeFileSync(join(home, ".config/reflex/instructions/personal.md"), "---\nkeywords: [changelog]\n---\nKeep CHANGELOG.md current.\n");
-  const mineBilling = join(home, ".config/reflex/instructions/billing.md");
-  writeFileSync(mineBilling, "---\nwhen: never\n---\npersonal billing rules\n");
-  const saved = ENV.XDG_CONFIG_HOME; delete ENV.XDG_CONFIG_HOME;
-  let frags = discover(join(repo, "web/src"), home);
-  const ids = frags.map(x => x.id).sort().join();
-  ok(ids === "billing,frontend,personal,terraform", `discovery finds repo + user fragments (${ids})`);
-  ok(frags.find(x => x.id === "billing")?.file === mineBilling, "a repo fragment cannot suppress the user's with the same id");
-  rmSync(mineBilling);
-  frags = discover(join(repo, "web/src"), home);
-  if (saved !== undefined) ENV.XDG_CONFIG_HOME = saved;
-  // untrusted places: above the repo root, symlinks, oversized files, and no repo at all
-  const planted = join(home, ".reflex/instructions"), mine = join(repo, ".reflex/instructions");
-  mkdirSync(planted, {recursive: true});
-  writeFileSync(join(planted, "above.md"), "---\nkeywords: [the]\n---\nplanted above the repo\n");
-  writeFileSync(join(home, "outside.md"), "---\nkeywords: [x]\n---\noutside the repo\n");
-  symlinkSync(join(home, "outside.md"), join(mine, "link.md"));
-  writeFileSync(join(mine, "huge.md"), "---\nkeywords: [x]\n---\n" + "x".repeat(MAX_FILE));
-  const got = discover(join(repo, "web/src"), home).map(x => x.id);
-  ok(!got.includes("above") && !got.includes("link") && !got.includes("huge") && got.includes("billing"),
-     `only the repo up to its root, regular files, bounded size (${got})`);
-  rmSync(join(repo, ".git"), {recursive: true});
-  const fromRepo = cwd => discover(cwd, home).some(x => x.file.startsWith(repo));
-  ok(!fromRepo(join(repo, "web/src")) && fromRepo(repo),
-     "outside a repo only cwd itself is read");
-  mkdirSync(join(repo, ".git"));
-  // a long pasted token or path cannot stall the hook
-  let t = Date.now();
-  pathsIn("see " + "ab/".repeat(3000) + "x.tsx");
-  const slow = pathMatches("**/**/**/*.css", "/" + "ab/".repeat(330) + "x.tsx");
-  ok(!slow && Date.now() - t < 200 && pathMatches("**/**/*.css", "/a/b.css"), `long paths match fast (${Date.now() - t} ms)`);
-
-  // selection with Jev stubbed: one request, one question per undecided fragment
-  const calls = [];
-  const stub = answers => async (state, questions) => { calls.push({state, questions}); return {answers: answers(questions), usage: {input_tokens: 1}, error: null}; };
-  const byWhen = map => qs => Object.fromEntries(Object.entries(qs).map(([k, q]) =>
-    [k, {type: "noul", noul: Object.entries(map).find(([w]) => q.instructions.includes(w))?.[1] ?? 0.1}]));
-  const run = (prompt, opts = {}) => select({prompt, cwd: "/repo", session_id: "s", ...opts},
-    {fragments: frags, askFn: stub(byWhen({"billing": 0.92, "React": 0.2, "Terraform": 0.05, ...opts.p}))});
-  let r = await run("the refund webhook double-charges customers " + Math.random());
-  ok(calls.length === 1 && Object.keys(calls[0].questions).length === 3, "deterministic misses go to Jev in one request");
-  ok(r.fragments.find(x => x.id === "billing")?.included && r.fragments.find(x => x.id === "billing").p === 0.92 &&
-     !r.fragments.find(x => x.id === "frontend").included && r.text.includes("## billing"), "Jev above threshold is injected");
-  ok(r.text.includes("does not come from the user") && r.text.includes(".reflex/instructions/billing.md\n- Money"),
-     "injected text names each fragment's source and is framed as guidance, not the user");
-  ok(Object.values(calls[0].questions).some(q => q.instructions.includes(frags.find(x => x.id === "billing").when)) &&
-     calls[0].state.request.cwd === "/repo", "each question carries its fragment's condition");
-  calls.length = 0;
-  r = await run("restyle the header in web/src/Header.tsx");
-  ok(r.fragments.find(x => x.id === "frontend").via === "paths" && Object.keys(calls[0].questions).length === 2,
-     "a path match skips Jev for that fragment");
-  calls.length = 0;
-  r = await run("rename a variable", {recent_files: ["/repo/infra/envs/prod/main.tf"]});
-  ok(r.fragments.find(x => x.id === "terraform").via === "paths", "recently touched files match paths");
-  calls.length = 0;
-  r = await run("update the CHANGELOG entry");
-  ok(r.fragments.find(x => x.id === "personal").via === "keywords" && r.text.indexOf("## personal") < (r.text.indexOf("## billing") >>> 0),
-     "keywords match; deterministic fragments come first");
-  // secrets never reach Jev or the log; the log keeps ids and probabilities only
-  calls.length = 0;
-  r = await run("deploy with AKIAABCDEFGHIJKLMNOP to the billing api");
-  ok(!JSON.stringify(calls[0].state).includes("AKIAABCDEFGHIJKLMNOP"), "prompt is redacted before Jev");
-  const log = readText(join(home, "instructions.jsonl")) ?? "";
-  ok(log.includes('"id":"billing"') && !log.includes("AKIA") && !log.includes("refund webhook"), "log has ids + p, never the prompt");
-  // the cache answers a repeated prompt without a call
-  calls.length = 0;
-  r = await run("deploy with AKIAABCDEFGHIJKLMNOP to the billing api");
-  ok(calls.length === 0 && r.source === "cache" && r.fragments.find(x => x.id === "billing").included, "prompt cache");
-  r = await run("deploy with AKIAABCDEFGHIJKLMNOP to the billing api", {recent_files: ["/repo/docs/notes.txt"]});
-  const r2 = await run("deploy with AKIAABCDEFGHIJKLMNOP to the billing api", {recent_commands: ["npm test"]});
-  ok(calls.length === 2 && r.source === "jev" && r2.source === "jev", "new recent files or commands miss the cache");
-  // failures: Jev error keeps deterministic matches only; incomplete answers are an error, not "no"
-  r = await select({prompt: "edit web/a.tsx and the invoice job " + Math.random(), cwd: "/r"},
-                   {fragments: frags, askFn: async () => ({answers: {}, usage: {}, error: "HTTP 529"})});
-  ok(r.source === "error" && r.fragments.filter(x => x.included).map(x => x.id).join() === "frontend", "Jev down: deterministic only");
-  r = await select({prompt: "the invoice job " + Math.random(), cwd: "/r"},
-                   {fragments: frags, askFn: async () => ({answers: {f0: {noul: 0.9}}, usage: {}, error: null})});
-  ok(r.error?.startsWith("incomplete") && !r.text, "incomplete answers inject nothing judged");
-  ok((await select({prompt: "", cwd: "/r"}, {fragments: frags})).text === "" &&
-     (await select({prompt: "x", cwd: "/r"}, {fragments: []})).source === "none", "no prompt or no fragments: no call");
-  // the size cap drops whole fragments, never cuts one
-  const big = [{id: "a", when: null, paths: [], keywords: ["go"], body: "A".repeat(MAX_CHARS - 200)},
-               {id: "b", when: null, paths: [], keywords: ["go"], body: "B".repeat(500)}];
-  r = await select({prompt: "go", cwd: "/r"}, {fragments: big, askFn: async () => { throw new Error("no call expected"); }});
-  ok(r.fragments.map(x => x.included).join() === "true,false" && r.text.length <= MAX_CHARS + 200, "size cap");
-  // --check resolves a relative --cwd before discovery and logging
-  mkdirSync(join(home, "kw/.reflex/instructions"), {recursive: true});
-  writeFileSync(join(home, "kw/.reflex/instructions/kw.md"), "---\nkeywords: [zebra]\n---\nStripes.\n");
-  const cli = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--check", "zebra", "--cwd", "kw"],
-    {cwd: home, encoding: "utf8", env: {...ENV, XDG_CONFIG_HOME: join(home, "no-config")}});
-  const last = JSON.parse(readText(join(home, "instructions.jsonl")).trim().split("\n").pop());
-  ok(last.cwd === join(realpathSync(home), "kw") && cli.stdout.includes("source: .reflex/instructions/kw.md"), `--check resolves --cwd (${last.cwd})`);
-  console.log(process.exitCode ? "instructions selfcheck FAILED" : "instructions selfcheck OK");
-}
 
 // ---------------------------------------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -326,16 +211,6 @@ const main = isMain(import.meta);
 const guarded = fn => Promise.resolve().then(fn).catch(hookFailure);
 
 if (!main) { /* imported */ }
-// The log and cache paths are fixed when gate.mjs loads, so the self-check reruns itself with a
-// scratch data dir rather than write into the real one.
-else if (flag("--selfcheck") && !ENV.REFLEX_SELFCHECK_DATA) {
-  const data = mkdtempSync(join(tmpdir(), "reflex-instr-"));
-  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--selfcheck"], {stdio: "inherit",
-    env: {...ENV, REFLEX_DATA_DIR: data, REFLEX_SELFCHECK_DATA: data, REFLEX_MODE: "shadow"}});
-  rmSync(data, {recursive: true, force: true});
-  process.exitCode = r.status ?? 1;
-}
-else if (flag("--selfcheck")) await selfcheck();
 else if (flag("--claude")) await guarded(() => userPromptSubmit(readStdin(), "claude-code"));
 else if (flag("--codex")) await guarded(() => userPromptSubmit(readStdin(), "codex"));
 else if (flag("--hermes")) await guarded(() => hermes(readStdin()));

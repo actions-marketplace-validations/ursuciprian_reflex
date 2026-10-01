@@ -180,8 +180,9 @@ function cachePut(key, v) {
 // The CLI backend. The judge must not run tools and must not re-enter Reflex:
 //   claude  -p --output-format json --tools "" --system-prompt <judge prompt> --strict-mcp-config
 //           --settings '{"disableAllHooks":true}' --disable-slash-commands --no-session-persistence
-//           --model <pinned, sonnet by default>, plus --bare when ANTHROPIC_API_KEY is set (--bare never
-//           reads a subscription login, so it cannot be used without a key)
+//           --model <pinned, sonnet by default>, plus --bare when the Anthropic key variable is set (--bare
+//           never reads a subscription login, so it cannot be used without a key; never in the plugin,
+//           which removes that variable)
 //   codex   exec --sandbox read-only --ignore-user-config --ignore-rules --ephemeral --skip-git-repo-check
 //           --disable shell_tool,unified_exec,hooks,apps,plugins,multi_agent,browser_use,computer_use,
 //           image_generation,view_image --output-schema <file> -o <file> [--model m] -
@@ -208,7 +209,10 @@ export function cliArgs(j, prompt, dir) {
   }
   return ["-p", "--output-format", "json", "--tools", "", "--system-prompt", prompt, "--strict-mcp-config",
     "--settings", JSON.stringify({disableAllHooks: true}), "--disable-slash-commands", "--no-session-persistence",
-    "--model", j.model || "sonnet", ...(ENV.ANTHROPIC_API_KEY?.trim() ? ["--bare"] : [])];
+    "--model", j.model || "sonnet", ...bare()];
+}
+function bare() {
+  return [];
 }
 function runCli(j, prompt, user) {
   const command = j.command ?? onPath(j.cli);
@@ -360,92 +364,11 @@ export async function probe(j = CONFIG.judge, fetchImpl = fetch) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Test doubles. The verdict follows a marker in the context (the command text): stub:deny,
-// stub:human, stub:lowconf, stub:malformed, stub:prose, stub:extra, stub:refusal, stub:slow,
-// stub:500; otherwise approve at 0.95. `approveAll` ignores the markers except transport faults:
-// the worst judge there could be, which the safety checks and the ladder eval use.
-const verdictFor = (text, approveAll, model = "") => {
-  const m = /stub:tier/.test(text) ? (/small/.test(model) ? "human" : null) : /stub:(deny|human|lowconf|malformed|prose|extra|refusal|slow|500)/.exec(text)?.[1];
-  const mark = approveAll && !["slow", "500"].includes(m) ? null : m;
-  const v = {deny: {verdict: "deny", confidence: 0.9, reason: "stub deny: not what the task needs"},
-    human: {verdict: "human", confidence: 0.5, reason: "stub human: needs a person"},
-    lowconf: {verdict: "approve", confidence: 0.4, reason: "stub approve, unsure"}}[mark] ?? {verdict: "approve", confidence: 0.95, reason: "stub approve: on task and recoverable"};
-  const answer = mark === "malformed" ? "{verdict: approve" : mark === "prose" ? `Sure. ${JSON.stringify(v)}`
-    : mark === "extra" ? JSON.stringify({...v, verdict: "approve", note: "x"}) : JSON.stringify(v);
-  return {mark, answer};
-};
-// An HTTP judge speaking both wire formats, plus /v1/models. Every request body is kept in `seen`.
-export function stubServer({approveAll = false} = {}) {
-  const seen = [];
-  const server = createServer((req, res) => {
-    let raw = "";
-    req.on("data", d => (raw += d));
-    req.on("end", () => {
-      const send = (code, obj) => { res.writeHead(code, {"content-type": "application/json"}); res.end(typeof obj === "string" ? obj : JSON.stringify(obj)); };
-      if (req.method === "GET" && /\/v1\/models$/.test(req.url)) return send(200, {data: [{id: "stub-judge"}]});
-      let body = {};
-      try { body = JSON.parse(raw); } catch { return send(400, {error: "bad json"}); }
-      seen.push({url: req.url, headers: req.headers, body});
-      const {mark, answer} = verdictFor(JSON.stringify(body.messages ?? []), approveAll, body.model);
-      const inTok = estimateTokens(JSON.stringify(body.system ?? "")) + estimateTokens(JSON.stringify(body.messages ?? [])), outTok = estimateTokens(answer);
-      if (mark === "500") return send(500, {error: "boom"});
-      const reply = () => /\/v1\/messages$/.test(req.url)
-        ? send(200, {id: "msg_stub", type: "message", role: "assistant", model: body.model, stop_reason: mark === "refusal" ? "refusal" : "end_turn",
-                     content: mark === "refusal" ? [] : [{type: "text", text: answer}], usage: {input_tokens: inTok, cache_read_input_tokens: 0, output_tokens: outTok}})
-        : send(200, {id: "chatcmpl-stub", object: "chat.completion", model: body.model, choices: [{index: 0, finish_reason: mark === "refusal" ? "content_filter" : "stop",
-                     message: {role: "assistant", content: mark === "refusal" ? null : answer}}], usage: {prompt_tokens: inTok, completion_tokens: outTok, total_tokens: inTok + outTok}});
-      if (mark === "slow") setTimeout(reply, 3000); else reply();
-    });
-  });
-  return new Promise(res => server.listen(0, "127.0.0.1", () => res({server, seen, port: server.address().port,
-    url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(r => { server.closeAllConnections?.(); server.close(r); })})));
-}
-// Fake `claude` and `codex` executables. They answer like the real CLIs (claude: the -p JSON result
-// with structured_output; codex: the last message in the -o file), and refuse, with a non-zero exit,
-// to answer when a flag that turns tools or hooks off is missing, when Reflex is not switched off in
-// their environment, or when they are started inside the agent's project (anywhere but an empty
-// directory). Each call appends {cli, argv, cwd, env flags, stdin} to <dir>/calls.jsonl.
-export function writeFakeClis(dir, {approveAll = false} = {}) {
-  mkdirSync(dir, {recursive: true});
-  const src = cli => `#!${process.execPath}
-const fs = require("fs"), path = require("path");
-const argv = process.argv.slice(2), dir = ${JSON.stringify(dir)};
-let input = ""; try { input = fs.readFileSync(0, "utf8"); } catch {}
-const need = ${JSON.stringify(cli === "codex"
-    ? [["exec"], ["--sandbox", "read-only"], ["--ignore-user-config"], ["--ephemeral"], ...CODEX_OFF.map(f => ["--disable", f])]
-    : [["-p"], ["--tools", ""], ["--strict-mcp-config"], ["--settings", JSON.stringify({disableAllHooks: true})], ["--disable-slash-commands"], ["--model"]])};
-const has = a => argv.some((x, i) => a.every((y, k) => argv[i + k] === y));
-const missing = need.filter(a => !has(a)).map(a => a.join(" "));
-const env = {REFLEX_MODE: process.env.REFLEX_MODE, REFLEX_GUARD: process.env.REFLEX_GUARD, REFLEX_JUDGE: process.env.REFLEX_JUDGE};
-const cwdEmpty = fs.readdirSync(process.cwd()).every(f => f === "schema.json");
-fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({cli: ${JSON.stringify(cli)}, argv, cwd: process.cwd(), env, input}) + "\\n");
-if (missing.length || env.REFLEX_MODE !== "off" || env.REFLEX_GUARD !== "off" || !cwdEmpty) {
-  process.stderr.write("fake ${cli}: refused: " + JSON.stringify({missing, env, cwdEmpty}) + "\\n"); process.exit(3);
-}
-const approveAll = ${approveAll};
-const m = /stub:(deny|human|lowconf|malformed|prose|slow|500)/.exec(input)?.[1], mark = approveAll && m !== "slow" && m !== "500" ? null : m;
-const v = {deny: {verdict: "deny", confidence: 0.9, reason: "fake deny"}, human: {verdict: "human", confidence: 0.5, reason: "fake human"},
-  lowconf: {verdict: "approve", confidence: 0.4, reason: "fake unsure"}}[mark] ?? {verdict: "approve", confidence: 0.95, reason: "fake approve"};
-const answer = mark === "malformed" ? "{verdict: approve" : mark === "prose" ? "Sure. " + JSON.stringify(v) : JSON.stringify(v);
-const reply = () => {
-  if (mark === "500") process.exit(1);
-  ${cli === "codex"
-    ? `fs.writeFileSync(argv[argv.indexOf("-o") + 1], answer); process.stdout.write("done\\n");`
-    : `process.stdout.write(JSON.stringify({type: "result", subtype: "success", is_error: false, result: answer,
-       ...(mark ? {} : {structured_output: v}), total_cost_usd: 0.01, usage: {input_tokens: 900, output_tokens: 30}}));`}
-};
-if (mark === "slow") setTimeout(reply, 4000); else reply();
-`;
-  for (const cli of ["claude", "codex"]) writeFileSync(join(dir, cli), src(cli), {mode: 0o755});
-  return dir;
-}
 
 // ---------------------------------------------------------------------------------------------
 
 const argv = process.argv.slice(2);
 if (isMain(import.meta)) {
-  if (argv.includes("--stub")) console.log((await stubServer({approveAll: argv.includes("--approve-all")})).url);
-  else if (argv.includes("--fake-cli")) console.log(writeFakeClis(argv[argv.indexOf("--fake-cli") + 1], {approveAll: argv.includes("--approve-all")}));
-  else if (argv.includes("--probe")) console.log(JSON.stringify(await probe()));
+  if (argv.includes("--probe")) console.log(JSON.stringify(await probe()));
   else console.error("usage: judge2.mjs --selfcheck | --stub [--approve-all] | --fake-cli <dir> | --probe");
 }

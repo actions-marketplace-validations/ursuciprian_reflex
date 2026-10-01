@@ -1996,14 +1996,14 @@ async function claudePluginChecks(proot) {
   const commandOf = f => readFileSync(join(proot, "commands", f), "utf8").match(/^allowed-tools: Bash\((.*?)\)(,|$)/m)[1].replace(/ \*$/, "");
   for (const f of ["status.md", "report.md", "replay.md", "suggest.md", "queue.md", "check.md"]) {
     const c = commandOf(f) + (f === "check.md" ? " 'git push --force origin main'" : "");
-    assert.match(c, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/\w+\.mjs" --plugin( |$)/, `${f}: node on the plugin's own script, no reflex from PATH`);
+    assert.match(c, /^"\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/\w+\.sh"( |$)/, `${f}: the plugin's own shell script, no reflex from PATH`);
     const r = await sh(c, undefined, cmdEnv);
     assert.equal(r.status, 0, `${f}: ${c}\n${r.out}\n${r.err}`);
     if (f === "check.md") assert.equal(JSON.parse(r.out).decision, "deny", "/reflex:check judges the command");
     assert.equal(JSON.parse(success(spawnSync(process.execPath, [join(proot, "gate.mjs"), "--check", c.replaceAll("${CLAUDE_PLUGIN_ROOT}", proot)],
       {cwd: proot, encoding: "utf8", env: {...env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: join(scratch, "plugin-check")}}))).decision, "pass", `the gate passes ${f}`);
   }
-  const status = JSON.parse((await sh(`node "\${CLAUDE_PLUGIN_ROOT}/status.mjs" --plugin --status --json`, undefined, cmdEnv)).out);
+  const status = JSON.parse((await sh(`"\${CLAUDE_PLUGIN_ROOT}/scripts/status.sh" --json`, undefined, cmdEnv)).out);
   assert.ok(status.mode === "enforce" && status.engine === "jev" && /not visible from the Bash tool/.test(status.api_key) &&
     !status.errors.some(e => /needs the Jev API key/.test(e)) && status.warnings.some(w => /reach only the plugin's hooks/.test(w)),
     `status from the Bash tool: config.json's view, says the options are not visible: ${JSON.stringify(status).slice(0, 400)}`);
@@ -2031,18 +2031,31 @@ async function claudePluginChecks(proot) {
   assert.equal(pkg.bin.reflex, "scripts/reflex");
   assert.match(readFileSync(join(root, pkg.bin.reflex), "utf8"), /^#!\/usr\/bin\/env node\n/, "the reflex bin is a node script");
   assert.match(success(spawnSync(process.execPath, [join(root, pkg.bin.reflex), "version"], {encoding: "utf8", env: clean})), new RegExp(pkg.version.replace(/\./g, "\\.")));
-  // The icon: a complete PNG named by both manifests; the SVGs carry no style, script or event handler.
-  assert.ok(plugin.icon === "./assets/logo-512.png" && market.plugins[0].icon === undefined, "plugin.json names the PNG icon (a marketplace entry has no icon field)");
+  // No icon in the plugin (the directory listing sets none); the repository's PNG is complete and the SVGs
+  // carry no style, script or event handler.
+  assert.ok(plugin.icon === undefined && market.plugins[0].icon === undefined && !existsSync(join(root, "plugin/assets")), "the plugin names and ships no icon");
   // /reflex:* commands are judged as the reflex command they are, and nothing else is.
   const judgedOwn = c => JSON.parse(success(spawnSync(process.execPath, [join(proot, "gate.mjs"), "--check", c], {cwd: proot, encoding: "utf8",
     env: {...env, REFLEX_ENGINE: "local", REFLEX_DATA_DIR: join(scratch, "plugin-check")}}))).decision;
-  for (const c of [`node "${proot}/gate.mjs" --plugin --check 'x'; rm -rf ~`, `node "${proot}/replay.mjs" --plugin\nreplay claude --since 7d`,
-    `node "${proot}/gate.mjs" --plugin --check x --sh -c 'rm -rf ~'`, `node "/tmp/elsewhere/gate.mjs" --plugin --check 'x'`,
-    `node "${proot}/gate.mjs" --check 'x' --plugin`, `FOO=1 node "${proot}/status.mjs" --plugin --status`, `node "${proot}/install.mjs" --plugin`,
-    `node "${proot}/autonomy.mjs" --plugin queue approve abc`, `node "${proot}/replay.mjs" --plugin suggest claude --write --yes`,
-    `node "${proot}/report.mjs" --plugin --push http://x.invalid`, `node "${proot}/gate.mjs' --plugin --check 'x'`])
+  const own = s => `"${proot}/scripts/${s}.sh"`;
+  for (const c of [`${own("check")} 'x'; rm -rf ~`, `${own("replay")}\nrm -rf ~`, `${own("check")} x && sh -c 'rm -rf ~'`,
+    `"/tmp/elsewhere/scripts/check.sh" 'x'`, `FOO=1 ${own("status")}`, `node "${proot}/install.mjs" --plugin`, `${own("queue")} approve abc`,
+    `${own("queue")} clear`, `${own("suggest")} --write --yes`, `${own("report")} --push http://x.invalid`, `"${proot}/scripts/check.sh' 'x'`,
+    `node "${proot}/gate.mjs" --plugin --check 'x'; rm -rf ~`, `node "${proot}/autonomy.mjs" --plugin queue approve abc`,
+    `node "${proot}/replay.mjs" --plugin suggest claude --write --yes`])
     assert.notEqual(judgedOwn(c), "pass", c);
-  const png = readFileSync(join(proot, plugin.icon));
+  // what the commands and the skill run is what the gate passes as its own command
+  for (const c of [own("status"), `${own("status")} --json`, `${own("check")} 'git push --force origin main'`, `${own("queue")} list`,
+    `${own("queue")} show q-0123456789`, `${own("replay")} claude --since 7d`, own("report"), `${own("report")} --since 30`, `${own("suggest")} --since 30d --min 3`])
+    assert.equal(judgedOwn(c), "pass", c);
+  // the scripts refuse every argument the command does not list, before node starts
+  for (const [s, args] of [["status", ["--doctor"]], ["check", []], ["check", ["a", "b"]], ["queue", ["approve", "q-0123456789"]], ["queue", ["show", "../x"]],
+    ["replay", ["--engine", "laya"]], ["replay", ["--yes"]], ["report", ["--push", "http://x.invalid"]], ["report", ["--since", "7d"]],
+    ["suggest", ["--write"]], ["suggest", ["--yes"]], ["suggest", ["--min"]]]) {
+    const x = spawnSync(join(proot, "scripts", `${s}.sh`), args, {encoding: "utf8", env: {PATH: "/usr/bin:/bin"}});
+    assert.ok(x.status === 2 && /usage/.test(x.stderr), `${s}.sh ${args.join(" ")} is refused: ${x.status} ${x.stderr}`);
+  }
+  const png = readFileSync(join(root, "assets/logo-512.png"));
   assert.ok(png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) && png.subarray(12, 16).toString() === "IHDR" &&
     png.subarray(-8, -4).toString() === "IEND", "logo-512.png is a complete PNG");
   for (const f of ["assets/logo.svg", "assets/wordmark.svg"])

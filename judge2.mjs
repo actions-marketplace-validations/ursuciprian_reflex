@@ -189,8 +189,9 @@ function cachePut(key, v) {
 // The CLI backend. The judge must not run tools and must not re-enter Reflex:
 //   claude  -p --output-format json --tools "" --system-prompt <judge prompt> --strict-mcp-config
 //           --settings '{"disableAllHooks":true}' --disable-slash-commands --no-session-persistence
-//           --model <pinned, sonnet by default>, plus --bare when ANTHROPIC_API_KEY is set (--bare never
-//           reads a subscription login, so it cannot be used without a key)
+//           --model <pinned, sonnet by default>, plus --bare when the Anthropic key variable is set (--bare
+//           never reads a subscription login, so it cannot be used without a key; never in the plugin,
+//           which removes that variable)
 //   codex   exec --sandbox read-only --ignore-user-config --ignore-rules --ephemeral --skip-git-repo-check
 //           --disable shell_tool,unified_exec,hooks,apps,plugins,multi_agent,browser_use,computer_use,
 //           image_generation,view_image --output-schema <file> -o <file> [--model m] -
@@ -217,7 +218,13 @@ export function cliArgs(j, prompt, dir) {
   }
   return ["-p", "--output-format", "json", "--tools", "", "--system-prompt", prompt, "--strict-mcp-config",
     "--settings", JSON.stringify({disableAllHooks: true}), "--disable-slash-commands", "--no-session-persistence",
-    "--model", j.model || "sonnet", ...(ENV.ANTHROPIC_API_KEY?.trim() ? ["--bare"] : [])];
+    "--model", j.model || "sonnet", ...bare()];
+}
+function bare() {
+  // @reflex:setup-only begin
+  if (ENV.ANTHROPIC_API_KEY?.trim()) return ["--bare"];
+  // @reflex:setup-only end
+  return [];
 }
 function runCli(j, prompt, user) {
   const command = j.command ?? onPath(j.cli);
@@ -369,6 +376,7 @@ export async function probe(j = CONFIG.judge, fetchImpl = fetch) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// @reflex:setup-only begin
 // Test doubles. The verdict follows a marker in the context (the command text): stub:deny,
 // stub:human, stub:lowconf, stub:malformed, stub:prose, stub:extra, stub:refusal, stub:slow,
 // stub:500; otherwise approve at 0.95. `approveAll` ignores the markers except transport faults:
@@ -448,6 +456,7 @@ if (mark === "slow") setTimeout(reply, 4000); else reply();
   for (const cli of ["claude", "codex"]) writeFileSync(join(dir, cli), src(cli), {mode: 0o755});
   return dir;
 }
+// @reflex:setup-only end
 
 // ---------------------------------------------------------------------------------------------
 // @reflex:setup-only begin
@@ -596,10 +605,10 @@ async function selfcheck() {
 
 const argv = process.argv.slice(2);
 if (isMain(import.meta)) {
-  if (argv.includes("--stub")) console.log((await stubServer({approveAll: argv.includes("--approve-all")})).url);
-  else if (argv.includes("--fake-cli")) console.log(writeFakeClis(argv[argv.indexOf("--fake-cli") + 1], {approveAll: argv.includes("--approve-all")}));
-  else if (argv.includes("--probe")) console.log(JSON.stringify(await probe()));
+  if (argv.includes("--probe")) console.log(JSON.stringify(await probe()));
   // @reflex:setup-only begin
+  else if (argv.includes("--stub")) console.log((await stubServer({approveAll: argv.includes("--approve-all")})).url);
+  else if (argv.includes("--fake-cli")) console.log(writeFakeClis(argv[argv.indexOf("--fake-cli") + 1], {approveAll: argv.includes("--approve-all")}));
   else if (argv.includes("--selfcheck")) await selfcheck();
   // @reflex:setup-only end
   else console.error("usage: judge2.mjs --selfcheck | --stub [--approve-all] | --fake-cli <dir> | --probe");
