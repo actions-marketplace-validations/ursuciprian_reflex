@@ -206,13 +206,14 @@ const LOCAL = {outcome: "ask", source: "local", rule: "not covered by local rule
 // Counts per source, asks per 100 commands (supervised and autonomous), top rules and masked samples.
 function tally(judged) {
   const n = judged.length, per100 = k => n ? +(100 * k / n).toFixed(1) : 0;
-  const t = {commands: n, pass_read_only: 0, pass_fast_lane: 0, rule_ask: 0, rule_deny: 0, rule_pass: 0,
+  const t = {commands: n, pass_read_only: 0, pass_fast_lane: 0, pass_workspace: 0, rule_ask: 0, rule_deny: 0, rule_pass: 0,
     engine: {pass: 0, allow: 0, ask: 0, deny: 0, error: 0}, reach_human: 0, reach_system2: 0, autonomous_human: 0};
   const rules = {}, samples = {deny: [], ask: []};
   for (const {c, j} of judged) {
     const src = j.source, out = j.outcome === "would_allow" ? "allow" : j.outcome;
     if (src === "read-only") t.pass_read_only++;
     else if (src === "fast-lane") t.pass_fast_lane++;
+    else if (src === "workspace") t.pass_workspace++;
     else if (src === "rule") { t[`rule_${out}`] = (t[`rule_${out}`] ?? 0) + 1; const k = j.id ?? j.rule; rules[k] ??= {id: k, rule: redact(j.rule ?? "").replace(/ \(in [^)]*\)$/, ""), count: 0}; rules[k].count++; }
     else if (src === "fallback" || src === "error") t.engine.error++;
     else t.engine[out] = (t.engine[out] ?? 0) + 1;
@@ -281,7 +282,7 @@ async function replay() {
   console.log(`reflex replay · engine ${CONFIG.engine} · since ${result.since.slice(0, 16)}${project ? ` · project ${project}` : ""} · nothing executed`);
   console.log(`  sources      ${src.join("; ")}`);
   console.log(`  commands     ${t.commands}`);
-  console.log(`  pass         ${t.pass_read_only} read-only, ${t.pass_fast_lane} fast lane${t.rule_pass ? `, ${t.rule_pass} by rule` : ""}`);
+  console.log(`  pass         ${t.pass_read_only} read-only, ${t.pass_fast_lane} fast lane, ${t.pass_workspace} workspace allowlist${t.rule_pass ? `, ${t.rule_pass} by rule` : ""}`);
   console.log(`  rules        ${t.rule_ask} ask, ${t.rule_deny} deny`);
   console.log(`  engine       ${Object.entries(t.engine).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(", ") || "none"} (${CONFIG.engine})`);
   console.log(`  supervised   ${result.per_100.reach_human} per 100 commands would reach a human (enforce mode; shadow logs engine asks only)`);

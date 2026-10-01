@@ -567,7 +567,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ursuciprian/reflex@v0.17.1   # a release tag or a commit SHA
+      - uses: ursuciprian/reflex@v0.18.0   # a release tag or a commit SHA
         with:
           commands: |
             make deploy-staging

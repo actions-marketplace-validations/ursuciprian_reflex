@@ -30,7 +30,8 @@ import {spawn, spawnSync} from "node:child_process";
 import {homedir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
-import {envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
+import {checkpoint, envelopeFor, ladder, park, queueAnswer, runaway, runawayCall, runawayMark, runawayNote} from "./autonomy.mjs";
+import {workspacePass} from "./workspace.mjs";
 import {userFastPass} from "./fastlane.mjs";
 import {globsReflex, repoRoot, teamMode, teamPolicy, teamRules} from "./team.mjs";
 import {argStrings, mcpCommand, mcpJudge, mcpWritePaths, protectedPath, toolOf} from "./tools.mjs";
@@ -45,7 +46,7 @@ import {SCAN_MS, localScripts, scriptLines} from "./scripts.mjs";
 import {onlyNotes, pipelines, READ_ONLY_MODE, readOnly} from "./readonly.mjs";
 import {PRECHECK_MS, COMMAND_BYTES, largeDeny, load, SEVERITY, rx, checkRules, fastPass} from "./rules.mjs";
 import {ownCommand, nestedCheckout, writesOf, staysNested, touchesOwn, namesOwnFile, reflexChanges, TEAM_TAMPER, fastLaneEdit, namesOwn} from "./tamper.mjs";
-import {envContext, jevJudge, sessionContext, ask} from "./jev.mjs";
+import {envContext, jevJudge, sessionContext, ask, noteKeyError, keyWarning} from "./jev.mjs";
 // What the other files import from gate.mjs, wherever it now lives.
 export {USER_CONFIG_FILE, USER_CONFIG_ERROR, USER_CONFIG, ENGINES, JUDGE_BACKENDS, JUDGE_DEFAULTS, KEYLESS_JUDGE_DEFAULTS, BACKEND_DEFAULTS,
   QUEUE_DEFAULTS, RUNAWAY_DEFAULTS, runawaySettings, CLAUDE_SETTINGS, CODEX_HOOKS, settingsHooks, settingsHooksInstalled, PLUGIN, settingsCovers,
@@ -55,7 +56,7 @@ export {localScripts} from "./scripts.mjs";
 export {readOnlyLegacy, READ_ONLY_MODE, readOnly, simpleSegments, READ_ONLY_SIMPLE, readOnlySimple, pipelines} from "./readonly.mjs";
 export {policyDirectory, setupFile, load, checkRules, fastPass, rulesHit} from "./rules.mjs";
 export {ownCommand} from "./tamper.mjs";
-export {envContext, transcriptTail, sessionContext, ask, cacheGet, cachePut, broadCwd, jevJudge} from "./jev.mjs";
+export {envContext, transcriptTail, sessionContext, ask, cacheGet, cachePut, broadCwd, jevJudge, keyError, keyErrorMessage, keyWarning, KEY_ERROR} from "./jev.mjs";
 
 /** Everything decided without Jev, or null when Jev has to judge. A rule that fires on the command
  * as the rules know it (ruleSpelling) counts too; the more severe of the two rule outcomes wins. */
@@ -221,7 +222,10 @@ function precheckAs(command, cwd, env, run, alt = false) {
   if (READ_ONLY_MODE === "simple" && readOnly(command)) return RO;
   if (fastPass(command, rules)) return {outcome: "pass", rule: "fast lane", source: "fast-lane", policy_version: rules.version};
   if (userFastPass(command, cwd, env)) return {outcome: "pass", rule: "fast lane (fastlane.json)", source: "fast-lane", policy_version: rules.version};
-  return null;
+  // Last: the keyless workspace allowlist (workspace.mjs), a few exact in-tree shapes. decide() honours
+  // it only with a checkpoint in hand; without one the command goes on to the engine.
+  const w = CONFIG.workspace ? workspacePass(command, cwd, {protectedWrite}) : null;
+  return w && {...w, policy_version: rules.version};
 }
 
 /** The whole gate for one command, as eval.mjs and the hook see it. noExec: the plan gate runs no
@@ -339,8 +343,16 @@ export async function decide(call, {background = false, asker, judger} = {}) {
     const d = j?.outcome === "deny" ? j : {...egress, ...(j && {answers: j.answers, state: j.state, gate: j.gate})};
     return finish(d, call, d.outcome, {env, judger, egress: true});
   }
+  // A workspace allowlist pass stands only with a recovery point: in enforce mode the checkpoint is taken
+  // now, before the command runs (it runs after the hook returns). No checkpoint (not a repository with a
+  // commit, or the checkpoint failed) or production: not a workspace pass, the engine or the ladder decides.
+  // Shadow takes none and logs what enforce would do (allowSetting: would_allow or pass).
+  if (quick?.source === "workspace") {
+    const c = call.tier?.prod ? null : CONFIG.mode === "enforce" ? checkpoint(call.cwd) : {};
+    quick = c ? allowSetting(holdAllow({...quick, ...(c.ref && {checkpoint: {ref: c.ref, ms: c.ms, ...(c.same && {same: true})}})}, call)) : null;
+  }
   if (quick) {
-    const effective = quick.source === "rule" ? quick.outcome : "pass";
+    const effective = quick.source === "rule" ? quick.outcome : quick.source === "workspace" && quick.outcome === "allow" ? "allow" : "pass";
     if (quick.source === "read-only") return view(quick, effective);
     return finish(quick, call, effective, {env, judger});
   }
@@ -382,7 +394,23 @@ function toolRules(call, env) {
   return {t, quick, call: {...call, command: `${mcpCommand(t, redact)} (input ${digest})`, tier,
     mcp: {server: t.server, tool: t.tool, arguments: redact(JSON.stringify(t.args ?? {})).slice(0, 2000), prod: tier.prod}}};
 }
-const unknownTool = t => ({outcome: "pass", source: "local", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules: logged (keyless)`, policy_version: load("mcp.json").version});
+// The MCP infra preset (config.json mcp.infra, on by default): an unknown tool on a server that acts on
+// cloud, clusters, infrastructure-as-code, a database or a code host is not only logged: the engine
+// judges it, and keyless it asks. Matched on the server name alone, word by word (aws-mcp, awslabs.eks,
+// mcp-server-kubernetes), or any server name containing "prod"; never on the tool name, so a
+// query_database tool on a notion server is not infra. Without a server name (Hermes, opencode) the
+// first word of the tool name is the server's (toolOf).
+const MCP_INFRA = new Set(["aws", "awslabs", "kubernetes", "k8s", "kubectl", "terraform", "tfc", "gcp", "gcloud", "azure", "postgres", "postgresql",
+  "mysql", "mongodb", "dynamodb", "database", "db", "supabase", "github", "gitlab"]);
+export const mcpInfraServer = t => {
+  const raw = String(t.server ?? String(t.tool ?? "").split("_")[0]), server = raw.toLowerCase();
+  // camel case splits too (McpAws, myPostgresServer), and the whole word stays (GitHub is github)
+  const words = [...server.split(/[^a-z0-9]+/), ...raw.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase().split(/[^a-z0-9]+/)];
+  return server.includes("prod") || words.some(w => MCP_INFRA.has(w));
+};
+const unknownTool = t => CONFIG.mcp.infra && mcpInfraServer(t)
+  ? {outcome: "ask", source: "rule", id: "mcp-unknown", rule: `unknown tool on an infrastructure MCP server (${t.server ?? t.tool}): a human reviews it (mcp.infra)`, policy_version: load("mcp.json").version}
+  : {outcome: "pass", source: "local", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules: logged (keyless)`, policy_version: load("mcp.json").version};
 /** A tool call through the rules and the engine, as eval.mjs sees it: no freeze, queue, runaway guard or trace. */
 export async function judgeTool({tool, input = {}, mcp = false, cwd, env = {}, session = {}, useCache = true, asker}) {
   if (configurationError()) return {outcome: "ask", rule: configurationError(), source: "error"};
@@ -423,7 +451,7 @@ async function toolDecide(call, {background = false, asker, judger} = {}) {
   const version = load("mcp.json").version;
   if (CONFIG.mcp.unknown === "ask")
     return finish({outcome: "ask", source: "rule", id: "mcp-unknown", rule: `MCP tool ${t.tool} is not covered by the MCP rules (mcp.unknown: ask)`, policy_version: version}, call, "ask", {env, judger});
-  if (CONFIG.engine === "local") return pass(await finish(unknownTool(t), call, "pass", {env, judger, background}));
+  if (CONFIG.engine === "local") { const u = unknownTool(t); return pass(await finish(u, call, u.outcome === "ask" ? "ask" : "pass", {env, judger, background})); }
   if (CONFIG.mode !== "enforce" && !background) return inBackground(call);
   const t0 = tainted(call.session_id);
   const j = await jevJudge({command: call.command, cwd: call.cwd, env, session: {...callSession(call), mcp: call.mcp}, asker, tainted: !!t0, tool: true});
@@ -433,6 +461,10 @@ async function toolDecide(call, {background = false, asker, judger} = {}) {
 // (System 2, the always-human class, the queue, checkpoints), then the trace and the agent's view.
 async function finish(j, call, effective, opts = {}) {
   if (call.plan && !j.plan) j = {...j, plan: call.plan};
+  noteKeyError(j);
+  // Shadow enforces deterministic rules only: an engine that gave no answer (no key, unreachable,
+  // timed out, a malformed answer) passes and is logged with the reason. Enforce keeps the fallback.
+  if (j.source === "fallback" && CONFIG.mode !== "enforce") [j, effective] = [{...j, outcome: "pass", rule: `${j.rule}; shadow logs it and passes`}, "pass"];
   if (CONFIG.judge.enabled || CONFIG.queue.enabled || CONFIG.checkpoints) ({j, effective} = await ladder(j, call, effective, opts));
   runawayNote(call, j, effective);
   trace(j, call, effective);
@@ -608,9 +640,9 @@ export function holdAllow(j, call) {
 }
 // A fallback can pass, ask or deny; never allow, whatever the file says.
 function safeFallback() { try { const f = load("policy.json").fallback; return ["pass", "ask", "deny"].includes(f) ? f : null; } catch { return null; } }
-// Only a fresh Jev judgment, a System 2 approval or a human's queue approval may allow; a rule, the
-// read-only list or the fast lane never does.
-export const view = (j, effective) => ({effective: effective === "allow" && !["jev", "judge", "queue"].includes(j.source) ? "pass"
+// Only a fresh Jev judgment, a System 2 approval, a human's queue approval or a workspace allowlist
+// pass with its checkpoint taken (decide) may allow; a rule, the read-only list or the fast lane never does.
+export const view = (j, effective) => ({effective: effective === "allow" && !["jev", "judge", "queue", "workspace"].includes(j.source) ? "pass"
                                    : ["pass", "allow", "ask", "deny"].includes(effective) ? effective : "ask", decision: j.outcome, reason: `reflex (${j.source}): ${j.rule}`,
                                  source: j.source, policy: j.policy_version ?? null, ...(j.plan && {plan: j.plan})});
 
@@ -644,7 +676,7 @@ function trace(j, call, effective) {
     decision: j.outcome, policy_decision: j.policy_outcome ?? j.outcome, rule: j.rule, source: j.source, policy_version: j.policy_version ?? null,
     mode: CONFIG.mode, emitted: effective === "pass" ? null : effective,
     agent: call.agent ?? null, session_id: call.session_id ?? null, call_id: call.call_id ?? null,
-    permission_mode: call.permission_mode ?? null, ...(j.plan && {plan: j.plan}), ...(j.ladder && {ladder: j.ladder}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway}),
+    permission_mode: call.permission_mode ?? null, ...(j.plan && {plan: j.plan}), ...(j.ladder && {ladder: j.ladder}), ...(j.checkpoint && {checkpoint: j.checkpoint}), ...((j.runaway ?? call.runaway) && {runaway: j.runaway ?? call.runaway}),
     ...(j.id && {rule_id: j.id}), ...(call.tier && {tier: call.tier}), cwd: call.cwd ?? null});
   // the decision webhook (notify.mjs): redacted, detached, never waited for; a trusted team policy may add one.
   // REFLEX_NOTIFY=off sends nothing (doctor's probes set it).
@@ -694,7 +726,9 @@ async function claudePre(input) {
   const call = claudeCall(input);
   if (!call) return;
   const out = claudeOut(await decideSafe(call));
-  if (out) process.stdout.write(JSON.stringify(out));
+  // a missing engine key: one warning per session, shown to the user, not one per command
+  const warning = keyWarning(call.session_id, teamMode(CONFIG.mode, call.cwd));
+  if (out || warning) process.stdout.write(JSON.stringify({...out, ...(warning && {systemMessage: warning})}));
 }
 // pass is silent: Claude Code's own permission rules decide. allow skips its prompt, but its deny
 // and ask rules are still evaluated after the hook. The plugin never allows: its allow is a pass.
