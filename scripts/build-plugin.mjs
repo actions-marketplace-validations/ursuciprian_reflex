@@ -54,7 +54,7 @@ const FORBIDDEN = [
   [/TYPESAFE_API_KEY/], [/OPENROUTER_API_KEY/], [/CLOUDFLARE_API_TOKEN/], [/AI_GATEWAY_API_KEY/],
   [/ANTHROPIC_API_KEY|REFLEX_KEYCHAIN_SERVICE|GH_TOKEN/],
   [/pip install|bin\/pip|-m", "venv"|laya-venv|laya\[serve\]/], [/huggingface|HF_HUB|HF_HOME/i],
-  [/curl /, ["suggest.mjs"], "probes a fast-lane suggestion must never pass (command substitution, a .env upload)"],
+  [/curl /],
   [/npx /], [/npm install -g|npm i -g/], [/child_process.*install/], [/@reflex:setup-only/],
 ];
 
