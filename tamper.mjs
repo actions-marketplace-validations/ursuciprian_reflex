@@ -235,10 +235,12 @@ export const fastLaneEdit = t => /\b(suggest|learn)\b[^\n;&|]*\s--(write|forget|
   (/\b(reflex|replay\.mjs)\b/.test(t) && /\b(suggest|learn)\b/.test(t) && /\$|\bxargs\b|\beval\b|\(\)\s*\{|\bfunction\b/.test(t));
 // Granting trust in a team policy (team.mjs), by the CLI or by its file or function.
 export const TEAM_TAMPER = /\b(reflex|team\.mjs)\s+(trust|policy\s+init)\b|\bteam\.mjs\b|\btrusted\.json\b|\btrustRepo\b/;
-// The Claude Code plugin's commands (commands/*.md) run this copy's own scripts with node, as
-// scripts/reflex does for `reflex check|status|report|replay|suggest|queue`: judged as that `reflex`
-// command, so they get its fast lane and its tamper rules. Only this directory's files, as the
-// command's first words; anything after them is judged as usual.
-const OWN = new RegExp(String.raw`^node[ \t]+("?)${HERE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:gate\.mjs\1[ \t]+--plugin[ \t]+--(check)|` +
-  String.raw`status\.mjs\1[ \t]+--plugin[ \t]+--(status)|(report)\.mjs\1[ \t]+--plugin|replay\.mjs\1[ \t]+--plugin[ \t]+(replay|suggest)|autonomy\.mjs\1[ \t]+--plugin[ \t]+(queue))(?=[ \t]|$)`);
-export const ownCommand = c => { const m = OWN.exec(c); return m ? `reflex ${m.slice(2).find(Boolean)}${c.slice(m[0].length)}` : null; };
+// The Claude Code plugin's commands (commands/*.md) run this copy's own scripts/<name>.sh, which do
+// what scripts/reflex does for `reflex check|status|report|replay|suggest claude|queue`: judged as that
+// `reflex` command, so they get its fast lane and its tamper rules. Only this directory's scripts, as
+// the command's first word; anything after them is judged as usual.
+const OWN = new RegExp(String.raw`^("?)${HERE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/scripts/(check|status|report|replay|suggest|queue)\.sh\1(?=[ \t]|$)`);
+export const ownCommand = c => {
+  const m = OWN.exec(c);
+  return m ? `reflex ${m[2] === "suggest" ? "suggest claude" : m[2]}${c.slice(m[0].length)}` : null;
+};

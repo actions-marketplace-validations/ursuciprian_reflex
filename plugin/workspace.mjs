@@ -27,6 +27,7 @@ import {lstatSync, realpathSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {join, relative, resolve} from "node:path";
 import {isMain} from "./failsafe.mjs";
+import {APPROVED} from "./plugin.mjs";
 
 const PLAIN = /^[A-Za-z0-9_@%+,=:/.-]+$/;
 const SCRIPT = /^s\/(?:[^/\\\n]|\\[^\n])*\/(?:[^/\\\n]|\\[^\n])*\/[gpiImM0-9]*$/;
@@ -93,7 +94,7 @@ function tracked(p, ctx) {
   return ita.status === 0 && !ita.stdout.trim();
 }
 
-/** {outcome: "allow", source: "workspace", id, rule} for one of the shapes above, else null. */
+/** {outcome: APPROVED, source: "workspace", id, rule} (a pass in the plugin, see plugin.mjs) for one of the shapes above, else null. */
 export function workspacePass(command, cwd, {protectedWrite} = {}) {
   const w = words(command);
   if (!w || w[0].quoted || !cwd) return null;
@@ -108,7 +109,7 @@ export function workspacePass(command, cwd, {protectedWrite} = {}) {
   const base = relative(root, real);
   if (base.startsWith("..") || resolve(root, base) !== real) return null;
   const ctx = {root, cwd, base: base ? base.split("/") : [], protectedWrite};
-  const pass = rule => ({outcome: "allow", source: "workspace", id: `workspace-${prog}`, rule: `${rule} (workspace allowlist; checkpoint first)`});
+  const pass = rule => ({outcome: APPROVED, source: "workspace", id: `workspace-${prog}`, rule: `${rule} (workspace allowlist; checkpoint first)`});
   const flag = (x, f) => x && !x.quoted && x.text === f;
   if (prog === "mkdir") {
     if (!flag(args[0], "-p") || args.length < 2) return null;

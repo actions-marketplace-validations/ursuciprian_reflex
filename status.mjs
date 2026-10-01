@@ -205,6 +205,8 @@ const scoped = installs.filter(i => i.scope !== "user").map(i => `${i.id} (${i.s
 const claudeHooks = (settingsLive ? `reflex setup hooks in ${CLAUDE_SETTINGS}${pluginOn || scoped.length ? " (the plugin stands down)" : ""}`
   : pluginOn ? `the Claude Code plugin (${userInstalls[0].id})` : "none recorded") + (scoped.length ? `; plugin installed for a project: ${scoped.join(", ")}` : "");
 if (plugin.active && CONFIG.judge.enabled) warnings.push("System 2 is on, but the plugin's PreToolUse hook has a 10 s timeout and a longer judge call fails open. Use reflex setup --agents claude, which sizes the timeout to the judge.");
+// reflex doctor only (the plugin's /reflex:status never passes --doctor)
+// @reflex:setup-only begin
 if (doctor && plugin.active) for (const i of userInstalls) {
   const gate = join(i.installPath ?? "", "gate.mjs");
   if (!existsSync(gate)) { errors.push(`plugin ${i.id}: gate is missing at ${gate}. Run claude plugin update ${i.id}.`); continue; }
@@ -223,6 +225,7 @@ if (doctor && plugin.active) for (const i of userInstalls) {
     }
   } finally { rmSync(scratch, {recursive: true, force: true}); }
 }
+// @reflex:setup-only end
 // The Codex CLI plugin: `codex plugin add reflex@<marketplace>` copies it to
 // $CODEX_HOME/plugins/cache/<marketplace>/reflex/<version> and writes [plugins."reflex@<marketplace>"]
 // enabled = true into config.toml. Its hooks stand down while `reflex setup` hooks are in hooks.json.
@@ -257,6 +260,8 @@ let ocSetup = false;
 try { const g = readFileSync(ocFile, "utf8").match(/"(\/[^"]*\/gate\.mjs)"/)?.[1]; ocSetup = !!g && existsSync(g); } catch { /* not there */ }
 const opencode_plugin = ocSetup ? `reflex setup plugin file ${ocFile}${ocNpm ? " (the npm plugin stands down)" : ""}`
   : ocNpm ? `the opencode npm plugin (@ursuciprian/reflex in the global ${ocNpm})` : "none recorded";
+// reflex doctor only (the plugin's /reflex:status never passes --doctor)
+// @reflex:setup-only begin
 if (doctor && codex_plugin.active) for (const i of codexOn) {
   const gate = join(i.path, "gate.mjs");
   if (!existsSync(gate)) { errors.push(`Codex plugin ${i.id}: gate is missing at ${gate}. Run codex plugin add ${i.id}.`); continue; }
@@ -279,6 +284,7 @@ if (doctor && codex_plugin.active) for (const i of codexOn) {
     }
   } finally { rmSync(scratch, {recursive: true, force: true}); }
 }
+// @reflex:setup-only end
 if ((codex_plugin.active || (ocNpm && !ocSetup)) && CONFIG.judge.enabled) warnings.push("System 2 is on, but the Codex and opencode plugins give a gate call 15 s and a longer judge call fails open. Use reflex setup --agents codex,opencode, which sizes the timeout to the judge.");
 let codexSeen = null;
 try { codexSeen = read(join(CONFIG.data, "health", "codex.json")); } catch { /* no hook event yet */ }
@@ -287,8 +293,11 @@ if (codex_plugin.active && !codexOn.some(i => { try { return codexSeen?.gate ===
 // Setup hooks silence the plugin even while Codex does not run them (untrusted or disabled in /hooks).
 if (codexLive && codexOn.length && !agents.find(a => a.name === "codex")?.hook_observed)
   warnings.push(`Codex CLI: the plugin stands down for the reflex setup hooks in ${CODEX_HOOKS}, but none of them has run yet. Trust them in /hooks, or remove them (install.mjs --agent codex --uninstall) to let the plugin gate.`);
+// reflex doctor only (the plugin's /reflex:status never passes --doctor)
+// @reflex:setup-only begin
 if (doctor && ocNpm && !ocSetup && spawnSync("node", ["--version"], {stdio: "ignore", timeout: 5000}).status !== 0)
   errors.push("opencode npm plugin: node is not on this PATH; the plugin runs the gate with node from the PATH opencode starts with, and gates nothing without it.");
+// @reflex:setup-only end
 if (!agents.length && !plugin.active && !codex_plugin.active && !ocNpm) warnings.push("No agent installations recorded. Run reflex setup --agents claude,codex, or use reflex run in your own terminal.");
 // The escalation ladder. Reachability is a GET of the judge's model list: never a paid call.
 const cliJudge = CONFIG.judge.backend === "cli";
@@ -338,7 +347,7 @@ if (!fastlane.error) try {
 } catch { /* a status line must not fail on it */ }
 // @reflex:setup-only end
 // Human-last: which rungs decide before a human, and what still reaches one.
-const s2why = !CONFIG.judge.enabled ? (USER_CONFIG.judge === "off" ? 'off (judge "off" in config.json)' : "off (no System 2 found at setup: reflex setup picks the claude CLI or ANTHROPIC_API_KEY)")
+const s2why = !CONFIG.judge.enabled ? (USER_CONFIG.judge === "off" ? 'off (judge "off" in config.json)' : "off (no System 2 found at setup: reflex setup picks the claude CLI or an Anthropic API key)")
   : CONFIG.mode !== "enforce" ? `logged only (${CONFIG.mode} mode)` : judge.reachable === false ? "NOT reachable" : judge.budget && (judge.budget.calls_left <= 0 || judge.budget.usd_left <= 0) ? "daily budget used up"
   : judge.breaker?.open ? "paused by the breaker" : null;
 const human_last = {

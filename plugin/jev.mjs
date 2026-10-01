@@ -67,7 +67,7 @@ export function sessionContext(path, toolUseId) {
 
 // ---------------------------------------------------------------------------------------------
 // Jev. The active provider's key: its environment variables, else its macOS Keychain item (TypeSafe's
-// is REFLEX_KEYCHAIN_SERVICE or "keychain" in config.json, as before). Read once per process, never logged.
+// is "keychain" in config.json, as before). Read once per process, never logged. Outside the plugin only.
 // In the Claude Code plugin: the Jev API key plugin option, and nothing else.
 const KEYS = {};   // per provider, so a key read for one is never sent as another's
 function apiKey() {
@@ -226,7 +226,8 @@ export async function jevJudge({command, cwd, env, session = {}, useCache = true
     : scripts.some(s => s.partial) || script?.excerpt.length >= SCRIPT_BYTES ? "runs code Jev did not see in full"
     : broadCwd(cwd) ? "broad cwd" : null;
   const policyOutcome = d.outcome;   // logged as is, so report.mjs replays policy against policy
-  if (d.outcome === "allow" && noAllow) Object.assign(d, {outcome: "pass", rule: `low risk (not allowed: ${noAllow})`});
+  // The plugin never allows: whatever a policy gate answers besides ask and deny (its allow gate) is a pass.
+  if (PLUGIN_MODE && !["ask", "deny"].includes(d.outcome)) d.outcome = "pass";
   return {outcome: d.outcome, policy_outcome: policyOutcome, rule: d.rule, source: res.error ? "fallback" : cached ? "cache" : "jev",
           state, questions, gate: d.path?.at(-1)?.outcome === "yes" ? d.path.at(-1).gate : null, allow_guard: allowGuard, qset: spec.version, policy_version: policy.version, ...res};
 }

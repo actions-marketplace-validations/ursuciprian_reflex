@@ -18,12 +18,15 @@
 // permission rules stay authoritative. Deterministic rules (setup/*/rules.json) are enforced in
 // every mode. Jev's decisions are enforced only with REFLEX_MODE=enforce; in the default shadow
 // mode Jev runs in a detached background process, so the agent never waits for it.
+// The Claude Code plugin never allows (plugin.mjs).
+// @reflex:setup-only begin
 // "allow" (skip the agent's own prompt) is opt-in twice, REFLEX_ALLOW=on and enforce mode, and
 // only for a fresh Jev answer that clears the policy's allow gate.
+// @reflex:setup-only end
 // First: failsafe.mjs answers the agent (ask, or block where it cannot ask) on any error after this.
 import {hookFailure, isMain} from "./failsafe.mjs";
 // Next: in the Claude Code plugin, settings come from the plugin options and config.json only (plugin.mjs).
-import {PLUGIN_MODE} from "./plugin.mjs";
+import {PLUGIN_MODE, APPROVED} from "./plugin.mjs";
 import {appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, openSync, readSync, writeSync, closeSync} from "node:fs";
 import {createHash, randomUUID} from "node:crypto";
 import {spawn, spawnSync} from "node:child_process";
@@ -275,8 +278,8 @@ const localJudgment = () => ({outcome: "ask", source: "local", rule: "not covere
 // The agent-neutral contract. Every adapter turns its agent's event into a call:
 //   {agent, command, cwd, session_id?, call_id?, intent?, recent?, transcript_path?, permission_mode?, unsandboxed?}
 // and gets back {effective, decision, reason, source, policy}. `effective` is what the agent must
-// do now: "pass" (no opinion, the agent's own permissions decide), "allow" (run it without the
-// agent's prompt), "ask" (a human confirms) or "deny" (block, show the reason).
+// do now: "pass" (no opinion, the agent's own permissions decide), "ask" (a human confirms) or
+// "deny" (block, show the reason); outside the plugin also "allow" (run it without the agent's prompt).
 // In shadow mode only deterministic rules are effective; Jev's decision is logged, never applied.
 // A call with `subgoal` (the task a subagent is about to get), or `subgoals` (a batch of them), and
 // no `command` is checked for duplicates, see subgoalJudge(); a batch where only some items repeat
@@ -314,7 +317,7 @@ export async function decide(call, {background = false, asker, judger} = {}) {
   if (CONFIG.mode === "enforce" && !background && CONFIG.queue.enabled && !(quick?.source === "rule" && quick.outcome === "deny")) {
     let q = quick?.source === "read-only" ? null : queueAnswer(call);
     if (q && q.outcome !== "deny" && quick?.id === "freeze" && !freezeApproved(quick.window, q)) q = null;
-    if (q) return finish(q, call, q.outcome === "deny" ? "deny" : allowSetting(holdAllow(q, call)).outcome === "allow" ? "allow" : "pass", {env});
+    if (q) return finish(q, call, q.outcome === "deny" ? "deny" : allowSetting(holdAllow(q, call)).outcome === APPROVED ? APPROVED : "pass", {env});
     // a human lifted a runaway stop of this command: the guard steps aside once, the gate does not.
     // A human's deny of the stop is a deny.
     const r = queueAnswer(runawayCall(call));
@@ -352,7 +355,7 @@ export async function decide(call, {background = false, asker, judger} = {}) {
     quick = c ? allowSetting(holdAllow({...quick, ...(c.ref && {checkpoint: {ref: c.ref, ms: c.ms, ...(c.same && {same: true})}})}, call)) : null;
   }
   if (quick) {
-    const effective = quick.source === "rule" ? quick.outcome : quick.source === "workspace" && quick.outcome === "allow" ? "allow" : "pass";
+    const effective = quick.source === "rule" ? quick.outcome : quick.source === "workspace" && quick.outcome === APPROVED ? APPROVED : "pass";
     if (quick.source === "read-only") return view(quick, effective);
     return finish(quick, call, effective, {env, judger});
   }
@@ -419,7 +422,7 @@ export async function judgeTool({tool, input = {}, mcp = false, cwd, env = {}, s
   if (CONFIG.mcp.unknown === "ask") return {outcome: "ask", source: "rule", id: "mcp-unknown", rule: "not covered by the MCP rules (mcp.unknown: ask)"};
   if (CONFIG.engine === "local") return unknownTool(r.t);
   const j = await jevJudge({command: r.call.command, cwd, env, session: {...session, mcp: r.call.mcp}, useCache, asker, tool: true});
-  return j.outcome === "allow" ? {...j, outcome: "pass"} : j;
+  return j.outcome === APPROVED ? {...j, outcome: "pass"} : j;
 }
 async function toolDecide(call, {background = false, asker, judger} = {}) {
   const env = envContext(call.cwd), r = toolRules(call, env);
@@ -427,7 +430,7 @@ async function toolDecide(call, {background = false, asker, judger} = {}) {
   const t = r.t;
   let quick = r.quick;
   call = r.call;
-  const pass = d => d.effective === "allow" ? {...d, effective: "pass"} : d;
+  const pass = d => d.effective === APPROVED ? {...d, effective: "pass"} : d;
   if (!background) quick = frozen(quick, call.cwd, call.tier);
   let resumed = false;
   if (CONFIG.mode === "enforce" && !background && CONFIG.queue.enabled && !(quick?.source === "rule" && quick.outcome === "deny")) {
@@ -627,23 +630,30 @@ export async function decideSafe(call, opts) {
 }
 // A policy "allow" under REFLEX_ALLOW: kept only when on and enforcing, logged as would_allow while
 // it is watched, otherwise the plain pass the gate has always given.
+// The plugin never allows (nothing there answers allow, see plugin.mjs APPROVED): it returns j as is.
 export function allowSetting(j) {
-  if (j.outcome !== "allow" || (CONFIG.allow === "on" && CONFIG.mode === "enforce")) return j;
-  return {...j, outcome: ["shadow", "on"].includes(CONFIG.allow) ? "would_allow" : "pass"};
+  // @reflex:setup-only begin
+  if (j.outcome === "allow" && !(CONFIG.allow === "on" && CONFIG.mode === "enforce"))
+    return {...j, outcome: ["shadow", "on"].includes(CONFIG.allow) ? "would_allow" : "pass"};
+  // @reflex:setup-only end
+  return j;
 }
 // Prompts an allow must never skip: a command that asks to leave the sandbox (Claude Code's
 // dangerouslyDisableSandbox, whose own prompt is the human check on that), and plan mode, where
 // anything outside the read-only set prompts on purpose. Logged as pass, not would_allow.
 export function holdAllow(j, call) {
+  // @reflex:setup-only begin
   const why = call.unsandboxed ? "asks to run outside the sandbox" : call.permission_mode === "plan" ? "plan mode" : null;
-  return j.outcome === "allow" && why ? {...j, outcome: "pass", rule: `low risk (not allowed: ${why})`} : j;
+  if (j.outcome === "allow" && why) return {...j, outcome: "pass", rule: `low risk (not allowed: ${why})`};
+  // @reflex:setup-only end
+  return j;
 }
 // A fallback can pass, ask or deny; never allow, whatever the file says.
 function safeFallback() { try { const f = load("policy.json").fallback; return ["pass", "ask", "deny"].includes(f) ? f : null; } catch { return null; } }
 // Only a fresh Jev judgment, a System 2 approval, a human's queue approval or a workspace allowlist
 // pass with its checkpoint taken (decide) may allow; a rule, the read-only list or the fast lane never does.
-export const view = (j, effective) => ({effective: effective === "allow" && !["jev", "judge", "queue", "workspace"].includes(j.source) ? "pass"
-                                   : ["pass", "allow", "ask", "deny"].includes(effective) ? effective : "ask", decision: j.outcome, reason: `reflex (${j.source}): ${j.rule}`,
+export const view = (j, effective) => ({effective: effective === APPROVED && !["jev", "judge", "queue", "workspace"].includes(j.source) ? "pass"
+                                   : ["pass", APPROVED, "ask", "deny"].includes(effective) ? effective : "ask", decision: j.outcome, reason: `reflex (${j.source}): ${j.rule}`,
                                  source: j.source, policy: j.policy_version ?? null, ...(j.plan && {plan: j.plan})});
 
 // After the command: did it run, and how did it end. An effective "ask" followed by a record
@@ -689,7 +699,7 @@ function trace(j, call, effective) {
 
 // ---------------------------------------------------------------------------------------------
 // Claude Code adapter: PreToolUse / PostToolUse hook JSON <-> the contract above.
-// https://docs.claude.com/en/docs/claude-code/hooks
+// (the hooks reference in the Claude Code documentation)
 // An MCP tool (mcp__<server>__<tool>) or a file tool (Edit, Write, MultiEdit, NotebookEdit, Codex
 // apply_patch) as a tool call for decide(): the tool gate (tools.mjs) judges it. null for any other tool.
 const gatedTool = (name, input) => { const t = toolOf(name, input); return t && (t.kind === "mcp" || t.paths.length || t.unreadable) ? t : null; };
@@ -730,14 +740,18 @@ async function claudePre(input) {
   const warning = keyWarning(call.session_id, teamMode(CONFIG.mode, call.cwd));
   if (out || warning) process.stdout.write(JSON.stringify({...out, ...(warning && {systemMessage: warning})}));
 }
-// pass is silent: Claude Code's own permission rules decide. allow skips its prompt, but its deny
-// and ask rules are still evaluated after the hook. The plugin never allows: its allow is a pass.
-const EMITTED = ["ask", "deny"];
-// @reflex:setup-only begin
-if (!PLUGIN_MODE) EMITTED.unshift("allow");
-// @reflex:setup-only end
-export const claudeOut = d => EMITTED.includes(d.effective) ? {hookSpecificOutput: {hookEventName: "PreToolUse",
-  permissionDecision: d.effective, permissionDecisionReason: d.reason}} : null;
+// The hook answers ask or deny; pass is silent: Claude Code's own permission rules decide. Outside the
+// plugin an allow skips its prompt (its deny and ask rules are still evaluated after the hook). The
+// plugin never allows: its allow is a pass, so silent.
+export function claudeOut(d) {
+  if (d.effective === "deny") return {hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: d.reason}};
+  if (d.effective === "ask") return {hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: d.reason}};
+  // @reflex:setup-only begin
+  if (d.effective === "allow" && !PLUGIN_MODE)
+    return {hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: d.reason}};
+  // @reflex:setup-only end
+  return null;
+}
 function claudePost(input) {
   if (input.tool_name && !["Bash", "Task", "Agent"].includes(input.tool_name)) return;
   // Claude's Bash result carries no exit code; PostToolUseFailure is the failure signal.
@@ -747,7 +761,7 @@ function claudePost(input) {
           exit_code: input.tool_response?.exit_code ?? (ev === "PostToolUse" ? 0 : null)});
 }
 
-// Codex CLI adapter: hooks.json PreToolUse / PostToolUse (https://learn.chatgpt.com/docs/hooks).
+// Codex CLI adapter: hooks.json PreToolUse / PostToolUse (the Codex hooks documentation).
 // Codex PreToolUse cannot "ask" (it would fail open), so an ask becomes a deny whose reason tells
 // the agent to get the user's confirmation; the user can then run the command or approve it.
 // It cannot plain-allow either (an "allow" is not honoured and falls through), so allow is silent,
@@ -786,6 +800,8 @@ function codexPost(input) {
   record({agent: "codex", event: "ran", session_id: input.session_id, call_id: input.tool_use_id});
 }
 
+// Hermes Agent: not a Claude Code hook, so not in the plugin.
+// @reflex:setup-only begin
 // Hermes Agent adapter: config.yaml `hooks: pre_tool_call` shell hook on the terminal tool.
 // "approve" routes through Hermes' own approval prompt; rule_key is per command, so approving one
 // command "for the session" never pre-approves a different one.
@@ -831,8 +847,10 @@ function hermesPost(input) {
   record({agent: "hermes", event: st === "blocked" ? "denied" : st === "cancelled" ? "failed" : "ran",
           session_id: input.session_id, call_id: input.extra?.tool_call_id});
 }
+// @reflex:setup-only end
 
 const readStdin = () => JSON.parse(STDIN ?? readFileSync(0, "utf8"));
+// @reflex:setup-only begin
 // ask needs a human: read y/N from the controlling terminal; no terminal means no approval.
 function confirmOnTty(command, reason) {
   try {
@@ -844,6 +862,7 @@ function confirmOnTty(command, reason) {
     return /^y(es)?$/i.test(buf.toString("utf8", 0, n).trim());
   } catch { return false; }
 }
+// @reflex:setup-only end
 const argv = process.argv.slice(2);
 const flag = f => argv.includes(f);
 const opt = n => { const i = argv.indexOf(n); return i > -1 ? argv[i + 1] : undefined; };
@@ -861,11 +880,14 @@ else if (flag("--claude-post")) await guarded(async () => claudePost(readStdin()
 else if (flag("--claude-prompted")) await guarded(async () => claudePrompted(readStdin()));
 else if (flag("--codex")) await guarded(async () => codexPre(readStdin()));
 else if (flag("--codex-post")) await guarded(async () => codexPost(readStdin()));
+// @reflex:setup-only begin
 else if (flag("--hermes")) await guarded(async () => hermesPre(readStdin()));
 else if (flag("--hermes-post")) await guarded(async () => hermesPost(readStdin()));
+// @reflex:setup-only end
 else if (flag("--decide")) await guarded(async () => process.stdout.write(JSON.stringify(await decideSafe(readStdin())) + "\n"));
 else if (flag("--record")) await guarded(async () => record(readStdin()));
 else if (flag("--bg")) await guarded(async () => decide(readStdin(), {background: true}));
+// @reflex:setup-only begin
 else if (flag("--sh")) {
   // Shell shim (scripts/reflex-sh): bash-compatible `-c` / `-lc` calls are judged, then run, confirmed
   // on the terminal, or refused with exit 126. Everything else is passed to bash untouched.
@@ -886,6 +908,7 @@ else if (flag("--sh")) {
   if (command) try { record({agent: ENV.REFLEX_AGENT ?? "shell", event: "ran", exit_code: r.status}); } catch { /* the log only */ }
   process.exit(r.status ?? 1);
 }
+// @reflex:setup-only end
 else if (flag("--check")) {
   // Try one command without an agent: node gate.mjs --check "terraform apply" [--cwd dir] [--intent text]
   const cwd = opt("--cwd") ?? process.cwd(), intent = opt("--intent");

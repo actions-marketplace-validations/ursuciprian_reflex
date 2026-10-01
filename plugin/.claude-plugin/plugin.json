@@ -1,7 +1,7 @@
 {
   "name": "reflex",
   "displayName": "Reflex",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "description": "Prod-safe AI coding agents for infra teams: a pre-execution hook that judges each shell command by where it points and what it will change, then runs it, asks a human, or blocks it.",
   "author": {
     "name": "Ciprian Ursu",
@@ -10,7 +10,6 @@
   "homepage": "https://github.com/ursuciprian/reflex#readme",
   "repository": "https://github.com/ursuciprian/reflex",
   "license": "MIT",
-  "icon": "./assets/logo-512.png",
   "keywords": [
     "claude-code",
     "claude-code-hooks",

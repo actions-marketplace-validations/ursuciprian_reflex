@@ -45,8 +45,9 @@ export const JUDGE_DEFAULTS = {backend: "none", url: null, model: null, key_env:
 // would stay open (it guards against a Jev outage or a noisy policy, neither of which exists here),
 // so it is off and the caps bound the spend: 300 calls a day covers nine days in ten.
 export const KEYLESS_JUDGE_DEFAULTS = {budget: {calls: 300, session_calls: 100, session_usd: 2}, breaker: {rate: 1}};
-export const BACKEND_DEFAULTS = {cli: {cli: "claude", model: "sonnet"}, anthropic: {url: "https://api.anthropic.com", model: "claude-sonnet-5", key_env: "ANTHROPIC_API_KEY"},
+export const BACKEND_DEFAULTS = {cli: {cli: "claude", model: "sonnet"}, anthropic: {url: "https://api.anthropic.com", model: "claude-sonnet-5"},
   "openai-compatible": {}, none: {}};
+// The anthropic backend's key variable. The plugin takes the System 2 key from its option only (judge2.mjs judgeKey).
 export const QUEUE_DEFAULTS = {ttl_hours: 24, notify: null};
 // The runaway guard (autonomy.mjs): stops a session that loops, storms the gate, burns through
 // commands or spend, or climbs in risk. Tuned on 14 days of real sessions (docs/GUIDE.md) so that
@@ -146,7 +147,7 @@ export const CONFIG = {
   setup: ENV.REFLEX_SETUP_DIR ?? join(HERE, "setup/tool-gate"),
   data: ENV.REFLEX_DATA_DIR ?? join(ENV.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "reflex"),
   timeoutMs: Number(ENV.REFLEX_TIMEOUT_MS ?? 3000),
-  keychain: ENV.REFLEX_KEYCHAIN_SERVICE ?? USER_CONFIG.keychain ?? "typesafe-api-key",
+  // The TypeSafe Keychain item; the plugin never reads the Keychain.
   // The escalation ladder (autonomous profile, autonomy.mjs): System 2, the async human queue and
   // checkpoints. Off unless config.json turns them on; REFLEX_JUDGE / REFLEX_QUEUE / REFLEX_CHECKPOINTS
   // (on | off) override for one session (`reflex run` turns them off: a human is at the terminal).

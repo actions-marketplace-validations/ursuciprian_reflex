@@ -9,15 +9,33 @@ This directory is the Claude Code plugin, generated from the Reflex repository b
 
 ## What the plugin does
 
-- PreToolUse on Bash, Task and Agent: the gate answers ask or deny, or stays silent. It never
-  answers allow and never rewrites a tool's input, so Claude Code's own permission rules still decide
-  everything it does not block.
+- PreToolUse on Bash, Task, Agent, the file tools and MCP tools: the gate answers ask or deny, or
+  stays silent. It never answers allow and never rewrites a tool's input, so Claude Code's own
+  permission rules still decide everything it does not block.
 - PostToolUse on web, MCP, Read and Bash results: the injection guard adds a warning next to a result
   that tries to instruct the agent. It never rewrites the result.
 - UserPromptSubmit: the instruction layer and the pasted-credential check.
 - Commands: `/reflex:check`, `/reflex:status`, `/reflex:report`, `/reflex:replay`, `/reflex:suggest`
-  and `/reflex:queue`, all read-only.
+  and `/reflex:queue`, all read-only. Each runs a plain shell script in `scripts/` that refuses any
+  argument the command does not list, then runs one module with node.
 - An MCP server with the same read-only tools.
+
+## For reviewers
+
+- The hooks, the MCP server and the command scripts run the plugin's own modules with `node`. Nothing
+  is downloaded or installed, and the plugin has no dependencies.
+- Text such as a download piped to a shell appears only inside detection patterns (the rules and the
+  injection detectors in `setup/`), which Reflex matches against commands and tool results. Nothing
+  runs it.
+- Keys come only from the plugin options: the Jev API key goes to the Jev provider chosen in the
+  options (each named provider's key to its own host only; `compatible` to the URL in config.json),
+  the System 2 API key only to the System 2 endpoint named in
+  `~/.config/reflex/config.json` (Anthropic's API for the `anthropic` backend). The hooks remove every
+  `*_API_KEY` and `*_API_TOKEN` variable from their environment and never read the Keychain.
+- Files the gate reads to judge where a command points, never sent anywhere: the kube context name
+  from the kubeconfig, `dev_overrides` and `plugin_cache_dir` from the Terraform and OpenTofu CLI
+  config, whether `~/.npmrc` sets a script shell, Claude Code's and Codex's settings (to stand down
+  when `reflex setup` hooks exist), and Reflex's own files under `~/.config/reflex/`.
 
 ## Settings
 
