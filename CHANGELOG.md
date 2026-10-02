@@ -6,6 +6,14 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Claude Code plugin (`plugin/`), for the plugin directory's review: the plugin never launches another agent session and never pre-answers a permission prompt.
+  - System 2 in the plugin is API-only: `anthropic` or `openai-compatible`, with the key from the `judge_api_key` option. The `cli` backend (`claude -p` or `codex exec`, which human-last `reflex setup` picks when the claude CLI is installed) is left out of the bundle. A saved `judge.backend` of `cli` is `none` in plugin mode and a `cli` tier is skipped, so uncertain decisions go to a human, and `/reflex:status` warns about it. `reflex setup` and npm installs keep the `cli` backend unchanged.
+  - A System 2 approval in the plugin is a plain pass: the hook writes nothing and Claude Code's own permission prompt decides. A test runs the plugin hook against a stub judge that approves (silent, the option key sent, nothing else), against a `cli` judge (asks, the fake `claude` never starts), and against a `cli` tier (skipped), each next to the setup hook as the control.
+  - Also left out of the bundle: `reflex status` running each recorded agent's `--version`, and the shell shim's flag and comments.
+  - The build fails on `dangerously-skip-permissions`, `bypassPermissions`, `approval_policy`, `ask-for-approval`, `full-auto`, `--yolo`, `disableAllHooks`, `permission-mode` and `reflex-sh` anywhere in the bundle, on a `spawn`, `spawnSync`, `execFile` or `execFileSync` whose command is not `node` (`process.execPath`), `git` or `sed` (outside `infra.mjs`, which runs the `terraform`, `tofu`, `kubectl` or `helm` it found), on one that names `claude`, `codex`, `opencode`, `pi`, `omp` or `hermes`, and on a `child_process` import that is not by name or brings in `exec`, `execSync` or `fork`. A comment in `report.mjs` that listed Claude Code's permission modes is reworded.
+
 ## [0.18.1] - 2026-10-01
 
 ### Changed

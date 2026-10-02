@@ -22,6 +22,14 @@ This directory is the Claude Code plugin, generated from the Reflex repository b
 
 ## For reviewers
 
+- The plugin never launches another agent session and never pre-answers a permission prompt; System 2
+  in the plugin is API-only via the judge_api_key option. The only processes it starts are `node`
+  (its own modules), `git`, `sed --version`, and the `terraform`, `tofu`, `kubectl` or `helm` found on
+  `PATH` to read a saved plan or a dry-run diff. A System 2 approval is a plain pass: the hook stays
+  silent and Claude Code's own permission prompt decides. A `judge.backend` of `cli` in
+  `~/.config/reflex/config.json` (what `reflex setup` may pick) is off in the plugin, and
+  `/reflex:status` says so. The build fails when the bundle names a flag or setting that turns an
+  agent's prompts or hooks off, or starts any other program.
 - The hooks, the MCP server and the command scripts run the plugin's own modules with `node`. Nothing
   is downloaded or installed, and the plugin has no dependencies.
 - Text such as a download piped to a shell appears only inside detection patterns (the rules and the
@@ -46,7 +54,8 @@ Set them in `/plugin`, then reflex, then Configure:
 - Jev API key: stored in your system's secure storage. The plugin reads its key from this option
   only, never from the Keychain or an environment variable.
 - mode: `off`, `shadow` (the default: logs, while deterministic rules still ask and deny) or `enforce`.
-- System 2 API key: optional, for a System 2 judge configured in `~/.config/reflex/config.json`.
+- System 2 API key: optional, for a System 2 judge configured in `~/.config/reflex/config.json`
+  with backend `anthropic` or `openai-compatible`. The `cli` backend is not used by the plugin.
 
 Other settings come from `~/.config/reflex/config.json`. Decision logs go to
 `~/.local/state/reflex` (or `REFLEX_DATA_DIR`).
