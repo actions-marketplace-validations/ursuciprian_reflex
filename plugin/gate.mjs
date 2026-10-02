@@ -7,7 +7,6 @@
 //   node gate.mjs --codex         Codex CLI PreToolUse hook     (--codex-post)
 //   node gate.mjs --hermes        Hermes pre_tool_call hook     (--hermes-post)
 //   adapters/opencode.js, adapters/pi.ts                        plugins that call --decide / --record
-//   scripts/reflex-sh -c "<cmd>"      bash drop-in for agents without hooks: judge, then run/confirm/refuse
 //   node gate.mjs --check "<cmd>" judge one command from the terminal
 //   node gate.mjs --selfcheck     offline tests, no API calls
 //   --mode off|shadow|enforce, --allow off|shadow|on   written into hook commands by install.mjs

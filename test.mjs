@@ -1989,6 +1989,74 @@ async function claudePluginChecks(proot) {
   const noKey = {...pmEnv, CLAUDE_PLUGIN_OPTION_JEV_API_KEY: ""};
   await sh(hooks.PreToolUse[0].hooks[0].command, bash("npm install zod"), noKey);
   assert.ok(!seen.length && !existsSync(securityLog), `plugin without the key option: nothing sent, no Keychain: ${seen}`);
+  {
+    // System 2 in the plugin is HTTP only, keyed by the judge_api_key option, and its approve is a silent
+    // pass: the permission prompt is never answered or changed. A saved cli backend (what human-last
+    // setup picks when claude is installed) is none there: no agent CLI starts, the command asks, status says why.
+    const s2 = join(pm, "s2"), sproj = join(s2, "proj"), fakes = join(s2, "fake-bin"), judgeCfg = join(s2, ".config/reflex/config.json");
+    mkdirSync(join(s2, ".config/reflex"), {recursive: true});
+    mkdirSync(sproj, {recursive: true});
+    success(invoke("judge2.mjs", ["--fake-cli", fakes]));
+    const fakeCalls = join(fakes, "calls.jsonl"), calls = [];
+    let slowMs = 0;   // > 0: the judge sleeps that long before it answers (or until the caller gives up)
+    const judgeStub = createServer(async (req, res) => {
+      for await (const _ of req) { /* the body is not needed */ }
+      calls.push(req.headers.authorization ?? null);
+      if (slowMs) await new Promise(r => { const t = setTimeout(r, slowMs); res.on("close", () => { clearTimeout(t); r(); }); });
+      res.end(JSON.stringify({choices: [{index: 0, finish_reason: "stop", message: {role: "assistant",
+        content: JSON.stringify({verdict: "approve", confidence: 0.99, reason: "stub approve: on task and recoverable"})}}], usage: {prompt_tokens: 400, completion_tokens: 20}}));
+    });
+    await new Promise(r => judgeStub.listen(0, "127.0.0.1", r));
+    const command = "prettier --write src/", transcript2 = join(s2, "transcript.jsonl");
+    writeFileSync(transcript2, said([{type: "text", text: "Formatting the sources for the task."}, {type: "tool_use", id: "s2", name: "Bash", input: {command}}]) + "\n");
+    const input = {hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command}, session_id: "s2", tool_use_id: "s2", cwd: sproj, transcript_path: transcript2};
+    const http = {backend: "openai-compatible", url: `http://127.0.0.1:${judgeStub.address().port}`, model: "stub-judge"};
+    const saveJudge = judge => writeFileSync(judgeCfg, JSON.stringify({engine: "local", profile: "autonomous", mode: "enforce", allow: "on", queue: {enabled: false}, checkpoints: false, judge}));
+    const s2Env = data => ({...clean, HOME: s2, XDG_CONFIG_HOME: join(s2, ".config"), REFLEX_DATA_DIR: join(s2, data), PATH: `${fakes}:${clean.PATH}`,
+      CLAUDE_PLUGIN_OPTION_JUDGE_API_KEY: "judge-option-key"});
+    const lastRow = data => readFileSync(join(s2, data, "trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)).at(-1);
+    const plugin2 = data => sh(hooks.PreToolUse[0].hooks[0].command, input, s2Env(data));
+    const control2 = data => sh(pre2(hooks.PreToolUse[0].hooks[0]), input, s2Env(data), root);
+    // control: the setup hook (the checkout, no --plugin) turns the same System 2 approve into allow
+    saveJudge(http);
+    const c1 = await control2("ctrl-http");
+    assert.equal(JSON.parse(c1.out || "{}").hookSpecificOutput?.permissionDecision, "allow", `control: setup allows on a System 2 approve: ${c1.out}${c1.err}`);
+    calls.length = 0;
+    const p1 = await plugin2("plugin-http"), row1 = lastRow("plugin-http");
+    assert.ok(p1.status === 0 && p1.out === "" && row1.source === "judge" && row1.decision === "pass" && row1.emitted === null &&
+      row1.ladder?.resolver === "system2" && row1.ladder?.judge?.verdict === "approve", `plugin: a System 2 approve is a silent pass: ${p1.out}${p1.err} ${JSON.stringify(row1)}`);
+    assert.deepEqual(calls, ["Bearer judge-option-key"], "plugin: System 2 was asked once, with the judge_api_key option only");
+    // control: setup starts the agent CLI that config.json names
+    saveJudge({backend: "cli", cli: "claude", command: join(fakes, "claude")});
+    const c2 = await control2("ctrl-cli");
+    assert.ok(existsSync(fakeCalls) && JSON.parse(c2.out || "{}").hookSpecificOutput?.permissionDecision === "allow", `control: setup asks the cli judge: ${c2.out}${c2.err}`);
+    rmSync(fakeCalls);
+    // the plugin: no agent CLI, System 2 is off, so the command asks; a cli tier is skipped and the HTTP tier answers
+    const p2 = await plugin2("plugin-cli");
+    assert.ok(JSON.parse(p2.out || "{}").hookSpecificOutput?.permissionDecision === "ask" && !existsSync(fakeCalls) &&
+      !lastRow("plugin-cli").ladder?.judge, `plugin: a cli backend is none, nothing started: ${p2.out}${p2.err}`);
+    const st2 = JSON.parse((await sh(`"\${CLAUDE_PLUGIN_ROOT}/scripts/status.sh" --json`, undefined, s2Env("plugin-cli"))).out);
+    assert.ok(st2.judge.backend === "none" && !st2.judge.enabled && st2.warnings.some(w => /never starts another agent session/.test(w) && /cli backend in config\.json is off/.test(w)) &&
+      st2.human_last.rungs.some(x => x.rung === "System 2" && !x.active && /does not use the cli backend/.test(x.why)),
+      `status in the plugin says the cli backend is off: ${JSON.stringify(st2.judge)} ${st2.warnings.join(" | ")}`);
+    saveJudge({...http, tiers: [{backend: "cli", cli: "claude", command: join(fakes, "claude")}, {}]});
+    calls.length = 0;
+    const p3 = await plugin2("plugin-tier");
+    assert.ok(p3.out === "" && !existsSync(fakeCalls) && calls.length === 1, `plugin: a cli tier is skipped, the HTTP tier approves: ${p3.out}${p3.err} ${calls}`);
+    // The plugin hook has 10 s (PLUGIN_HOOK_MS) and Claude Code runs the command when a hook outlives it:
+    // a judge that sleeps 15 s (judge.timeout_ms 20 s) is cut off with 2 s to spare and the hook asks.
+    const {PLUGIN_HOOK_MS} = await import(join(root, "plugin.mjs"));
+    assert.equal(hooks.PreToolUse[0].hooks[0].timeout * 1000, PLUGIN_HOOK_MS, "PLUGIN_HOOK_MS is the plugin's PreToolUse timeout");
+    saveJudge({...http, timeout_ms: 20000});
+    slowMs = 15000; calls.length = 0;
+    const t4 = Date.now(), p4 = await plugin2("plugin-slow"), took = Date.now() - t4, row4 = lastRow("plugin-slow");
+    slowMs = 0;
+    assert.ok(JSON.parse(p4.out || "{}").hookSpecificOutput?.permissionDecision === "ask" && took < 9000 && calls.length === 1 && row4.ladder?.judge?.error === "timeout",
+      `plugin: a slow judge asks inside the hook's time (${took} ms): ${p4.out}${p4.err} ${JSON.stringify(row4.ladder)}`);
+    console.log(`plugin hook with a 15 s judge: ask after ${took} ms (hook timeout ${PLUGIN_HOOK_MS} ms)`);
+    judgeStub.closeAllConnections?.();
+    await new Promise(r => judgeStub.close(r));
+  }
   // The commands, run as Claude Code runs them (CLAUDE_PLUGIN_ROOT substituted), in a home where
   // the setup hooks are installed too: they answer, pass the gate and never ask the Keychain.
   // The Bash tool gets no plugin options (they reach the hooks only), so none are set here.

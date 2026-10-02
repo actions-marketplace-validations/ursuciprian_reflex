@@ -7,7 +7,10 @@
 // syntax or import error) or a rejection nobody handled still answers the agent, in its own contract:
 //   the gate's pre-execution hooks ask: Claude Code "ask" (JSON, exit 0); Codex "deny" with the
 //   reason (Codex has no ask: JSON plus exit 2); Hermes its own approval prompt; --decide (opencode,
-//   pi, omp) {"effective": "ask"}; reflex-sh confirms on the terminal or refuses with exit 126.
+//   pi, omp) {"effective": "ask"}.
+// @reflex:setup-only begin
+//   reflex-sh confirms on the terminal or refuses with exit 126.
+// @reflex:setup-only end
 //   In shadow mode the error is logged and nothing blocks; mode off passes without loading anything.
 //   Post-execution and prompt hooks (the record hooks, the injection guard, instructions) never
 //   block a result: they warn and log.
@@ -17,7 +20,9 @@
 // Only node: built-ins here, nothing that reads Reflex's own modules or policy.
 import {appendFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeSync} from "node:fs";
 import {randomUUID} from "node:crypto";
+// @reflex:setup-only begin
 import {spawnSync} from "node:child_process";
+// @reflex:setup-only end
 import {homedir} from "node:os";
 import {basename, dirname, join, resolve} from "node:path";
 import {isatty} from "node:tty";
@@ -28,12 +33,17 @@ const ENV = process.env;
 const SCRIPTS = ["gate.mjs", "guard.mjs", "instructions.mjs", "notify.mjs"];
 // The flag each script dispatches on, in the order it checks them (an earlier one wins).
 const FLAGS = {
-  "gate.mjs": ["--selfcheck", "--claude", "--claude-post", "--claude-prompted", "--codex", "--codex-post", "--hermes", "--hermes-post", "--decide", "--record", "--bg", "--sh", "--check"],
+  "gate.mjs": ["--selfcheck", "--claude", "--claude-post", "--claude-prompted", "--codex", "--codex-post", "--hermes", "--hermes-post", "--decide", "--record", "--bg", "--check"],
   "guard.mjs": ["--selfcheck", "--eval", "--claude", "--codex", "--claude-prompt", "--codex-prompt", "--hermes", "--hermes-llm", "--scan", "--prompt", "--bg", "--check"],
   "instructions.mjs": ["--selfcheck", "--claude", "--codex", "--hermes", "--select", "--check"],
   "notify.mjs": ["--send"],   // the detached webhook child: its errors are only logged
 };
-const GATE_PRE = ["--claude", "--codex", "--hermes", "--decide", "--sh"];
+const GATE_PRE = ["--claude", "--codex", "--hermes", "--decide"];
+// @reflex:setup-only begin
+// The shell shim (scripts/reflex-sh), checked before --check as in gate.mjs. Not in the plugin.
+FLAGS["gate.mjs"].splice(-1, 0, "--sh");
+GATE_PRE.push("--sh");
+// @reflex:setup-only end
 const SUBGOAL_TOOLS = ["Task", "Agent", "spawn_agent", "delegate_task"];
 
 const hookOf = argv => {
@@ -103,7 +113,7 @@ export function hookFailure(e, {simulated = false} = {}) {
     const reason = `reflex error: ${msg}; a human must review`;
     let outcome = "warn", code = 0;
     if (hook.pre) {
-      const i = wrote || hook.flag === "--sh" ? null : input(), t = i?.tool_name;   // reflex-sh: stdin is the command's
+      const i = wrote || hook.flag === "--sh" ? null : input(), t = i?.tool_name;   // the shell shim: stdin is the command's
       const subgoal = SUBGOAL_TOOLS.includes(t) || (hook.flag === "--decide" && (i?.subgoal || i?.subgoals));
       // Its decision is already out: that decision stands.
       outcome = wrote ? "decided" : strict && !subgoal ? "ask" : "pass";

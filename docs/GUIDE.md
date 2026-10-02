@@ -2345,6 +2345,8 @@ fails open in Claude Code and Codex, so with System 2 on, setup gives their gate
 `timeout_ms` + 30 s (50 s by default), Hermes the same, and the opencode plugin the same budget; pi
 and oh-my-pi stay at 29 s under omp's 30 s handler limit, where a slower judge is killed and the
 call is blocked (those adapters fail closed). Without System 2 the hooks keep their short timeouts.
+The Claude Code plugin cannot size its hook (10 s), so there System 2 gets what is left of it less
+2 s, and a judge that does not answer in time asks.
 
 ### Metrics
 

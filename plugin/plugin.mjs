@@ -22,6 +22,9 @@ export const PLUGIN_MODE = E.REFLEX_PLUGIN === "1" || (PLUGIN_FLAG && !argv.some
  *  so there it is a plain pass at the source. Outside the plugin it is "allow", which gate.mjs
  *  allowSetting keeps only with REFLEX_ALLOW on in enforce mode. */
 export let APPROVED = "pass";
+/** The plugin's PreToolUse hook timeout (hooks/hooks.json; test.mjs keeps the two in step). A hook that
+ *  outlives it is a non-blocking error in Claude Code, so the command runs: System 2 must answer well inside it. */
+export const PLUGIN_HOOK_MS = 10000;
 /** The option the user set in Claude Code, trimmed; undefined when unset or empty. */
 export const option = key => E[`CLAUDE_PLUGIN_OPTION_${key}`]?.trim() || undefined;
 // What the plugin must not take from the environment: every REFLEX_* setting (engine, mode, allow,

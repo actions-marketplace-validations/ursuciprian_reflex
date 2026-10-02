@@ -57,6 +57,16 @@ const FORBIDDEN = [
   [/pip install|bin\/pip|-m", "venv"|laya-venv|laya\[serve\]/], [/huggingface|HF_HUB|HF_HOME/i],
   [/curl /],
   [/npx /], [/npm install -g|npm i -g/], [/child_process.*install/], [/@reflex:setup-only/],
+  // Never another agent session, and never a permission prompt turned off or pre-answered: no flag
+  // or setting that skips an agent's prompts or hooks, and no shell shim that runs commands.
+  [/dangerously-skip-permissions|bypassPermissions|approval_policy|ask-for-approval|full-auto|--yolo|disableAllHooks|permission-mode|reflex-sh/],
+  // A child process is node itself, git or sed, never an agent CLI. infra.mjs runs the terraform, tofu,
+  // kubectl or helm that which() found. Only spawn, spawnSync, execFile and execFileSync are imported,
+  // by name, so this sees every call.
+  [/(?<![\w$.])(?:spawn|spawnSync|execFile|execFileSync)\(\s*(?!process\.execPath\b|"(?:git|sed)")/, ["infra.mjs"],
+    "infra.mjs runs only the terraform, tofu, kubectl or helm binary which() found on PATH"],
+  [/(?:spawn|spawnSync|execFile|execFileSync|execSync|exec|fork)\(\s*["'`](?:claude|codex|opencode|pi|omp|hermes)\b/],
+  [/(?:import\s+(?:\*\s+as\s+)?\w+\s+from\s*|import\(\s*|require\(\s*)["'](?:node:)?child_process|\{[^}]*\b(?:as|exec|execSync|fork)\b[^}]*\}\s*from\s*["'](?:node:)?child_process/],
 ];
 
 const MARK = /@reflex:setup-only (begin|end)\b/;

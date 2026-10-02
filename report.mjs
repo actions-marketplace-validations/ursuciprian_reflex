@@ -58,7 +58,7 @@ const changed = replayed.filter(x => x.now !== (x.r.policy_decision ?? x.r.decis
 // PermissionRequest record predate the hook; there, as before, any would-be allow in default
 // mode counts. ponytail: the first record marks the install, per machine rather than per session.
 // Commands actually allowed ran without a human, so they carry no label; nor do would-be allows in
-// a permission mode other than default (acceptEdits, auto, bypassPermissions, plan).
+// a Claude Code permission mode other than default.
 const shown = r => !promptedSince || r.ts < promptedSince || prompted.some(p => p.session_id === r.session_id && p.ts >= r.ts &&
   Date.parse(p.ts) - Date.parse(r.ts) < 6e5 && p.key === promptKey(r.state?.call?.command ?? ""));
 const humanLabels = replayed.filter(({r, now}) => r.emitted !== "allow" && r.answers?.blast?.score != null &&
@@ -167,7 +167,7 @@ const agree = judged.filter(r => (r.answers.blast.score <= 1.5) === (r.ladder.ju
 const judgeLog = rows(join(CONFIG.data, "judge.jsonl")).filter(r => Date.parse(r.ts) >= since);
 const spent = judgeLog.reduce((s, r) => s + (r.cost_usd ?? 0), 0);
 // A call is a request that went out; a cache hit, System 2 off, a spent budget or a missing key made none.
-const NO_CALL = ["off", "budget", "session budget", "no key", "no cli"];
+const NO_CALL = ["off", "budget", "session budget", "no key", "no cli", "no time"];
 const calls = judgeLog.filter(r => !r.cached && !NO_CALL.includes(r.error)), hits = judgeLog.filter(r => r.cached);
 const metered = calls.filter(r => r.usage?.input > 0), mean = f => metered.length ? Math.round(metered.reduce((s, r) => s + f(r), 0) / metered.length) : 0;
 const tokensIn = mean(r => r.usage.input), tokensOut = mean(r => r.usage.output ?? 0), tokensCached = mean(r => r.usage.cached ?? 0);

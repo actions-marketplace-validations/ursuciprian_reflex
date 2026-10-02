@@ -25,6 +25,9 @@ export let APPROVED = "pass";
 // @reflex:setup-only begin
 if (!PLUGIN_MODE) APPROVED = "allow";
 // @reflex:setup-only end
+/** The plugin's PreToolUse hook timeout (hooks/hooks.json; test.mjs keeps the two in step). A hook that
+ *  outlives it is a non-blocking error in Claude Code, so the command runs: System 2 must answer well inside it. */
+export const PLUGIN_HOOK_MS = 10000;
 /** The option the user set in Claude Code, trimmed; undefined when unset or empty. */
 export const option = key => E[`CLAUDE_PLUGIN_OPTION_${key}`]?.trim() || undefined;
 // What the plugin must not take from the environment: every REFLEX_* setting (engine, mode, allow,

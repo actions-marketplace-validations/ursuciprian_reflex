@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // Installation checks are local. A synthetic probe cannot establish that a host trusted a hook.
 import {existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync} from "node:fs";
+// @reflex:setup-only begin
 import {spawnSync} from "node:child_process";
+// @reflex:setup-only end
 import {homedir, platform, tmpdir} from "node:os";
 import {dirname, join} from "node:path";
 import {CLAUDE_SETTINGS, CODEX_HOOKS, CONFIG, USER_CONFIG, USER_CONFIG_FILE, configurationError, keyError, keyErrorMessage, load, settingsHooks, setupFile} from "./gate.mjs";
+import {pluginDropsCli} from "./config.mjs";
 import {compile} from "./policy.mjs";
 import {OPTIONS_VISIBLE, PLUGIN_MODE, pluginKey} from "./plugin.mjs";
 import {PROVIDERS, keyRouteError} from "./providers.mjs";
@@ -108,9 +111,12 @@ for (const [name, saved] of Object.entries(USER_CONFIG.agents ?? {})) {
   const item = {name, configured: false, guard: false, mode: process.env.REFLEX_MODE ?? saved.mode, allow: process.env.REFLEX_ALLOW ?? saved.allow,
     engine: CONFIG.engine, hook_observed: false, last_seen: null, version: null, checks: []};
   const gate = join(saved.root, "gate.mjs"), guard = join(saved.root, "guard.mjs");
+  // the agent's own --version: not in the plugin, which runs no agent CLI
+  // @reflex:setup-only begin
   const version = spawnSync(name, ["--version"], {encoding: "utf8", timeout: 3000});
   if (version.status === 0) item.version = version.stdout.trim().split("\n")[0].slice(0, 160);
   else warnings.push(`${name}: executable not available on this PATH; verify in the environment where the agent runs.`);
+  // @reflex:setup-only end
   if (saved.manual || name === "hermes") {
     warnings.push(`${name}: configuration is manual; use hermes hooks list in each profile. Doctor cannot verify its YAML or trust settings.`);
   } else if (files[name]) try {
@@ -204,7 +210,7 @@ const plugin = {installed: installs.map(i => ({id: i.id, scope: i.scope, project
 const scoped = installs.filter(i => i.scope !== "user").map(i => `${i.id} (${i.scope}${i.projectPath ? ` ${i.projectPath}` : ""})`);
 const claudeHooks = (settingsLive ? `reflex setup hooks in ${CLAUDE_SETTINGS}${pluginOn || scoped.length ? " (the plugin stands down)" : ""}`
   : pluginOn ? `the Claude Code plugin (${userInstalls[0].id})` : "none recorded") + (scoped.length ? `; plugin installed for a project: ${scoped.join(", ")}` : "");
-if (plugin.active && CONFIG.judge.enabled) warnings.push("System 2 is on, but the plugin's PreToolUse hook has a 10 s timeout and a longer judge call fails open. Use reflex setup --agents claude, which sizes the timeout to the judge.");
+if (plugin.active && CONFIG.judge.enabled) warnings.push("System 2 is on, but the plugin's PreToolUse hook has a 10 s timeout: System 2 gets what is left of it less 2 s, and a judge that does not answer in time asks. Use reflex setup --agents claude, which sizes the timeout to the judge.");
 // reflex doctor only (the plugin's /reflex:status never passes --doctor)
 // @reflex:setup-only begin
 if (doctor && plugin.active) for (const i of userInstalls) {
@@ -300,6 +306,9 @@ if (doctor && ocNpm && !ocSetup && spawnSync("node", ["--version"], {stdio: "ign
 // @reflex:setup-only end
 if (!agents.length && !plugin.active && !codex_plugin.active && !ocNpm) warnings.push("No agent installations recorded. Run reflex setup --agents claude,codex, or use reflex run in your own terminal.");
 // The escalation ladder. Reachability is a GET of the judge's model list: never a paid call.
+if (pluginDropsCli(USER_CONFIG.judge))
+  warnings.push(`System 2: the Claude Code plugin never starts another agent session, so ${USER_CONFIG.judge.backend === "cli" ? "the cli backend in config.json is off and uncertain decisions go to a human"
+    : "the cli tiers in config.json are skipped"}. In the plugin System 2 is judge.backend anthropic or openai-compatible, with the System 2 API key option.`);
 const cliJudge = CONFIG.judge.backend === "cli";
 const judge = {enabled: CONFIG.judge.enabled, backend: CONFIG.judge.backend, ...(cliJudge ? {cli: CONFIG.judge.cli, command: CONFIG.judge.command ?? null}
   : {url: CONFIG.judge.url, key: judgeKey() ? "found" : CONFIG.judge.key_env || CONFIG.judge.keychain ? "missing" : "none configured"}),
@@ -347,7 +356,9 @@ if (!fastlane.error) try {
 } catch { /* a status line must not fail on it */ }
 // @reflex:setup-only end
 // Human-last: which rungs decide before a human, and what still reaches one.
-const s2why = !CONFIG.judge.enabled ? (USER_CONFIG.judge === "off" ? 'off (judge "off" in config.json)' : "off (no System 2 found at setup: reflex setup picks the claude CLI or an Anthropic API key)")
+const s2why = !CONFIG.judge.enabled ? (USER_CONFIG.judge === "off" ? 'off (judge "off" in config.json)'
+    : PLUGIN_MODE ? `off (${pluginDropsCli(USER_CONFIG.judge) ? "the plugin does not use the cli backend" : "none configured"}: judge.backend anthropic or openai-compatible in config.json)`
+    : "off (no System 2 found at setup: reflex setup picks the claude CLI or an Anthropic API key)")
   : CONFIG.mode !== "enforce" ? `logged only (${CONFIG.mode} mode)` : judge.reachable === false ? "NOT reachable" : judge.budget && (judge.budget.calls_left <= 0 || judge.budget.usd_left <= 0) ? "daily budget used up"
   : judge.breaker?.open ? "paused by the breaker" : null;
 const human_last = {
