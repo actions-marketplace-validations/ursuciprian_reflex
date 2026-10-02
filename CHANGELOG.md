@@ -6,6 +6,8 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-02
+
 ### Changed
 
 - Claude Code plugin (`plugin/`), for the plugin directory's review: the plugin never launches another agent session and never pre-answers a permission prompt.
@@ -1111,7 +1113,8 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.18.2...HEAD
+[0.18.2]: https://github.com/ursuciprian/reflex/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/ursuciprian/reflex/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/ursuciprian/reflex/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/ursuciprian/reflex/compare/v0.17.0...v0.17.1
