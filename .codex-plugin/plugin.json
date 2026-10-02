@@ -1,6 +1,6 @@
 {
   "name": "reflex",
-  "version": "0.18.1",
+  "version": "0.18.2",
   "description": "Prod-safe AI coding agents for infra teams: a pre-execution hook that judges each shell command by where it points and what it will change, then runs it, asks a human, or blocks it.",
   "author": {
     "name": "Ciprian Ursu",
