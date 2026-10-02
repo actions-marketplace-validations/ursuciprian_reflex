@@ -1998,9 +1998,11 @@ async function claudePluginChecks(proot) {
     mkdirSync(sproj, {recursive: true});
     success(invoke("judge2.mjs", ["--fake-cli", fakes]));
     const fakeCalls = join(fakes, "calls.jsonl"), calls = [];
+    let slowMs = 0;   // > 0: the judge sleeps that long before it answers (or until the caller gives up)
     const judgeStub = createServer(async (req, res) => {
       for await (const _ of req) { /* the body is not needed */ }
       calls.push(req.headers.authorization ?? null);
+      if (slowMs) await new Promise(r => { const t = setTimeout(r, slowMs); res.on("close", () => { clearTimeout(t); r(); }); });
       res.end(JSON.stringify({choices: [{index: 0, finish_reason: "stop", message: {role: "assistant",
         content: JSON.stringify({verdict: "approve", confidence: 0.99, reason: "stub approve: on task and recoverable"})}}], usage: {prompt_tokens: 400, completion_tokens: 20}}));
     });
@@ -2041,6 +2043,18 @@ async function claudePluginChecks(proot) {
     calls.length = 0;
     const p3 = await plugin2("plugin-tier");
     assert.ok(p3.out === "" && !existsSync(fakeCalls) && calls.length === 1, `plugin: a cli tier is skipped, the HTTP tier approves: ${p3.out}${p3.err} ${calls}`);
+    // The plugin hook has 10 s (PLUGIN_HOOK_MS) and Claude Code runs the command when a hook outlives it:
+    // a judge that sleeps 15 s (judge.timeout_ms 20 s) is cut off with 2 s to spare and the hook asks.
+    const {PLUGIN_HOOK_MS} = await import(join(root, "plugin.mjs"));
+    assert.equal(hooks.PreToolUse[0].hooks[0].timeout * 1000, PLUGIN_HOOK_MS, "PLUGIN_HOOK_MS is the plugin's PreToolUse timeout");
+    saveJudge({...http, timeout_ms: 20000});
+    slowMs = 15000; calls.length = 0;
+    const t4 = Date.now(), p4 = await plugin2("plugin-slow"), took = Date.now() - t4, row4 = lastRow("plugin-slow");
+    slowMs = 0;
+    assert.ok(JSON.parse(p4.out || "{}").hookSpecificOutput?.permissionDecision === "ask" && took < 9000 && calls.length === 1 && row4.ladder?.judge?.error === "timeout",
+      `plugin: a slow judge asks inside the hook's time (${took} ms): ${p4.out}${p4.err} ${JSON.stringify(row4.ladder)}`);
+    console.log(`plugin hook with a 15 s judge: ask after ${took} ms (hook timeout ${PLUGIN_HOOK_MS} ms)`);
+    judgeStub.closeAllConnections?.();
     await new Promise(r => judgeStub.close(r));
   }
   // The commands, run as Claude Code runs them (CLAUDE_PLUGIN_ROOT substituted), in a home where

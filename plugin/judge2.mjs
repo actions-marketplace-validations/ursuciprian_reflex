@@ -211,9 +211,11 @@ export const tiersOf = j => (Array.isArray(j.tiers) && j.tiers.length ? j.tiers 
 /**
  * One verdict for one escalated decision. `context` is redacted by the caller and again here.
  * `key`: the verdict cache key (autonomy.mjs); a hit makes no call. `session`: the agent session, for its cap.
+ * `deadline` (ms since the epoch): the plugin hook's (autonomy.mjs ladder); it only ever shortens judge.timeout_ms.
  */
-export async function judge2(context, {fetchImpl = fetch, call = {}, key = null} = {}) {
+export async function judge2(context, {fetchImpl = fetch, call = {}, key = null, deadline = null} = {}) {
   const j = CONFIG.judge, t0 = Date.now(), session = call.session_id ?? null;
+  const end = Math.floor(Math.min(t0 + j.timeout_ms, deadline ?? Infinity));   // whole ms: AbortSignal.timeout takes an integer
   const log = (res, tier) => {
     // hashes, the verdict, the redacted one-line reason and the numbers: never the command or the context
     try {
@@ -238,9 +240,11 @@ export async function judge2(context, {fetchImpl = fetch, call = {}, key = null}
     if (b.calls_left <= 0 || b.usd_left <= 0) return log({...blank, error: "budget", reason: `System 2 daily budget used (${b.calls} calls, $${b.usd.toFixed(2)})`}, tier);
     if (b.session_calls_left <= 0 || b.session_usd_left <= 0) return log({...blank, error: "session budget", reason: `System 2 budget for this session used (${b.session.calls} calls)`}, tier);
     if (tier.backend === "anthropic" && !judgeKey(tier)) { res = log({...blank, error: "no key", reason: `no key for System 2 ($${tier.key_env ?? "judge.key_env"} or judge.keychain)`}, tier); continue; }
-    // One deadline for the whole call, tiers included, so the hook's timeout (sized from it) is never reached.
-    const left = t0 + j.timeout_ms - Date.now();
-    if (left < 1000) { res = log({...blank, error: "timeout", reason: "System 2 unavailable (timeout)"}, tier); break; }
+    // One deadline for the whole call, tiers included, so the hook's timeout (sized from it, or the
+    // plugin's fixed one) is never reached. Under 1 s to the plugin's deadline from the start: no call.
+    const left = end - Date.now();
+    if (left < 1000) { res = log(deadline != null && deadline - t0 < 1000 ? {...blank, error: "no time", reason: "System 2 not asked: under 1 s left of the plugin hook's time"}
+      : {...blank, error: "timeout", reason: "System 2 unavailable (timeout)"}, tier); break; }
     spend(session, 1, 0);
     const timed = {...tier, timeout_ms: Math.min(tier.timeout_ms, left)};
     const r = tier.backend === "cli" ? await cliJudge(timed, prompt, user) : await runHttp(timed, prompt, user, fetchImpl);

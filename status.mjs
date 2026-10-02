@@ -210,7 +210,7 @@ const plugin = {installed: installs.map(i => ({id: i.id, scope: i.scope, project
 const scoped = installs.filter(i => i.scope !== "user").map(i => `${i.id} (${i.scope}${i.projectPath ? ` ${i.projectPath}` : ""})`);
 const claudeHooks = (settingsLive ? `reflex setup hooks in ${CLAUDE_SETTINGS}${pluginOn || scoped.length ? " (the plugin stands down)" : ""}`
   : pluginOn ? `the Claude Code plugin (${userInstalls[0].id})` : "none recorded") + (scoped.length ? `; plugin installed for a project: ${scoped.join(", ")}` : "");
-if (plugin.active && CONFIG.judge.enabled) warnings.push("System 2 is on, but the plugin's PreToolUse hook has a 10 s timeout and a longer judge call fails open. Use reflex setup --agents claude, which sizes the timeout to the judge.");
+if (plugin.active && CONFIG.judge.enabled) warnings.push("System 2 is on, but the plugin's PreToolUse hook has a 10 s timeout: System 2 gets what is left of it less 2 s, and a judge that does not answer in time asks. Use reflex setup --agents claude, which sizes the timeout to the judge.");
 // reflex doctor only (the plugin's /reflex:status never passes --doctor)
 // @reflex:setup-only begin
 if (doctor && plugin.active) for (const i of userInstalls) {
