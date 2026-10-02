@@ -14,6 +14,10 @@ All notable changes to Reflex are documented here. The format follows
   - Also left out of the bundle: `reflex status` running each recorded agent's `--version`, and the shell shim's flag and comments.
   - The build fails on `dangerously-skip-permissions`, `bypassPermissions`, `approval_policy`, `ask-for-approval`, `full-auto`, `--yolo`, `disableAllHooks`, `permission-mode` and `reflex-sh` anywhere in the bundle, on a `spawn`, `spawnSync`, `execFile` or `execFileSync` whose command is not `node` (`process.execPath`), `git` or `sed` (outside `infra.mjs`, which runs the `terraform`, `tofu`, `kubectl` or `helm` it found), on one that names `claude`, `codex`, `opencode`, `pi`, `omp` or `hermes`, and on a `child_process` import that is not by name or brings in `exec`, `execSync` or `fork`. A comment in `report.mjs` that listed Claude Code's permission modes is reworded.
 
+### Fixed
+
+- Claude Code plugin: a System 2 call no longer outlives the plugin's 10 s `PreToolUse` timeout, which let the command run (Claude Code treats a timed-out hook as a non-blocking error). In plugin mode the judge gets what is left of those 10 s since the hook started, less 2 s, never more than `judge.timeout_ms`, and is not called with under 1 s left (`no time` in the logs, not counted as a call). A judge that runs out of time goes to a human like any other System 2 failure, so the hook asks. `reflex setup` installs are unchanged: their hook timeout is sized from `judge.timeout_ms`. A test runs the plugin hook against a judge that sleeps 15 s and gets an ask in about 8 s; the judge2 selfcheck covers the deadline cutting a call short and the no-call case.
+
 ## [0.18.1] - 2026-10-01
 
 ### Changed

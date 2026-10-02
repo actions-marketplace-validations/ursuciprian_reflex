@@ -150,8 +150,12 @@ What only `reflex setup` does, because a plugin cannot change settings:
   `uninstall` or `marketplace remove`, are still asked by the gate's `tamper` rule), for example in `~/.claude/settings.json`:
   `"permissions": {"ask": ["Edit(~/.config/reflex/**)", "Edit(~/.local/state/reflex/**)", "Edit(~/.claude/plugins/**)", "Edit(~/.claude/settings*.json)"]}`
 - a `PreToolUse` timeout sized to System 2. The plugin's is 10 s, the same as `reflex setup`
-  without System 2; with the autonomous profile a slow judge call runs past it and the hook fails
-  open, so use `reflex setup --profile autonomous` there. `reflex status` warns about this.
+  without System 2, so in the plugin System 2 gets what is left of those 10 s since the hook
+  started, less 2 s (at most `judge.timeout_ms`), and is not asked with under 1 s left. A judge
+  that does not answer in time goes to a human like any other System 2 failure: the hook asks (with
+  the approval queue on, it parks the command), and it always answers before Claude Code's timeout.
+  For a slower judge use `reflex setup --profile autonomous`, which sizes the hook to it.
+  `reflex status` says so.
 
 To remove the plugin: `claude plugin uninstall reflex@reflex`, and
 `claude plugin marketplace remove reflex` for the marketplace. Your settings and logs stay, as with
