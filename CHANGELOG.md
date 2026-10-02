@@ -6,6 +6,20 @@ All notable changes to Reflex are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-02
+
+### Changed
+
+- Claude Code plugin (`plugin/`), for the plugin directory's review: the plugin never launches another agent session and never pre-answers a permission prompt.
+  - System 2 in the plugin is API-only: `anthropic` or `openai-compatible`, with the key from the `judge_api_key` option. The `cli` backend (`claude -p` or `codex exec`, which human-last `reflex setup` picks when the claude CLI is installed) is left out of the bundle. A saved `judge.backend` of `cli` is `none` in plugin mode and a `cli` tier is skipped, so uncertain decisions go to a human, and `/reflex:status` warns about it. `reflex setup` and npm installs keep the `cli` backend unchanged.
+  - A System 2 approval in the plugin is a plain pass: the hook writes nothing and Claude Code's own permission prompt decides. A test runs the plugin hook against a stub judge that approves (silent, the option key sent, nothing else), against a `cli` judge (asks, the fake `claude` never starts), and against a `cli` tier (skipped), each next to the setup hook as the control.
+  - Also left out of the bundle: `reflex status` running each recorded agent's `--version`, and the shell shim's flag and comments.
+  - The build fails on `dangerously-skip-permissions`, `bypassPermissions`, `approval_policy`, `ask-for-approval`, `full-auto`, `--yolo`, `disableAllHooks`, `permission-mode` and `reflex-sh` anywhere in the bundle, on a `spawn`, `spawnSync`, `execFile` or `execFileSync` whose command is not `node` (`process.execPath`), `git` or `sed` (outside `infra.mjs`, which runs the `terraform`, `tofu`, `kubectl` or `helm` it found), on one that names `claude`, `codex`, `opencode`, `pi`, `omp` or `hermes`, and on a `child_process` import that is not by name or brings in `exec`, `execSync` or `fork`. A comment in `report.mjs` that listed Claude Code's permission modes is reworded.
+
+### Fixed
+
+- Claude Code plugin: a System 2 call no longer outlives the plugin's 10 s `PreToolUse` timeout, which let the command run (Claude Code treats a timed-out hook as a non-blocking error). In plugin mode the judge gets what is left of those 10 s since the hook started, less 2 s, never more than `judge.timeout_ms`, and is not called with under 1 s left (`no time` in the logs, not counted as a call). A judge that runs out of time goes to a human like any other System 2 failure, so the hook asks. `reflex setup` installs are unchanged: their hook timeout is sized from `judge.timeout_ms`. A test runs the plugin hook against a judge that sleeps 15 s and gets an ask in about 8 s; the judge2 selfcheck covers the deadline cutting a call short and the no-call case.
+
 ## [0.18.1] - 2026-10-01
 
 ### Changed
@@ -1099,7 +1113,8 @@ Fourth review of the read-only parser (#43). Each change asks more often; none p
   and 3.12).
 - `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, this changelog and issue templates.
 
-[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/ursuciprian/reflex/compare/v0.18.2...HEAD
+[0.18.2]: https://github.com/ursuciprian/reflex/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/ursuciprian/reflex/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/ursuciprian/reflex/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/ursuciprian/reflex/compare/v0.17.0...v0.17.1

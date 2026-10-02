@@ -33,7 +33,7 @@ import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import {CONFIG, allowSetting, broadCwd, maskQuotes, callSession, rulesHit, configurationError, decide, decideSafe, envContext, holdAllow, jsonLines, judgeSettings, load, localScripts, precheck, readTail, record, redact, runawaySettings, sha,
         stripDataHeredocs, taint, tainted, taintedRule} from "./gate.mjs";
-import {APPROVED, PLUGIN_MODE} from "./plugin.mjs";
+import {APPROVED, PLUGIN_HOOK_MS, PLUGIN_MODE} from "./plugin.mjs";
 import {judge2, template} from "./judge2.mjs";
 import {hitsOf, terms} from "./context.mjs";
 import {teamEscalation} from "./team.mjs";
@@ -90,7 +90,11 @@ export async function ladder(j, call, effective, {env = envContext(call.cwd), ju
       r = human({id: "system2-paused", rule: `System 2 is paused: ${Math.round(100 * b.rate)}% of the last ${b.n} commands escalated in ${CONFIG.judge.breaker.window_minutes} min, above ${Math.round(100 * CONFIG.judge.breaker.rate)}%`});
     } else {
       const context = judgeContext(j, call, env);
-      const v = await judger(context, {call, key: verdictKey(j, call, env, context, egress)});
+      // The plugin's hook cannot be sized to the judge as setup's is: System 2 gets what is left of
+      // PLUGIN_HOOK_MS since the process started, less 2 s, so the hook always answers before Claude
+      // Code gives up on it. Under 1 s left, judge2 calls nobody; a timeout either way goes to a human.
+      const deadline = PLUGIN_MODE && !background ? Date.now() + PLUGIN_HOOK_MS - 2000 - process.uptime() * 1000 : null;
+      const v = await judger(context, {call, key: verdictKey(j, call, env, context, egress), deadline});
       L.judge = {verdict: v.verdict, confidence: v.confidence, ...(v.error && {error: v.error}), ...(v.cached && {cached: true}),
                  ...(v.cost_usd && {cost_usd: +v.cost_usd.toFixed(6)}), ...(v.usage?.input && {tokens: {in: v.usage.input, out: v.usage.output, cached: v.usage.cached ?? 0}})};
       if (v.verdict === "deny") {
@@ -318,7 +322,7 @@ export function runawayNote(call, j, effective) {
     }
     if (j.source === "jev") s.jev = (s.jev ?? 0) + 1;
     const v = j.ladder?.judge;
-    if (v && !v.cached && v.verdict !== "not called in the hook path" && !["off", "budget", "session budget", "no key", "no cli"].includes(v.error)) s.s2 = (s.s2 ?? 0) + 1;
+    if (v && !v.cached && v.verdict !== "not called in the hook path" && !["off", "budget", "session budget", "no key", "no cli", "no time"].includes(v.error)) s.s2 = (s.s2 ?? 0) + 1;
     writeRunaway(key, s);
   } catch { /* as above */ }
 }

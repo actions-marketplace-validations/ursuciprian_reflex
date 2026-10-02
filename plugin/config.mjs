@@ -26,12 +26,14 @@ export const USER_CONFIG = (() => {
     return value;
   } catch (e) { if (e.code !== "ENOENT") USER_CONFIG_ERROR = `invalid ${USER_CONFIG_FILE}: ${e.message}`; return {}; }
 })();
-// System 2 (judge2.mjs). `backend`: cli (an agent CLI already installed and signed in: claude or
-// codex, no extra key), anthropic (Messages API), openai-compatible (any /v1/chat/completions
-// endpoint: OpenAI, Ollama, vLLM, LM Studio, LiteLLM, OpenRouter), none. A per-day cap of 200 calls
-// or $5 (price: USD per million input / output tokens, for the estimate; a CLI counts calls only).
+// System 2 (judge2.mjs). `backend`: anthropic (Messages API), openai-compatible (any
+// /v1/chat/completions endpoint: OpenAI, Ollama, vLLM, LM Studio, LiteLLM, OpenRouter), none, and
+// outside the Claude Code plugin cli (an agent CLI already installed and signed in: claude or codex,
+// no extra key). A per-day cap of 200 calls or $5 (price: USD per million input / output tokens, for
+// the estimate; a CLI counts calls only).
 export const ENGINES = ["local", "jev", "laya"];
-export const JUDGE_BACKENDS = ["cli", "anthropic", "openai-compatible", "none"];
+export const JUDGE_BACKENDS = ["anthropic", "openai-compatible", "none"];
+// The plugin never starts another agent session, so it has no cli backend (judgeSettings below).
 // Spend is small by design: a case assembled to max_input_tokens, a JSON verdict in max_tokens, no
 // extended thinking, a verdict cache, optional cheaper tiers first (judge.tiers), per-day and
 // per-session caps, and a breaker that pauses System 2 when the last hour escalated too much.
@@ -45,9 +47,10 @@ export const JUDGE_DEFAULTS = {backend: "none", url: null, model: null, key_env:
 // would stay open (it guards against a Jev outage or a noisy policy, neither of which exists here),
 // so it is off and the caps bound the spend: 300 calls a day covers nine days in ten.
 export const KEYLESS_JUDGE_DEFAULTS = {budget: {calls: 300, session_calls: 100, session_usd: 2}, breaker: {rate: 1}};
-export const BACKEND_DEFAULTS = {cli: {cli: "claude", model: "sonnet"}, anthropic: {url: "https://api.anthropic.com", model: "claude-sonnet-5"},
-  "openai-compatible": {}, none: {}};
-// The anthropic backend's key variable. The plugin takes the System 2 key from its option only (judge2.mjs judgeKey).
+export const BACKEND_DEFAULTS = {anthropic: {url: "https://api.anthropic.com", model: "claude-sonnet-5"}, "openai-compatible": {}, none: {}};
+// The anthropic backend's key variable, and the cli backend. The plugin takes the System 2 key from its option only (judge2.mjs judgeKey).
+/** In the plugin: config.json names the cli backend, or a cli tier, which the plugin turns off (status.mjs warns). */
+export const pluginDropsCli = s => PLUGIN_MODE && !!s && typeof s === "object" && (s.backend === "cli" || (Array.isArray(s.tiers) && s.tiers.some(t => t?.backend === "cli")));
 export const QUEUE_DEFAULTS = {ttl_hours: 24, notify: null};
 // The runaway guard (autonomy.mjs): stops a session that loops, storms the gate, burns through
 // commands or spend, or climbs in risk. Tuned on 14 days of real sessions (docs/GUIDE.md) so that
@@ -174,6 +177,8 @@ CONFIG.keyHost = hostOf(CONFIG.api);
  * config.json "judge": "off" is the opt-out from human-last: no System 2, and `reflex setup` does not pick one again. */
 export function judgeSettings(saved = {}, env, engine = "jev") {
   if (saved === "off") saved = {backend: "none"};
+  // The plugin: System 2 is an HTTP API only. A cli backend would start another agent session, so it is none, and a cli tier is dropped.
+  if (pluginDropsCli(saved)) saved = saved.backend === "cli" ? {backend: "none"} : {...saved, tiers: saved.tiers.filter(t => t?.backend !== "cli")};
   const backend = saved?.backend ?? JUDGE_DEFAULTS.backend, s = saved ?? {}, k = engine === "local" ? KEYLESS_JUDGE_DEFAULTS : {};
   return {...JUDGE_DEFAULTS, ...BACKEND_DEFAULTS[backend], ...s, backend, budget: {...JUDGE_DEFAULTS.budget, ...k.budget, ...s.budget},
           price: {...JUDGE_DEFAULTS.price, ...s.price}, breaker: {...JUDGE_DEFAULTS.breaker, ...k.breaker, ...s.breaker},

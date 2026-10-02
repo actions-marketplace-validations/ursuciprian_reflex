@@ -37,14 +37,18 @@ setup files the gate and the guard read (no golden sets, fixtures or plan fixtur
 `reflex setup` and the selfchecks run is marked in the source with `// @reflex:setup-only begin` and
 `// @reflex:setup-only end` (in Markdown, `<!-- @reflex:setup-only begin -->`) and left out: the
 allow answer and everything that produces it, the Hermes adapter, the rewritten tool result, the
-Keychain and key variable reads, Laya setup, the doctor probes, the shell shim, the selfchecks, test
-doubles, evals and benchmarks. A region may only hold code plugin mode cannot reach, never a check
+Keychain and key variable reads, Laya setup, the doctor probes, the shell shim, the System 2 `cli`
+backend and every other start of an agent CLI, the selfchecks, test doubles, evals and benchmarks. A region may only hold code plugin mode cannot reach, never a check
 that makes a decision stricter.
 
 The build fails when a region is unbalanced, when a module does not parse or does not link, when a
 file is over 256 KiB, when a file other than the icon is binary, or when a forbidden pattern (the
 list is `FORBIDDEN` in the script: an allow answer, a rewritten input or output, a Keychain call, a
-provider key variable, pip, a Hugging Face download, curl, npx, a global npm install) is left in it.
+provider key variable, pip, a Hugging Face download, curl, npx, a global npm install, a flag or
+setting that turns an agent's prompts or hooks off (`dangerously-skip-permissions`, `bypassPermissions`,
+`approval_policy`, `ask-for-approval`, `full-auto`, `--yolo`, `disableAllHooks`, `permission-mode`), the
+shell shim, and a child process other than `node`, `git`, `sed` or the infra binaries `infra.mjs` finds)
+is left in it.
 After changing anything the plugin ships, rebuild and commit `plugin/`:
 
 ```sh
@@ -98,10 +102,17 @@ The `/reflex:*` commands run through the Bash tool, which Claude Code gives no p
 they read `config.json` alone: `/reflex:check` judges with its engine (local when none is set), and
 `/reflex:status` shows its mode and engine and says that the hooks apply the options on top.
 
-Two more differences from `reflex setup`, both from the plugin directory's policy:
+Three more differences from `reflex setup`, all from the plugin directory's policy:
 
 - The allow gate is off: a plugin hook never answers `allow` (what setup would allow is a silent
-  pass, so Claude Code's own permission rules decide) and never rewrites a tool's input.
+  pass, so Claude Code's own permission rules decide) and never rewrites a tool's input. A System 2
+  approval is that silent pass too.
+- The plugin never launches another agent session and never pre-answers a permission prompt.
+  System 2 in the plugin is API-only: `judge.backend` `anthropic` or `openai-compatible` in
+  `config.json`, with the key from the `judge_api_key` option. The `cli` backend (`claude -p` or
+  `codex exec`, which `reflex setup` picks when the claude CLI is installed) is turned into `none`
+  there, a `cli` tier is skipped, and `/reflex:status` warns about both; uncertain decisions then go
+  to a human. The plugin starts no agent CLI for anything else either, not even `--version`.
 - The injection guard does not replace a tool result. A result it would block reaches Claude with
   the guard's warning next to it (`additionalContext`), and the session is checked more strictly
   from then on, as after any block. `reflex setup` removes the injected text instead.
@@ -139,8 +150,12 @@ What only `reflex setup` does, because a plugin cannot change settings:
   `uninstall` or `marketplace remove`, are still asked by the gate's `tamper` rule), for example in `~/.claude/settings.json`:
   `"permissions": {"ask": ["Edit(~/.config/reflex/**)", "Edit(~/.local/state/reflex/**)", "Edit(~/.claude/plugins/**)", "Edit(~/.claude/settings*.json)"]}`
 - a `PreToolUse` timeout sized to System 2. The plugin's is 10 s, the same as `reflex setup`
-  without System 2; with the autonomous profile a slow judge call runs past it and the hook fails
-  open, so use `reflex setup --profile autonomous` there. `reflex status` warns about this.
+  without System 2, so in the plugin System 2 gets what is left of those 10 s since the hook
+  started, less 2 s (at most `judge.timeout_ms`), and is not asked with under 1 s left. A judge
+  that does not answer in time goes to a human like any other System 2 failure: the hook asks (with
+  the approval queue on, it parks the command), and it always answers before Claude Code's timeout.
+  For a slower judge use `reflex setup --profile autonomous`, which sizes the hook to it.
+  `reflex status` says so.
 
 To remove the plugin: `claude plugin uninstall reflex@reflex`, and
 `claude plugin marketplace remove reflex` for the marketplace. Your settings and logs stay, as with
@@ -569,7 +584,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ursuciprian/reflex@v0.18.1   # a release tag or a commit SHA
+      - uses: ursuciprian/reflex@v0.18.2   # a release tag or a commit SHA
         with:
           commands: |
             make deploy-staging
