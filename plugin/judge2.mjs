@@ -7,25 +7,20 @@
 // reason. autonomy.mjs applies it; this file only asks.
 //
 // Backends (judge.backend; setup picks one, see scripts/reflex):
-//   cli                an agent CLI that is already installed and signed in, so no extra key:
-//                      `claude -p` or `codex exec`, with every tool, MCP server and hook off, in an
-//                      empty directory, with Reflex switched off in its environment (no recursion)
 //   anthropic          POST <url>/v1/messages, the Messages API (x-api-key, anthropic-version 2023-06-01)
 //   openai-compatible  POST <url>/v1/chat/completions: OpenAI, Ollama, vLLM, LM Studio, LiteLLM,
 //                      OpenRouter; Authorization: Bearer <key> only when a key is configured
 //   none               no System 2: uncertain decisions go to a human
+// The Claude Code plugin has no cli backend: it never starts another agent session. There System 2
+// is anthropic or openai-compatible, keyed by the judge_api_key option; a saved cli is none (config.mjs).
 //
 // Everything that is not a strictly valid verdict is `human`: an HTTP or CLI error, a timeout, a
 // refusal, a truncated answer, prose around the JSON, an extra key, a confidence outside 0..1, an
 // approve below min_confidence, a missing key or CLI, an exhausted daily budget. Never approve.
 //
-//   node judge2.mjs --selfcheck        offline: a stub server on 127.0.0.1 and fake claude / codex executables
-//   node judge2.mjs --stub             the stub HTTP judge used by test.mjs (prints its URL)
-//   node judge2.mjs --fake-cli <dir>   writes the fake claude and codex executables into <dir>
 //   node judge2.mjs --probe            is the configured judge reachable (no paid call)
 import {accessSync, constants, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync} from "node:fs";
 import {createServer} from "node:http";
-import {execFileSync, spawn, spawnSync} from "node:child_process";
 import {platform, tmpdir} from "node:os";
 import {delimiter, join} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -43,14 +38,6 @@ const SCHEMA = {type: "object", additionalProperties: false, required: ["verdict
 // Where an HTTP request goes. `url` is the base (https://api.anthropic.com); a trailing /v1 is tolerated.
 export const endpoint = (j, path) => `${String(j.url).replace(/\/+$/, "").replace(/\/v1$/, "")}/v1/${path}`;
 
-/** An executable on PATH, as an absolute path, or null. */
-export function onPath(bin, path = ENV.PATH ?? "") {
-  for (const dir of path.split(delimiter).filter(Boolean)) {
-    try { accessSync(join(dir, bin), constants.X_OK); return join(dir, bin); } catch { /* next */ }
-  }
-  return null;
-}
-
 // The key: the environment variable named in judge.key_env, else the macOS Keychain item named in
 // judge.keychain (the same pattern as the TypeSafe key), else none. Never logged or printed.
 // In the Claude Code plugin: the System 2 API key plugin option only.
@@ -63,8 +50,8 @@ const headers = (j, key) => j.backend === "anthropic"
   : {"content-type": "application/json", ...(key && {authorization: `Bearer ${key}`})};
 
 // Strict: the whole answer is one JSON object with exactly verdict, confidence and reason.
-// The first JSON object in the answer: a CLI model wraps it in ```json fences or adds prose after it
-// despite the instructions (measured with claude -p). Found by a brace scan that respects strings.
+// The first JSON object in the answer: a model wraps it in ```json fences or adds prose after it
+// despite the instructions (measured). Found by a brace scan that respects strings.
 export function firstObject(text) {
   const start = text.indexOf("{");
   if (start < 0) return null;
@@ -177,78 +164,10 @@ function cachePut(key, v) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The CLI backend. The judge must not run tools and must not re-enter Reflex:
-//   claude  -p --output-format json --tools "" --system-prompt <judge prompt> --strict-mcp-config
-//           --settings '{"disableAllHooks":true}' --disable-slash-commands --no-session-persistence
-//           --model <pinned, sonnet by default>, plus --bare when the Anthropic key variable is set (--bare
-//           never reads a subscription login, so it cannot be used without a key; never in the plugin,
-//           which removes that variable)
-//   codex   exec --sandbox read-only --ignore-user-config --ignore-rules --ephemeral --skip-git-repo-check
-//           --disable shell_tool,unified_exec,hooks,apps,plugins,multi_agent,browser_use,computer_use,
-//           image_generation,view_image --output-schema <file> -o <file> [--model m] -
-// Both run in a fresh empty directory (a project's own settings, hooks and MCP servers are not
-// loaded), with REFLEX_MODE=off, REFLEX_GUARD=off and REFLEX_JUDGE=off in their environment (a Reflex
-// hook that still fires does nothing), and the context on stdin. Killed at judge.timeout_ms.
-// Lean claude: its own system prompt replaced (--system-prompt), no tool definitions (--tools ""), no
-// MCP servers, skills or slash commands, and in the environment no CLAUDE.md, auto memory, git
-// instructions, bundled skills, attachments or extended thinking. Measured (claude 2.1.282, a
-// subscription login, sonnet): about 3,100 input tokens a call, most of them Claude Code's own floor
-// (~2,100 even with --system-prompt) and cached on repeat, ~300 output tokens (hidden reasoning is
-// billed; the CLI has no max_tokens), 3 to 4 s, $0.016 first and $0.004 cached at API prices. A naive
-// `claude -p` (the user's default model, CLAUDE.md, tools, skills) took 36,826 tokens and $0.28.
-// ponytail: the CLAUDE_CODE_DISABLE_* switches are read from claude 2.1.282; a version that drops one
-// only costs tokens, never safety (tools and hooks are off by flags the fake CLI in the selfcheck insists on).
-const CLAUDE_LEAN = {CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: "1",
-  CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1", CLAUDE_CODE_DISABLE_ATTACHMENTS: "1", CLAUDE_CODE_DISABLE_THINKING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"};
-const CODEX_OFF = ["shell_tool", "unified_exec", "hooks", "apps", "plugins", "multi_agent", "browser_use", "computer_use", "image_generation", "view_image"];
-export function cliArgs(j, prompt, dir) {
-  if (j.cli === "codex") {
-    return [ "exec", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check", "--color", "never",
-      ...CODEX_OFF.flatMap(f => ["--disable", f]), "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
-      "--output-schema", join(dir, "schema.json"), "-o", join(dir, "answer.txt"), ...(j.model ? ["--model", j.model] : []), "-"];
-  }
-  return ["-p", "--output-format", "json", "--tools", "", "--system-prompt", prompt, "--strict-mcp-config",
-    "--settings", JSON.stringify({disableAllHooks: true}), "--disable-slash-commands", "--no-session-persistence",
-    "--model", j.model || "sonnet", ...bare()];
-}
-function bare() {
-  return [];
-}
-function runCli(j, prompt, user) {
-  const command = j.command ?? onPath(j.cli);
-  if (!command) return Promise.resolve({error: "no cli", reason: `${j.cli} is not on PATH`});
-  const dir = mkdtempSync(join(tmpdir(), "reflex-judge-"));
-  if (j.cli === "codex") writeFileSync(join(dir, "schema.json"), JSON.stringify(SCHEMA));
-  // codex takes no system prompt flag: the instructions go first on stdin, the context after them
-  const input = j.cli === "codex" ? `${prompt}\n\nThe decision to review:\n${user}` : user;
-  const env = {...ENV, REFLEX_MODE: "off", REFLEX_GUARD: "off", REFLEX_JUDGE: "off", REFLEX_QUEUE: "off", REFLEX_CHECKPOINTS: "off", ...(j.cli === "claude" && CLAUDE_LEAN)};
-  return new Promise(res => {
-    let out = "", done = false;
-    const finish = r => { if (done) return; done = true; clearTimeout(timer); rmSync(dir, {recursive: true, force: true}); res(r); };
-    const child = spawn(command, cliArgs(j, prompt, dir), {cwd: dir, env, stdio: ["pipe", "pipe", "ignore"]});
-    const timer = setTimeout(() => { child.kill("SIGKILL"); finish({error: "timeout", reason: "System 2 unavailable (timeout)"}); }, j.timeout_ms);
-    child.stdout.on("data", d => { out += d; if (out.length > 1e6) child.kill("SIGKILL"); });
-    child.on("error", e => finish({error: e.code ?? e.name, reason: `System 2 unavailable (${j.cli}: ${e.code ?? e.name})`}));
-    child.on("close", code => {
-      if (code !== 0) return finish({error: `exit ${code}`, reason: `System 2 unavailable (${j.cli} exited ${code})`});
-      if (j.cli === "codex") {
-        let text = null;
-        try { text = readFileSync(join(dir, "answer.txt"), "utf8"); } catch { /* no answer file */ }
-        return finish({text});
-      }
-      let r;
-      try { r = JSON.parse(out); } catch { return finish({text: null}); }
-      if (r?.is_error || (r?.subtype && r.subtype !== "success")) return finish({error: "cli error", reason: `System 2 unavailable (${j.cli} reported an error)`});
-      finish({text: r?.structured_output ? JSON.stringify(r.structured_output) : r?.result,
-              usage: {input: (r?.usage?.input_tokens ?? 0) + (r?.usage?.cache_read_input_tokens ?? 0) + (r?.usage?.cache_creation_input_tokens ?? 0),
-                      cached: r?.usage?.cache_read_input_tokens ?? 0, output: r?.usage?.output_tokens ?? 0},
-              reported_usd: typeof r?.total_cost_usd === "number" ? r.total_cost_usd : null, duration_ms: r?.duration_ms ?? null,
-              models: r?.modelUsage ? Object.keys(r.modelUsage) : null});
-    });
-    child.stdin.on("error", () => { /* a child that exits early closes its stdin */ });
-    child.stdin.end(input);
-  });
-}
+// The CLI backend starts another agent CLI, so it is setup-only: the Claude Code plugin never has it.
+// There a saved cli backend is none and a cli tier is dropped (config.mjs judgeSettings), and one
+// that still got here answers human without a call.
+let cliJudge = () => Promise.resolve({error: "no cli", reason: "System 2 has no cli backend in the Claude Code plugin"});
 
 async function runHttp(j, prompt, user, fetchImpl) {
   const key = judgeKey(j);
@@ -324,7 +243,7 @@ export async function judge2(context, {fetchImpl = fetch, call = {}, key = null}
     if (left < 1000) { res = log({...blank, error: "timeout", reason: "System 2 unavailable (timeout)"}, tier); break; }
     spend(session, 1, 0);
     const timed = {...tier, timeout_ms: Math.min(tier.timeout_ms, left)};
-    const r = tier.backend === "cli" ? await runCli(timed, prompt, user) : await runHttp(timed, prompt, user, fetchImpl);
+    const r = tier.backend === "cli" ? await cliJudge(timed, prompt, user) : await runHttp(timed, prompt, user, fetchImpl);
     const usage = {cached: 0, ...r.usage ?? {input: 0, output: 0}}, cost_usd = tier.backend === "cli" ? r.reported_usd ?? 0 : estimateCost(tier, usage);
     if (cost_usd) spend(session, 0, cost_usd);
     const extra = {usage, cost_usd, context_tokens: tokens, backend: tier.backend, model: tier.model ?? null, ...(r.reported_usd != null && {reported_usd: r.reported_usd})};
@@ -350,12 +269,6 @@ const scrub = v => typeof v === "string" ? redact(v) : Array.isArray(v) ? v.map(
 /** Reachability without a paid call: the CLI is on PATH, or GET <url>/v1/models answers (a keyless gateway may say 401). */
 export async function probe(j = CONFIG.judge, fetchImpl = fetch) {
   if (j.backend === "none") return {reachable: false, ok: false, status: null, url: null, error: "off"};
-  if (j.backend === "cli") {
-    const command = j.command ?? onPath(j.cli);
-    let ok = false;
-    try { accessSync(command ?? "", constants.X_OK); ok = true; } catch { /* missing */ }
-    return {reachable: ok, ok, status: null, url: command ?? j.cli, ...(!ok && {error: "not found"})};
-  }
   const url = endpoint(j, "models");
   try {
     const r = await fetchImpl(url, {headers: headers(j, judgeKey(j)), signal: AbortSignal.timeout(2500)});

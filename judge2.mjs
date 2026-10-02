@@ -7,25 +7,33 @@
 // reason. autonomy.mjs applies it; this file only asks.
 //
 // Backends (judge.backend; setup picks one, see scripts/reflex):
+// @reflex:setup-only begin
 //   cli                an agent CLI that is already installed and signed in, so no extra key:
 //                      `claude -p` or `codex exec`, with every tool, MCP server and hook off, in an
 //                      empty directory, with Reflex switched off in its environment (no recursion)
+// @reflex:setup-only end
 //   anthropic          POST <url>/v1/messages, the Messages API (x-api-key, anthropic-version 2023-06-01)
 //   openai-compatible  POST <url>/v1/chat/completions: OpenAI, Ollama, vLLM, LM Studio, LiteLLM,
 //                      OpenRouter; Authorization: Bearer <key> only when a key is configured
 //   none               no System 2: uncertain decisions go to a human
+// The Claude Code plugin has no cli backend: it never starts another agent session. There System 2
+// is anthropic or openai-compatible, keyed by the judge_api_key option; a saved cli is none (config.mjs).
 //
 // Everything that is not a strictly valid verdict is `human`: an HTTP or CLI error, a timeout, a
 // refusal, a truncated answer, prose around the JSON, an extra key, a confidence outside 0..1, an
 // approve below min_confidence, a missing key or CLI, an exhausted daily budget. Never approve.
 //
+// @reflex:setup-only begin
 //   node judge2.mjs --selfcheck        offline: a stub server on 127.0.0.1 and fake claude / codex executables
 //   node judge2.mjs --stub             the stub HTTP judge used by test.mjs (prints its URL)
 //   node judge2.mjs --fake-cli <dir>   writes the fake claude and codex executables into <dir>
+// @reflex:setup-only end
 //   node judge2.mjs --probe            is the configured judge reachable (no paid call)
 import {accessSync, constants, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync} from "node:fs";
 import {createServer} from "node:http";
+// @reflex:setup-only begin
 import {execFileSync, spawn, spawnSync} from "node:child_process";
+// @reflex:setup-only end
 import {platform, tmpdir} from "node:os";
 import {delimiter, join} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -42,6 +50,7 @@ const SCHEMA = {type: "object", additionalProperties: false, required: ["verdict
   properties: {verdict: {type: "string", enum: VERDICTS}, confidence: {type: "number", minimum: 0, maximum: 1}, reason: {type: "string", maxLength: 200}}};
 // Where an HTTP request goes. `url` is the base (https://api.anthropic.com); a trailing /v1 is tolerated.
 export const endpoint = (j, path) => `${String(j.url).replace(/\/+$/, "").replace(/\/v1$/, "")}/v1/${path}`;
+// @reflex:setup-only begin
 
 /** An executable on PATH, as an absolute path, or null. */
 export function onPath(bin, path = ENV.PATH ?? "") {
@@ -50,6 +59,7 @@ export function onPath(bin, path = ENV.PATH ?? "") {
   }
   return null;
 }
+// @reflex:setup-only end
 
 // The key: the environment variable named in judge.key_env, else the macOS Keychain item named in
 // judge.keychain (the same pattern as the TypeSafe key), else none. Never logged or printed.
@@ -72,8 +82,8 @@ const headers = (j, key) => j.backend === "anthropic"
   : {"content-type": "application/json", ...(key && {authorization: `Bearer ${key}`})};
 
 // Strict: the whole answer is one JSON object with exactly verdict, confidence and reason.
-// The first JSON object in the answer: a CLI model wraps it in ```json fences or adds prose after it
-// despite the instructions (measured with claude -p). Found by a brace scan that respects strings.
+// The first JSON object in the answer: a model wraps it in ```json fences or adds prose after it
+// despite the instructions (measured). Found by a brace scan that respects strings.
 export function firstObject(text) {
   const start = text.indexOf("{");
   if (start < 0) return null;
@@ -186,6 +196,11 @@ function cachePut(key, v) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The CLI backend starts another agent CLI, so it is setup-only: the Claude Code plugin never has it.
+// There a saved cli backend is none and a cli tier is dropped (config.mjs judgeSettings), and one
+// that still got here answers human without a call.
+let cliJudge = () => Promise.resolve({error: "no cli", reason: "System 2 has no cli backend in the Claude Code plugin"});
+// @reflex:setup-only begin
 // The CLI backend. The judge must not run tools and must not re-enter Reflex:
 //   claude  -p --output-format json --tools "" --system-prompt <judge prompt> --strict-mcp-config
 //           --settings '{"disableAllHooks":true}' --disable-slash-commands --no-session-persistence
@@ -220,12 +235,7 @@ export function cliArgs(j, prompt, dir) {
     "--settings", JSON.stringify({disableAllHooks: true}), "--disable-slash-commands", "--no-session-persistence",
     "--model", j.model || "sonnet", ...bare()];
 }
-function bare() {
-  // @reflex:setup-only begin
-  if (ENV.ANTHROPIC_API_KEY?.trim()) return ["--bare"];
-  // @reflex:setup-only end
-  return [];
-}
+const bare = () => ENV.ANTHROPIC_API_KEY?.trim() ? ["--bare"] : [];
 function runCli(j, prompt, user) {
   const command = j.command ?? onPath(j.cli);
   if (!command) return Promise.resolve({error: "no cli", reason: `${j.cli} is not on PATH`});
@@ -261,6 +271,9 @@ function runCli(j, prompt, user) {
     child.stdin.end(input);
   });
 }
+// the checkout run as the plugin (--plugin) never starts an agent CLI either
+if (!PLUGIN_MODE) cliJudge = runCli;
+// @reflex:setup-only end
 
 async function runHttp(j, prompt, user, fetchImpl) {
   const key = judgeKey(j);
@@ -336,7 +349,7 @@ export async function judge2(context, {fetchImpl = fetch, call = {}, key = null}
     if (left < 1000) { res = log({...blank, error: "timeout", reason: "System 2 unavailable (timeout)"}, tier); break; }
     spend(session, 1, 0);
     const timed = {...tier, timeout_ms: Math.min(tier.timeout_ms, left)};
-    const r = tier.backend === "cli" ? await runCli(timed, prompt, user) : await runHttp(timed, prompt, user, fetchImpl);
+    const r = tier.backend === "cli" ? await cliJudge(timed, prompt, user) : await runHttp(timed, prompt, user, fetchImpl);
     const usage = {cached: 0, ...r.usage ?? {input: 0, output: 0}}, cost_usd = tier.backend === "cli" ? r.reported_usd ?? 0 : estimateCost(tier, usage);
     if (cost_usd) spend(session, 0, cost_usd);
     const extra = {usage, cost_usd, context_tokens: tokens, backend: tier.backend, model: tier.model ?? null, ...(r.reported_usd != null && {reported_usd: r.reported_usd})};
@@ -362,12 +375,14 @@ const scrub = v => typeof v === "string" ? redact(v) : Array.isArray(v) ? v.map(
 /** Reachability without a paid call: the CLI is on PATH, or GET <url>/v1/models answers (a keyless gateway may say 401). */
 export async function probe(j = CONFIG.judge, fetchImpl = fetch) {
   if (j.backend === "none") return {reachable: false, ok: false, status: null, url: null, error: "off"};
+  // @reflex:setup-only begin
   if (j.backend === "cli") {
     const command = j.command ?? onPath(j.cli);
     let ok = false;
     try { accessSync(command ?? "", constants.X_OK); ok = true; } catch { /* missing */ }
     return {reachable: ok, ok, status: null, url: command ?? j.cli, ...(!ok && {error: "not found"})};
   }
+  // @reflex:setup-only end
   const url = endpoint(j, "models");
   try {
     const r = await fetchImpl(url, {headers: headers(j, judgeKey(j)), signal: AbortSignal.timeout(2500)});

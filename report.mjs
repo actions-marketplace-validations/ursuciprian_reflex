@@ -58,7 +58,7 @@ const changed = replayed.filter(x => x.now !== (x.r.policy_decision ?? x.r.decis
 // PermissionRequest record predate the hook; there, as before, any would-be allow in default
 // mode counts. ponytail: the first record marks the install, per machine rather than per session.
 // Commands actually allowed ran without a human, so they carry no label; nor do would-be allows in
-// a permission mode other than default (acceptEdits, auto, bypassPermissions, plan).
+// a Claude Code permission mode other than default.
 const shown = r => !promptedSince || r.ts < promptedSince || prompted.some(p => p.session_id === r.session_id && p.ts >= r.ts &&
   Date.parse(p.ts) - Date.parse(r.ts) < 6e5 && p.key === promptKey(r.state?.call?.command ?? ""));
 const humanLabels = replayed.filter(({r, now}) => r.emitted !== "allow" && r.answers?.blast?.score != null &&
